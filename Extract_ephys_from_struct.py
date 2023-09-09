@@ -86,19 +86,27 @@ class ExtractEphysData:
         #return the recording names
         return recording_names 
     
-    #create a method that will acces the cellid names for each recording using the attributes of the class
-    def get_cellid_names(self, group_name):
-        
-        #create an empty list to store the cellid names
+    def get_cellid_names(self, group_name, recording_name):
+        """
+        Returns a list of cell ID names for a specific group and recording.
+
+        Args:
+            group_name (str): The name of the group to retrieve cell ID names from.
+            recording_name (str): The name of the recording to retrieve cell ID names from.
+
+        Returns:
+            list: A list of cell ID names for the given group and recording.
+        """
+        # Create an empty list to store the cell ID names
         cellid_names = []
-        
-        #for each recording in the group, append the cellid names to the cellid_names list
-        for recording in self.mat['all_data'][group_name]:
-            
-            cellid_names.append(self.mat['all_data'][group_name][recording].keys())
-            
-        #return the cellid names
-        return cellid_names 
+
+        # Get the cell ID names for the specified recording
+        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
+            cellid_names.append(cellid_name)
+
+        # Return the list of cell ID names
+        return cellid_names
+
     
 
     def get_pre_post_data(self, group_name=None, recording_name=None, cellid_name=None):
