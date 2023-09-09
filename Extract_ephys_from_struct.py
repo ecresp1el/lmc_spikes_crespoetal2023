@@ -1,6 +1,7 @@
-#import mat73 to load mat files
-import mat73
+import mat73 
 import matplotlib.pyplot as plt
+import numpy as np
+
 class ExtractEphysData: 
     """_summary_
     Create a class that will allow me to extract the ephys data from the matfiles 
@@ -201,7 +202,7 @@ class ResponseDistributionPlotter:
             color = 'grey' if epoch == 'Pre' else 'blue'
             
             # Plot the distribution of mean responses
-            plt.hist(mean_responses, bins=bins, color=color, edgecolor='black', alpha=0.5, facecolor='none', linewidth=1.2, label=epoch)
+            plt.hist(mean_responses, bins=bins, color=color, edgecolor=color, alpha=0.5, facecolor='none', linewidth=1.2, label=epoch)
         
         # Set plot title and labels
         plt.title(f'{group_name} - {stim_level} Stimulation')
@@ -213,3 +214,112 @@ class ResponseDistributionPlotter:
         
         # Display the plot
         plt.show()
+        
+    def plot_box_and_whisker(self, group_name, epoch=None, stim_level='Zero', overlay=False):
+        """
+        Plot box and whisker plots of mean responses for a specific group, epoch, and stimulation level.
+
+        Parameters:
+        group_name (str): The name of the group to plot.
+        epoch (str, optional): The epoch to plot ('Pre', 'Post', or None). If None, both 'Pre' and 'Post' are plotted together. Defaults to None.
+        stim_level (str): The stimulation level to plot ('Zero', 'Low', 'Mid', 'Max', or 'Pooled'). Defaults to 'Zero'.
+        overlay (bool): Whether to overlay the 'Pre' and 'Post' box plots on a single plot. Defaults to False.
+
+        Returns:
+        None: The function plots the box and whisker plots and does not return any value.
+        """
+        epochs = [epoch] if epoch else ['Pre', 'Post']
+        
+        data_to_plot = []
+        labels = []
+        
+        for epoch in epochs:
+            # Get the mean responses for the specified group, epoch, and stimulation level
+            mean_responses = self.data[group_name][stim_level][epoch]
+            
+            data_to_plot.append(mean_responses)
+            labels.append(epoch)
+        
+        # Set plot title and labels
+        plt.title(f'{group_name} - {stim_level} Stimulation')
+        plt.xlabel('Epoch')
+        plt.ylabel('Mean Response')
+        
+        # Create box and whisker plot
+        plt.boxplot(data_to_plot, labels=labels)
+        
+        # Display the plot
+        plt.show()
+
+
+
+def calculate_mean_responses(EED, group_name=None):
+    """
+    Calculate the mean responses during the early phase (0-50 ms post-stimulus) for each unit and pool them together per group.
+
+    Parameters:
+    EED (object): The object containing the electrophysiology data.
+    group_name (str, optional): The name of the group to analyze. Defaults to None, in which case all groups are analyzed.
+
+    Returns:
+    dict: A dictionary containing the pooled mean responses for each group.
+    """
+    
+    # Get list of group names
+    group_names = [group_name] if group_name else EED.group_names
+    
+    # Dictionary to store the pooled mean responses for each group
+    pooled_mean_responses = {}
+    
+    # Loop through each group
+    for group in group_names:
+        recording_names = EED.get_recording_names(group)
+        
+        # List to store the mean responses for all units in the current group
+        group_mean_responses = {'Pre': [], 'Post': []}
+        
+        # Loop through each recording
+        for recording in recording_names:
+            cellid_names = EED.get_cellid_names(group, recording)
+            
+            # Loop through each cell ID
+            for cell_id in cellid_names:
+                # Get the pre and post stim data
+                data = EED.get_pre_post_data(group, recording, cell_id)
+                
+                # Define stimulation levels and pooled stimulation levels
+                stim_levels = ['Zero', 'Low', 'Mid', 'Max', 'Pooled']
+                
+                # Dictionary to store the mean responses for the current unit
+                unit_mean_responses = {'Recording': recording, 'CellID': cell_id}
+                
+                # Loop through each epoch (pre and post) and stimulation level to calculate mean responses
+                for epoch in ['Pre', 'Post']:
+                    for stim_level in stim_levels:
+                        if stim_level == 'Pooled':
+                            stim_indices = [1, 2, 3]
+                        else:
+                            stim_indices = [stim_levels.index(stim_level)]
+                        
+                        # Get spike trains for the current stimulation level
+                        spiketrains = np.concatenate([data[epoch]['SpikeTrains_for_PSTHs'][i] for i in stim_indices], axis=0)
+                        
+                        # Extract spike data for the early phase (0-50 ms post-stimulus)
+                        early_phase = spiketrains[:, 500:550]  # Adjust indices as necessary
+                        
+                        # Calculate the total number of spikes in each trial during the early phase
+                        mean_response = early_phase.sum(axis=1).mean()
+                        
+                        # Add the mean response to the dictionary
+                        unit_mean_responses[f'{epoch}_{stim_level}'] = mean_response
+                
+                # Add the mean responses for the current unit to the list
+                group_mean_responses['Pre'].append(unit_mean_responses)
+                group_mean_responses['Post'].append(unit_mean_responses)
+        
+        # Add the mean responses for the current group to the dictionary
+        pooled_mean_responses[group] = group_mean_responses
+    
+    return pooled_mean_responses
+
+
