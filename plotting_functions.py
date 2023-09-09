@@ -242,3 +242,81 @@ def plot_spike_distribution(EED, group_name=None, pool_stimulations=False):
                     
                     # Close the plot to prevent it from displaying inline in the notebook
                     plt.close()
+                    
+def plot_spike_distribution_boxplots(EED, group_name=None, pool_stimulations=False):
+    """
+    Plot the distribution of spikes during the early phase (0-50 ms post-stimulus) for each group using boxplots.
+
+    Parameters:
+    EED (object): The object containing the electrophysiology data.
+    group_name (str, optional): The name of the group to plot. Defaults to None, in which case all groups are plotted.
+    pool_stimulations (bool, optional): Whether to pool low, mid, and high stimulations into a single group called "Stimulation". Defaults to False.
+
+    Returns:
+    None: The function saves the plots to the 'spike_distributions_boxplots' directory.
+    """
+    
+    # Ensure 'spike_distributions_boxplots' directory exists
+    if not os.path.exists('spike_distributions_boxplots'):
+        os.makedirs('spike_distributions_boxplots')
+    
+    # Get list of group names
+    group_names = [group_name] if group_name else EED.group_names
+    
+    # Loop through each group
+    for group in group_names:
+        recording_names = EED.get_recording_names(group)
+        
+        # Loop through each recording
+        for recording in recording_names:
+            cellid_names = EED.get_cellid_names(group, recording)
+            
+            # Loop through each cell ID
+            for cell_id in cellid_names:
+                # Get the pre and post stim data
+                data = EED.get_pre_post_data(group, recording, cell_id)
+                
+                # Define stimulation levels based on whether stimulations should be pooled
+                if pool_stimulations:
+                    stim_levels = ['Zero', 'Stimulation']
+                else:
+                    stim_levels = ['Zero', 'Low', 'Mid', 'Max']
+                
+                # Loop through each stimulation level
+                for stim_index, stim_level in enumerate(stim_levels):
+                    # Get spike trains for the current stimulation level
+                    if stim_level == 'Stimulation':
+                        pre_spiketrains = np.concatenate([data['Pre']['SpikeTrains_for_PSTHs'][i] for i in range(1, 4)], axis=0)
+                        post_spiketrains = np.concatenate([data['Post']['SpikeTrains_for_PSTHs'][i] for i in range(1, 4)], axis=0)
+                    else:
+                        pre_spiketrains = data['Pre']['SpikeTrains_for_PSTHs'][stim_index]
+                        post_spiketrains = data['Post']['SpikeTrains_for_PSTHs'][stim_index]
+                    
+                    # Extract spike data for the early phase (0-50 ms post-stimulus)
+                    early_phase_pre = pre_spiketrains[:, 500:550]  # Adjust indices as necessary
+                    early_phase_post = post_spiketrains[:, 500:550]  # Adjust indices as necessary
+                    
+                    # Calculate the total number of spikes in each trial during the early phase
+                    spike_counts_pre = early_phase_pre.sum(axis=1)
+                    spike_counts_post = early_phase_post.sum(axis=1)
+                    
+                    # Create a new figure
+                    plt.figure()
+                    
+                    # Plot the boxplots for the pre and post epochs
+                    plt.boxplot([spike_counts_pre, spike_counts_post], labels=['Pre', 'Post'])
+                    
+                    # Set plot title and labels
+                    plt.title(f'Group: {group}, Recording: {recording}, Cell ID: {cell_id}\nStim Level: {stim_level}', fontsize=10)
+                    plt.xlabel('Condition')
+                    plt.ylabel('Spike Count')
+                    
+                    # Adjust layout to prevent titles and labels from being cut off
+                    plt.tight_layout()
+                    plt.subplots_adjust(top=0.85)  # Adjust top margin to provide more space for the title
+                    
+                    # Save the plot to the 'spike_distributions_boxplots' directory with higher resolution
+                    plt.savefig(f'spike_distributions_boxplots/{group}_{recording}_{cell_id}_{stim_level}.png', dpi=300)
+                    
+                    # Close the plot to prevent it from displaying inline in the notebook
+                    plt.close()
