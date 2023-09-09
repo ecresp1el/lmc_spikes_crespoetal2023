@@ -1,5 +1,6 @@
 #import mat73 to load mat files
 import mat73
+import matplotlib.pyplot as plt
 class ExtractEphysData: 
     """_summary_
     Create a class that will allow me to extract the ephys data from the matfiles 
@@ -162,3 +163,53 @@ class ExtractEphysData:
             
         # Return the pre and post data
         return pre_post_data
+    
+    
+
+
+class ResponseDistributionPlotter:
+    def __init__(self, data):
+        """
+        Initialize the ResponseDistributionPlotter with the data dictionary obtained from the calculate_mean_responses function.
+
+        Parameters:
+        data (dict): The data dictionary containing the pooled mean responses for each group.
+        """
+        self.data = data
+
+    def plot_distribution(self, group_name, epoch=None, stim_level='Zero', bins=30, overlay=False):
+        """
+        Plot the distribution of mean responses for a specific group, epoch, and stimulation level.
+
+        Parameters:
+        group_name (str): The name of the group to plot.
+        epoch (str, optional): The epoch to plot ('Pre', 'Post', or None). If None, both 'Pre' and 'Post' are plotted together. Defaults to None.
+        stim_level (str): The stimulation level to plot ('Zero', 'Low', 'Mid', 'Max', or 'Pooled'). Defaults to 'Zero'.
+        bins (int): The number of bins to use in the histogram. Defaults to 30.
+        overlay (bool): Whether to overlay the 'Pre' and 'Post' histograms on a single plot. Defaults to False.
+
+        Returns:
+        None: The function plots the distribution and does not return any value.
+        """
+        epochs = [epoch] if epoch else ['Pre', 'Post']
+        
+        for epoch in epochs:
+            # Get the mean responses for the specified group, epoch, and stimulation level
+            mean_responses = [unit[f'{epoch}_{stim_level}'] for unit in self.data[group_name][epoch]]
+            
+            # Define color based on the epoch
+            color = 'grey' if epoch == 'Pre' else 'blue'
+            
+            # Plot the distribution of mean responses
+            plt.hist(mean_responses, bins=bins, color=color, edgecolor='black', alpha=0.5, facecolor='none', linewidth=1.2, label=epoch)
+        
+        # Set plot title and labels
+        plt.title(f'{group_name} - {stim_level} Stimulation')
+        plt.xlabel('Mean Response')
+        plt.ylabel('Frequency')
+        
+        if overlay:
+            plt.legend()
+        
+        # Display the plot
+        plt.show()
