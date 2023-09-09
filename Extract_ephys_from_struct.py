@@ -101,30 +101,56 @@ class ExtractEphysData:
         return cellid_names 
     
 
-        #create a method that will access the 'Pre' and 'Post' dictionaries for each cellid 
     def get_pre_post_data(self, group_name=None, recording_name=None, cellid_name=None):
+        
+        # Create an empty dictionary to store the pre and post data with 'Pre' and 'Post' as keys
+        pre_post_data = {} 
+        
+        # If the user specifies a group name, recording name, and cellid name, then return the pre and post data for that cellid 
+        if group_name is not None and recording_name is not None and cellid_name is not None: 
             
-            #create an empty list to store the pre and post data
-            pre_post_data = [] 
+            # Use the extract_ephys_data method to get the data
+            cell_data = self.extract_ephys_data(group_name, recording_name, cellid_name)
             
-            #if the user specifies a group name, recording name, and cellid name, then return the pre and post data for that cellid 
-            if group_name is not None and recording_name is not None and cellid_name is not None: 
-                
-                #first grab the pre data, by finding the 'Pre' key in the cellid dictionary 
-                pre_post_data.append(self.mat['all_data'][group_name][recording_name][cellid_name]['Pre'])
-                
-                #then grab the post data
-                pre_post_data.append(self.mat['all_data'][group_name][recording_name][cellid_name]['Post']) 
+            try:
+                # First grab the pre data
+                pre_data = cell_data['Pre']
+                pre_post_data['Pre'] = pre_data
+            except KeyError:
+                print(f"Key 'Pre' not found. Available keys: {list(cell_data.keys())}")
+                return
             
-            # if not the above, then return the pre and post data for all cellids in the group by iterating through the group, recording, and cellid names
-            else: 
-                for group_name in self.group_names:
-                    for recording_name in self.get_recording_names(group_name):
-                        for cellid_name in self.get_cellid_names(group_name, recording_name):
-                            #first grab the pre data
-                            pre_post_data.append(self.mat['all_data'][group_name][recording_name][cellid_name]['Pre'])
-                            
-                            #then grab the post data
-                            pre_post_data.append(self.mat['all_data'][group_name][recording_name][cellid_name]['Post'])
-                
-            #return the pre and post data
+            try:
+                # Then grab the post data
+                post_data = cell_data['Post']
+                pre_post_data['Post'] = post_data
+            except KeyError:
+                print(f"Key 'Post' not found. Available keys: {list(cell_data.keys())}")
+                return
+        
+        # If not the above, then return the pre and post data for all cellids in the group by iterating through the group, recording, and cellid names
+        else: 
+            for group_name in self.group_names:
+                for recording_name in self.get_recording_names(group_name):
+                    for cellid_name in self.get_cellid_names(group_name, recording_name):
+                        # Use the extract_ephys_data method to get the data
+                        cell_data = self.extract_ephys_data(group_name, recording_name, cellid_name)
+                        
+                        try:
+                            # First grab the pre data
+                            pre_data = cell_data['Pre']
+                            pre_post_data['Pre'] = pre_data
+                        except KeyError:
+                            print(f"Key 'Pre' not found in group {group_name}, recording {recording_name}, cellid {cellid_name}. Available keys: {list(cell_data.keys())}")
+                            continue
+                        
+                        try:
+                            # Then grab the post data
+                            post_data = cell_data['Post']
+                            pre_post_data['Post'] = post_data
+                        except KeyError:
+                            print(f"Key 'Post' not found in group {group_name}, recording {recording_name}, cellid {cellid_name}. Available keys: {list(cell_data.keys())}")
+                            continue
+            
+        # Return the pre and post data
+        return pre_post_data
