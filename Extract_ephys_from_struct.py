@@ -255,7 +255,7 @@ class ResponseDistributionPlotter:
 
 def calculate_mean_responses(EED, group_name=None):
     """
-    Calculate the mean responses during the early phase (0-50 ms post-stimulus) for each unit and pool them together per group.
+    Calculate the mean responses during the early phase (0-50 ms post-stimulus) and late phase (100-700 ms post-stimulus) for each unit and pool them together per group.
 
     Parameters:
     EED (object): The object containing the electrophysiology data.
@@ -307,11 +307,18 @@ def calculate_mean_responses(EED, group_name=None):
                         # Extract spike data for the early phase (0-50 ms post-stimulus)
                         early_phase = spiketrains[:, 500:550]  # Adjust indices as necessary
                         
+                        # Extract spike data for the late phase (100-700 ms post-stimulus)
+                        late_phase = spiketrains[:, 600:1200]  # Adjust indices as necessary
+                        
                         # Calculate the total number of spikes in each trial during the early phase
-                        mean_response = early_phase.sum(axis=1).mean()
+                        mean_response_early = early_phase.sum(axis=1).mean()
+                        
+                        # Calculate the total number of spikes in each trial during the late phase
+                        mean_response_late = late_phase.sum(axis=1).mean()
                         
                         # Add the mean response to the dictionary
-                        unit_mean_responses[f'{epoch}_{stim_level}'] = mean_response
+                        unit_mean_responses[f'{epoch}_{stim_level}_early'] = mean_response_early
+                        unit_mean_responses[f'{epoch}_{stim_level}_late'] = mean_response_late
                 
                 # Add the mean responses for the current unit to the list
                 group_mean_responses['Pre'].append(unit_mean_responses)
@@ -321,5 +328,6 @@ def calculate_mean_responses(EED, group_name=None):
         pooled_mean_responses[group] = group_mean_responses
     
     return pooled_mean_responses
+
 
 
