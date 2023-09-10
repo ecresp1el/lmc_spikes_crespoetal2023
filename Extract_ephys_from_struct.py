@@ -195,7 +195,7 @@ class ResponseDistributionPlotter:
         epochs = [epoch] if epoch else ['Pre', 'Post'] # if epoch is None, then epochs = ['Pre', 'Post'] 
         
         # now there will be Pre_Zero_early for example. We need to get the responses for only the early phase for plotting
-        epochs = [f'{epoch}_{stim_level}_early' for epoch in epochs] # this will create a list of strings that look like 'Pre_Zero_early' 
+        #epochs = [f'{epoch}_{stim_level}_early' for epoch in epochs] # this will create a list of strings that look like 'Pre_Zero_early' 
         
         for epoch in epochs:
             # Get the mean responses for the specified group, epoch, and stimulation level
