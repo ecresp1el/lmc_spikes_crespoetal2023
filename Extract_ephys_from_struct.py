@@ -178,7 +178,8 @@ class ResponseDistributionPlotter:
         """
         self.data = data
 
-    def plot_distribution(self, group_name, epoch=None, stim_level='Zero', bins=30, overlay=False):
+    
+    def plot_distribution(self, group_name, epoch, stim_level, bins=10, overlay=False, phase='early'):
         """
         Plot the distribution of mean responses for a specific group, epoch, and stimulation level.
 
@@ -188,35 +189,36 @@ class ResponseDistributionPlotter:
         stim_level (str): The stimulation level to plot ('Zero', 'Low', 'Mid', 'Max', or 'Pooled'). Defaults to 'Zero'.
         bins (int): The number of bins to use in the histogram. Defaults to 30.
         overlay (bool): Whether to overlay the 'Pre' and 'Post' histograms on a single plot. Defaults to False.
+        phase (str): The phase to plot data for ('early' or 'late'). Default is 'early'.
 
         Returns:
         None: The function plots the distribution and does not return any value.
         """
-        epochs = [epoch] if epoch else ['Pre', 'Post'] # if epoch is None, then epochs = ['Pre', 'Post'] 
         
-        # now there will be Pre_Zero_early for example. We need to get the responses for only the early phase for plotting
-        #epochs = [f'{epoch}_{stim_level}_early' for epoch in epochs] # this will create a list of strings that look like 'Pre_Zero_early' 
-        
-        for epoch in epochs:
-            # Get the mean responses for the specified group, epoch, and stimulation level
-            mean_responses = [unit[f'{epoch}_{stim_level}'] for unit in self.data[group_name][epoch]]
-            
-            # Define color based on the epoch
-            color = 'grey' if epoch == 'Pre' else 'blue'
-            
-            # Plot the distribution of mean responses
-            plt.hist(mean_responses, bins=bins, color=color, edgecolor=color, alpha=0.5, facecolor='none', linewidth=1.2, label=epoch)
-        
-        # Set plot title and labels
-        plt.title(f'{group_name} - {stim_level} Stimulation')
+        # Get the data for the specified group, epoch, and stimulation level
+        group_data = self.data[group_name][epoch]
+        data_to_plot = [unit_data[f'{epoch}_{stim_level}_{phase}'] for unit_data in group_data]
+
+        # Create a new figure
+        plt.figure()
+
+        # Define colors for each epoch
+        colors = {'Pre': 'grey', 'Post': 'blue'}
+
+        # Plot the histogram
+        plt.hist(data_to_plot, bins=bins, alpha=0.5, label=f'{epoch}_{stim_level}_{phase}', histtype='step', color=colors[epoch])
+
+        # Set the plot title and labels
+        plt.title(f'{group_name} {epoch} {stim_level} {phase} Response Distribution')
         plt.xlabel('Mean Response')
         plt.ylabel('Frequency')
-        
-        if overlay:
-            plt.legend()
-        
-        # Display the plot
-        plt.show()
+
+        # Add a legend
+        plt.legend()
+
+        # Show the plot
+        if not overlay:
+            plt.show()
         
     def plot_box_and_whisker(self, group_name, epoch=None, stim_level='Zero', overlay=False):
         """
