@@ -33,6 +33,11 @@ class ExtractEphysData:
         # store the matfile
         self.mat = mat 
         
+        # Perform the dict keys check early on and store the results as an attribute 
+        # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
+        # which you can reference at any point in your analysis to know which unit IDs passed the check.
+        self.dict_keys_check_results = self.check_dict_keys()
+        
         # The group_names attribute initialization has been moved to a separate method
 
     def get_group_names(self):
@@ -80,27 +85,6 @@ class ExtractEphysData:
             unit_ids.append(unique_unit_id)
         return unit_ids
     
-    def extract_ephys_data(self, group_name, recording_name, unit_id):
-        """
-        Extracts the ephys data for a specific unit ID.
-
-        Args:
-            group_name (str): The name of the group.
-            recording_name (str): The name of the recording.
-            unit_id (str): The unique unit ID.
-
-        Returns:
-            dict: The ephys data for the specified unit ID.
-        """
-        # Decoding the unit ID to get the original cell ID name
-        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
-            if hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest() == unit_id:
-                # Extract the data using the original cell ID name
-                data = self.mat['all_data'][group_name][recording_name][cellid_name]
-                return data
-        raise ValueError(f"Unit ID {unit_id} not found.")
-
-
     def load_matfiles_printdata(self):
         """
         Load the mat files and print the data structure including the total number of units per recording within each group.
@@ -124,8 +108,57 @@ class ExtractEphysData:
                 unit_ids = self.get_cellid_names(group_name, recording_name)
                 
                 # Print the recording name and the total number of units in this recording
-                print(f"  Recording name: {recording_name} - Total units: {len(unit_ids)}")
+                print(f"  Recording name: {recording_name} - Total units: {len(unit_ids)}")    
+                
+    def get_unit_summary(self, unit_id):
+        """
+        Get a summary of the data available for a specific unit ID, including the group and recording it belongs to, 
+        and whether it passed the dict keys check.
+
+        Args:
+            unit_id (str): The unique unit ID.
+
+        Returns:
+            dict: A dictionary containing the summary information for the unit ID.
+        """
+        # Get the group and recording associated with the unit ID
+        group, recording, original_cell_id = self.get_original_cellid(unit_id) 
+        
+        # Get the dict keys check result for the unit ID
+        dict_keys_check_result = self.dict_keys_check_results.get(unit_id, False) # default to False if unit ID not found
+        
+        # Create a summary dictionary with the retrieved information
+        summary = {
+            'unit_id': unit_id,
+            'group': group,
+            'recording': recording,
+            'original_cell_id': original_cell_id,
+            'dict_keys_check_result': dict_keys_check_result,
+        }
+        
+        return summary
     
+    def extract_ephys_data(self, group_name, recording_name, unit_id):
+        """
+        Extracts the ephys data for a specific unit ID.
+
+        Args:
+            group_name (str): The name of the group.
+            recording_name (str): The name of the recording.
+            unit_id (str): The unique unit ID.
+
+        Returns:
+            dict: The ephys data for the specified unit ID.
+        """
+        # Decoding the unit ID to get the original cell ID name
+        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
+            if hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest() == unit_id:
+                # Extract the data using the original cell ID name
+                data = self.mat['all_data'][group_name][recording_name][cellid_name]
+                return data
+        raise ValueError(f"Unit ID {unit_id} not found.")
+
+
     def print_all_unit_ids(self):
         """
         Iterates over all groups and recordings to print the unique unit IDs.
