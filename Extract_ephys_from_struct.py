@@ -2,6 +2,7 @@ import mat73
 import matplotlib.pyplot as plt
 import numpy as np
 import hashlib
+import pandas as pd
 
 class ExtractEphysData:
     """_summary_
