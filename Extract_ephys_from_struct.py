@@ -93,19 +93,31 @@ class ExtractEphysData:
         raise ValueError(f"Unit ID {unit_id} not found.")
 
 
-    
     def load_matfiles_printdata(self):
-        #kind the level of all_data that contains the group level data
-        print(self.mat['all_data'].keys())
+        """
+        Load the mat files and print the data structure including the total number of units per recording within each group.
+
+        Returns:
+            None
+        """
+        # Get the group names
+        group_names = self.get_group_names()
         
-        #for each group, for each recording names, print the total number of cells in each recording
-        for group_name in self.group_names:
+        # Iterate through the group names and print them
+        for group_name in group_names:
+            print(f"Group name: {group_name}")
+            
+            # Get the recording names for the current group
+            recording_names = self.get_recording_names(group_name)
+            
+            # Iterate through the recording names and print them along with the total number of units
+            for recording_name in recording_names:
+                # Get the unique unit IDs for the current group and recording
+                unit_ids = self.get_cellid_names(group_name, recording_name)
                 
-                print('For the group', group_name, 'there are', len(self.mat['all_data'][group_name]), 'mice')
-                
-                for recording in self.mat['all_data'][group_name]:
-                    
-                    print('For the recording', recording, 'there are', len(self.mat['all_data'][group_name][recording]), 'cells')
+                # Print the recording name and the total number of units in this recording
+                print(f"  Recording name: {recording_name} - Total units: {len(unit_ids)}")
+
                     
     
 
