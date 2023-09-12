@@ -387,6 +387,37 @@ class ExtractEphysData:
         except Exception as e:
             print(f"An error occurred: {e}")
             return None
+        
+    def get_unit_data_keys(self, unit_id):
+        """
+        Retrieves the keys present at the level just before the 'pre' and 'post' data for a specified unit ID.
+
+        Args:
+            unit_id (str): The unique unit ID.
+
+        Returns:
+            list: A list containing the keys present at the specified level for the given unit ID, or None if an error occurs.
+        """
+        try:
+            # Get the mapping to the original identifiers
+            mapping = self.get_original_cellid(unit_id)
+            if mapping:
+                group_name, recording_name, cellid_name = mapping
+
+                # Get the data at the level just before 'pre' and 'post'
+                data = self.mat['all_data'][group_name][recording_name][cellid_name]
+
+                # Get the key names at this level
+                key_names = list(data.keys())
+
+                return key_names
+            else:
+                print(f"No mapping found for unit ID: {unit_id}")
+                return None
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
     
     def get_unit_data(self, unit_id=None):
         """
@@ -417,6 +448,8 @@ class ExtractEphysData:
         unit_data_df = pd.DataFrame(data_list, index=unit_ids)
         
         return unit_data_df
+    
+    
 
 
 class ResponseDistributionPlotter:
