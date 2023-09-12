@@ -386,6 +386,34 @@ class ExtractEphysData:
         except Exception as e:
             print(f"An error occurred: {e}")
             return None
+    
+    def get_unit_data(self):
+        """
+        Creates a DataFrame where each row corresponds to a unit, indexed by the unit IDs, 
+        and the columns contain data for each unit up to the level just before the 'pre' and 'post' data.
+        
+        Returns:
+            pd.DataFrame: The DataFrame containing the data for each unit.
+        """
+        # Get all unit IDs using the existing method
+        unit_ids = self.get_all_unit_ids()
+        
+        # Create an empty list to store the data for each unit
+        data_list = []
+        
+        # Iterate over all unit IDs
+        for unit_id in unit_ids:
+            # Get the data for the current unit up to the level just before the 'pre' and 'post' data
+            #  with get_unit_level_data method 
+            # to get the data at the desired level)
+            unit_data = self.get_unit_level_data(unit_id)
+            # Append the data for the current unit to the list
+            data_list.append(unit_data)
+        
+        # Create a DataFrame from the list of data, with the unit IDs as the index
+        unit_data_df = pd.DataFrame(data_list, index=unit_ids)
+        
+        return unit_data_df
 
 
 class ResponseDistributionPlotter:
