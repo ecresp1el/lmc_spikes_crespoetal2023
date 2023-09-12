@@ -148,6 +148,48 @@ class ExtractEphysData:
                         print(f"    Unit {i+1}: {unit_id}")
         except Exception as e:
             print(f"An error occurred: {e}")
+            
+    def get_original_cellid(self, unit_id):
+        """
+        Retrieves the original cell ID corresponding to a unique unit ID.
+
+        Args:
+            unit_id (str): The unique unit ID.
+
+        Returns:
+            tuple: A tuple containing the group name, recording name, and original cell ID, or None if not found.
+        """
+        try:
+            # Get all group names
+            group_names = self.get_group_names()
+            
+            # Loop over all groups
+            for group_name in group_names:
+
+                # Get all recording names for the current group
+                recording_names = self.get_recording_names(group_name)
+
+                # Loop over all recordings in the current group
+                for recording_name in recording_names:
+
+                    # Get all cell ID names for the current recording
+                    cellid_names = list(self.mat['all_data'][group_name][recording_name].keys())
+
+                    # Loop over all cell ID names in the current recording
+                    for cellid_name in cellid_names:
+
+                        # Generate the unique unit ID for the current cell ID name
+                        generated_unit_id = hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest()
+
+                        # Check if the generated unit ID matches the input unit ID
+                        if generated_unit_id == unit_id:
+                            return (group_name, recording_name, cellid_name)
+            
+            # If no match is found, return None
+            return None
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
                     
     
 
