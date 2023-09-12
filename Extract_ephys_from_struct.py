@@ -191,28 +191,28 @@ class ExtractEphysData:
             print(f"An error occurred: {e}")
             return None
                     
-    
-    def get_pre_data(self, unit_id=None):
+    def get_data(self, unit_id=None, data_type='pre'):
         """
-        Retrieves the pre-data for a specified unit ID. If no unit ID is provided, retrieves pre-data for all unit IDs.
+        Retrieves the specified type of data (pre or post) for a specified unit ID. 
+        If no unit ID is provided, retrieves data for all unit IDs.
 
         Args:
             unit_id (str, optional): The unique unit ID. Defaults to None.
+            data_type (str, optional): The type of data to retrieve ('pre' or 'post'). Defaults to 'pre'.
 
         Returns:
-            dict: A dictionary with unit IDs as keys and pre-data as values, or None if not found.
+            dict: A dictionary with unit IDs as keys and data as values, or None if not found.
         """
         result = {}
         try:
             if unit_id:
-                # If a unit ID is provided, get pre-data for the specified unit ID
                 mapping = self.get_original_cellid(unit_id)
                 if mapping:
                     group_name, recording_name, cellid_name = mapping
-                    pre_data = self.mat['all_data'][group_name][recording_name][cellid_name]['pre']
-                    result[unit_id] = pre_data
+                    data = next((v for k, v in self.mat['all_data'][group_name][recording_name][cellid_name].items() if k.lower() == data_type.lower()), None)
+                    if data is not None:
+                        result[unit_id] = data
             else:
-                # If no unit ID is provided, get pre-data for all unit IDs
                 group_names = self.get_group_names()
                 for group_name in group_names:
                     recording_names = self.get_recording_names(group_name)
@@ -220,48 +220,20 @@ class ExtractEphysData:
                         unit_ids = self.get_cellid_names(group_name, recording_name)
                         for unit_id in unit_ids:
                             cellid_name = self.get_original_cellid(unit_id)[2]
-                            pre_data = self.mat['all_data'][group_name][recording_name][cellid_name]['pre']
-                            result[unit_id] = pre_data
+                            data = next((v for k, v in self.mat['all_data'][group_name][recording_name][cellid_name].items() if k.lower() == data_type.lower()), None)
+                            if data is not None:
+                                result[unit_id] = data
             return result
         except Exception as e:
             print(f"An error occurred: {e}")
             return None
+
+    # You can create aliases for get_pre_data and get_post_data for convenience
+    def get_pre_data(self, unit_id=None):
+        return self.get_data(unit_id, data_type='pre')
 
     def get_post_data(self, unit_id=None):
-        """
-        Retrieves the post-data for a specified unit ID. If no unit ID is provided, retrieves post-data for all unit IDs.
-
-        Args:
-            unit_id (str, optional): The unique unit ID. Defaults to None.
-
-        Returns:
-            dict: A dictionary with unit IDs as keys and post-data as values, or None if not found.
-        """
-        result = {}
-        try:
-            if unit_id:
-                # If a unit ID is provided, get post-data for the specified unit ID
-                mapping = self.get_original_cellid(unit_id)
-                if mapping:
-                    group_name, recording_name, cellid_name = mapping
-                    post_data = self.mat['all_data'][group_name][recording_name][cellid_name]['post']
-                    result[unit_id] = post_data
-            else:
-                # If no unit ID is provided, get post-data for all unit IDs
-                group_names = self.get_group_names()
-                for group_name in group_names:
-                    recording_names = self.get_recording_names(group_name)
-                    for recording_name in recording_names:
-                        unit_ids = self.get_cellid_names(group_name, recording_name)
-                        for unit_id in unit_ids:
-                            cellid_name = self.get_original_cellid(unit_id)[2]
-                            post_data = self.mat['all_data'][group_name][recording_name][cellid_name]['post']
-                            result[unit_id] = post_data
-            return result
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return None
-    
+        return self.get_data(unit_id, data_type='post')
     
 
 
