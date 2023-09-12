@@ -109,7 +109,7 @@ class ExtractEphysData:
                 
                 # Print the recording name and the total number of units in this recording
                 print(f"  Recording name: {recording_name} - Total units: {len(unit_ids)}")    
-                
+    
     def get_unit_summary(self, unit_id):
         """
         Get a summary of the data available for a specific unit ID, including the group and recording it belongs to, 
@@ -121,22 +121,32 @@ class ExtractEphysData:
         Returns:
             dict: A dictionary containing the summary information for the unit ID.
         """
-        # Get the group and recording associated with the unit ID
-        group, recording, original_cell_id = self.get_original_cellid(unit_id) 
+        # Type checking
+        if not isinstance(unit_id, str):
+            raise TypeError("unit_id must be a string") 
         
-        # Get the dict keys check result for the unit ID
-        dict_keys_check_result = self.dict_keys_check_results.get(unit_id, False) # default to False if unit ID not found
+        # Existence checking 
+        mapping = self.get_original_cellid(unit_id) 
+        if mapping is None:
+            raise ValueError(f"Unit ID '{unit_id}' does not exist in the data structure")
         
-        # Create a summary dictionary with the retrieved information
+        group, recording, original_cell_id = mapping # unpacking the tuple
+        
+        # Check if the unit passed the dict keys check
+        passed_dict_keys_check = self.dict_keys_check_results.get(unit_id, False)
+        
+        # Create a summary dictionary
         summary = {
-            'unit_id': unit_id,
-            'group': group,
-            'recording': recording,
-            'original_cell_id': original_cell_id,
-            'dict_keys_check_result': dict_keys_check_result,
+            "Unit ID": unit_id,
+            "Group": group,
+            "Recording": recording,
+            "Original Cell ID": original_cell_id,
+            "Passed Dict Keys Check": passed_dict_keys_check
         }
         
         return summary
+               
+
     
     def extract_ephys_data(self, group_name, recording_name, unit_id):
         """
