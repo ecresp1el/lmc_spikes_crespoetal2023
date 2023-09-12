@@ -350,6 +350,43 @@ class ExtractEphysData:
             results[unit_id] = True
 
         return results
+    
+    def get_unit_level_data(self, unit_id=None):
+        """
+        Retrieves the data for a specified unit ID up to the level just before the 'pre' and 'post' data.
+        If no unit ID is provided, retrieves data for all unit IDs.
+
+        Args:
+            unit_id (str, optional): The unique unit ID. Defaults to None.
+
+        Returns:
+            dict: A dictionary with unit IDs as keys and data as values, or None if not found.
+        """
+        result = {}
+        try:
+            if unit_id:
+                mapping = self.get_original_cellid(unit_id)
+                if mapping:
+                    group_name, recording_name, cellid_name = mapping
+                    data = self.mat['all_data'][group_name][recording_name][cellid_name]
+                    if data is not None:
+                        result[unit_id] = data
+            else:
+                group_names = self.get_group_names()
+                for group_name in group_names:
+                    recording_names = self.get_recording_names(group_name)
+                    for recording_name in recording_names:
+                        unit_ids = self.get_cellid_names(group_name, recording_name)
+                        for unit_id in unit_ids:
+                            cellid_name = self.get_original_cellid(unit_id)[2]
+                            data = self.mat['all_data'][group_name][recording_name][cellid_name]
+                            if data is not None:
+                                result[unit_id] = data
+            return result
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
 
 class ResponseDistributionPlotter:
     def __init__(self, data):
