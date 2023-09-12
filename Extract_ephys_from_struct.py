@@ -418,38 +418,61 @@ class ExtractEphysData:
             print(f"An error occurred: {e}")
             return None
 
-    
-    def get_unit_data(self, unit_id=None):
+    def get_unit_data(self):
         """
         Creates a DataFrame where each row corresponds to a unit, indexed by the unit IDs, 
         and the columns contain data for each unit up to the level just before the 'pre' and 'post' data.
-        
-        Args:
-            unit_id (str, optional): The unique unit ID to get data for. If None, gets data for all unit IDs. Defaults to None.
         
         Returns:
             pd.DataFrame: The DataFrame containing the data for each unit.
         """
         # Get all unit IDs using the existing method
-        unit_ids = self.get_all_unit_ids() if unit_id is None else [unit_id]
+        unit_ids = self.get_all_unit_ids()
         
         # Create an empty list to store the data for each unit
         data_list = []
         
+        # Specify the keys you are interested in (excluding 'Pre' and 'Post')
+        keys_of_interest = [
+            'Amplitude', 'Cell_Type', 'ChemStimTime_note', 'ChemStimTime_s', 'ChemStimTime_samples', 
+            'FR_time_cutoff_after_stim_ms', 'FRs_baseline', 'FRs_baseline_vec', 'FRs_stim', 'FanoFactor_baseline', 
+            'FanoFactor_stim', 'FirstSpikeLatency', 'FirstSpikeLatency_Reliability', 'FirstSpikeLatency_pdf_x', 
+            'FirstSpikeLatency_pdf_y', 'FirstSpikeLatency_perTrial', 'Header', 'ISI_baseline_CV', 'ISI_baseline_vec', 
+            'ISI_pdf_peak_xy', 'ISI_pdf_x', 'ISI_pdf_y', 'ISI_violations_percent', 'IsSingleUnit', 
+            'MeanFR_baseline', 'MeanFR_inst_baseline', 'MeanFR_inst_stim', 'MeanFR_stim', 'MeanFR_total', 
+            'Mean_Waveform', 'ModulationIndex', 'Normalized_Template_Waveform', 'PSTHs_conv', 'PSTHs_raw', 
+            'Peak1ToTrough_ratio', 'Peak2ToTrough_ratio', 'PeakEvokedFR', 'PeakEvokedFR_Latency', 'PeakToPeak_ratio', 
+            'Recording_Duration', 'Sampling_Frequency', 'SpikeHalfWidth', 'SpikeTimes_all', 'SpikeTimes_baseline', 'SpikeTimes_stim', 
+            'SpikeTimes_trials', 'SpikeTrains_baseline', 'SpikeTrains_baseline_ms', 'SpikeTrains_for_PSTHs', 'SpikeTrains_stim', 
+            'SpikeTrains_stim_ms', 'SpikeTrains_trials', 'SpikeTrains_trials_ms', 'StimProb', 'StimResponsivity', 'Stim_Intensity', 
+            'Stim_Offsets_samples', 'Stim_Onsets_samples', 'Template_Channel', 'Template_Channel_Position', 'TroughToPeak_duration', 
+            'UnNormalized_Template_Waveform', 'peak1_normalized_amplitude'
+        ]
+        
         # Iterate over all unit IDs
         for unit_id in unit_ids:
-            # Get the data for the current unit up to the level just before the 'pre' and 'post' data
-            unit_data = self.get_unit_level_data(unit_id)
+            # Get the mapping to the original identifiers
+            mapping = self.get_original_cellid(unit_id)
+            if mapping:
+                group_name, recording_name, cellid_name = mapping
+
+                # Get the data for the current unit up to the level just before the 'pre' and 'post' data
+                unit_data = self.mat['all_data'][group_name][recording_name][cellid_name]
             
-            # Append the data for the current unit to the list
-            data_list.append(unit_data)
+                # Create a dictionary to hold the selected data for the current unit
+                selected_data = {key: unit_data.get(key, None) for key in keys_of_interest}
+            
+                # Append the selected data for the current unit to the list
+                data_list.append(selected_data)
+            else:
+                print(f"No mapping found for unit ID: {unit_id}")
         
         # Create a DataFrame from the list of data, with the unit IDs as the index
         unit_data_df = pd.DataFrame(data_list, index=unit_ids)
         
+        
         return unit_data_df
-    
-    
+
 
 
 class ResponseDistributionPlotter:
