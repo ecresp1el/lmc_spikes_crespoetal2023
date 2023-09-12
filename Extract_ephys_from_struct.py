@@ -19,6 +19,14 @@ class ExtractEphysData:
     """
     
     def __init__(self, matfile_directory):
+        """_summary_
+        
+        This is the initializer method that takes a directory path to a .mat file as its parameter. 
+        It uses the mat73.loadmat function to load the .mat file and stores it in the self.mat attribute.
+        
+        Args:
+            matfile_directory (_type_): _description_
+        """
         # use mat73.loadmat to load mat files
         mat = mat73.loadmat(matfile_directory, use_attrdict=True)
         
@@ -187,7 +195,7 @@ class ExtractEphysData:
             
             # If no match is found, return None
             return None
-        except Exception as e:
+        except Exception as e: 
             print(f"An error occurred: {e}")
             return None
                     
@@ -228,14 +236,23 @@ class ExtractEphysData:
             print(f"An error occurred: {e}")
             return None
 
-    # You can create aliases for get_pre_data and get_post_data for convenience
+    #create aliases for get_pre_data and get_post_data for convenience
     def get_pre_data(self, unit_id=None):
+        """_summary_
+
+        An alias for the get_data method with the data_type parameter set to 'pre'. 
+        It facilitates the retrieval of 'pre' data.
+        """
+        
         return self.get_data(unit_id, data_type='pre')
 
     def get_post_data(self, unit_id=None):
-        return self.get_data(unit_id, data_type='post')
-    
+        """_summary_
 
+        An alias for the get_data method with the data_type parameter set to 'post'. 
+        It facilitates the retrieval of 'post' data.
+        """
+        return self.get_data(unit_id, data_type='post')
 
 class ResponseDistributionPlotter:
     def __init__(self, data):
@@ -289,6 +306,7 @@ class ResponseDistributionPlotter:
         if not overlay:
             plt.show()
         
+    
     def plot_box_and_whisker(self, group_name, epoch=None, stim_level='Zero', overlay=False):
         """
         Plot box and whisker plots of mean responses for a specific group, epoch, and stimulation level.
@@ -324,8 +342,6 @@ class ResponseDistributionPlotter:
         
         # Display the plot
         plt.show()
-
-
 
 def calculate_mean_responses(EED, group_name=None):
     """
