@@ -286,6 +286,61 @@ class ExtractEphysData:
         It facilitates the retrieval of 'post' data.
         """
         return self.get_data(unit_id, data_type='post')
+    
+    def check_dict_keys(self):
+        """
+        Check if the specified dict keys are present at both the 'pre' and 'post' levels for all unit IDs 
+        and verifies that both levels have the same number of keys.
+
+        Returns:
+            dict: A dictionary with unit IDs as keys and a boolean as value indicating whether the conditions are met.
+        """
+
+        # Define the set of specified dict keys (all lowercase for case-insensitive comparison)
+        specified_keys = {
+            'frs_baseline', 'frs_baseline_vec', 'frs_stim', 'fanofactor_baseline', 'fanofactor_stim', 
+            'firstspikelatency', 'firstspikelatency_reliability', 'firstspikelatency_pdf_x', 
+            'firstspikelatency_pdf_y', 'firstspikelatency_pertrial', 'isi_baseline_cv', 
+            'isi_baseline_vec', 'isi_pdf_peak_xy', 'isi_pdf_x', 'isi_pdf_y', 'meanfr_baseline', 
+            'meanfr_inst_baseline', 'meanfr_inst_stim', 'meanfr_stim', 'modulationindex', 
+            'psths_conv', 'psths_raw', 'peakevokedfr', 'peakevokedfr_latency', 'spiketimes_baseline', 
+            'spiketimes_stim', 'spiketimes_trials', 'spiketrains_baseline', 'spiketrains_baseline_ms', 
+            'spiketrains_for_psths', 'spiketrains_stim', 'spiketrains_stim_ms', 'spiketrains_trials', 
+            'spiketrains_trials_ms', 'stimprob', 'stimresponsivity', 'stim_intensity', 
+            'stim_offsets_samples', 'stim_onsets_samples'
+        }
+        
+
+        # Get all unit IDs
+        all_unit_ids = self.print_all_unit_ids()
+
+        results = {}
+
+        for unit_id in all_unit_ids:
+            # Retrieve and lowercase the keys from the 'pre' and 'post' dictionaries
+            pre_data = self.get_pre_data(unit_id)
+            post_data = self.get_post_data(unit_id)
+
+            if pre_data is None or post_data is None:
+                results[unit_id] = False
+                continue
+
+            pre_keys = {key.lower() for key in pre_data.keys()}
+            post_keys = {key.lower() for key in post_data.keys()}
+
+            # Check if all specified keys are present in both dictionaries
+            if not (specified_keys.issubset(pre_keys) and specified_keys.issubset(post_keys)):
+                results[unit_id] = False
+                continue
+
+            # Verify that both dictionaries have the same number of keys
+            if len(pre_keys) != len(post_keys):
+                results[unit_id] = False
+                continue
+
+            results[unit_id] = True
+
+        return results
 
 class ResponseDistributionPlotter:
     def __init__(self, data):
