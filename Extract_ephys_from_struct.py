@@ -117,7 +117,37 @@ class ExtractEphysData:
                 
                 # Print the recording name and the total number of units in this recording
                 print(f"  Recording name: {recording_name} - Total units: {len(unit_ids)}")
+    
+    def print_all_unit_ids(self):
+        """
+        Iterates over all groups and recordings to print the unique unit IDs.
 
+        Returns:
+            None
+        """
+        try:
+            # Get all group names
+            group_names = self.get_group_names()
+            
+            # Loop over all groups
+            for group_name in group_names:
+                print(f"Group name: {group_name}")
+
+                # Get all recording names for the current group
+                recording_names = self.get_recording_names(group_name)
+
+                # Loop over all recordings in the current group
+                for recording_name in recording_names:
+                    print(f"  Recording name: {recording_name}")
+
+                    # Get all unique unit IDs for the current recording
+                    unit_ids = self.get_cellid_names(group_name, recording_name)
+
+                    # Loop over all unit IDs in the current recording and print them
+                    for i, unit_id in enumerate(unit_ids):
+                        print(f"    Unit {i+1}: {unit_id}")
+        except Exception as e:
+            print(f"An error occurred: {e}")
                     
     
 
