@@ -418,7 +418,7 @@ class ExtractEphysData:
             print(f"An error occurred: {e}")
             return None
 
-    def get_unit_data(self):
+    def get_unit_table(self):
         """
         Creates a DataFrame where each row corresponds to a unit, indexed by the unit IDs, 
         and the columns contain data for each unit up to the level just before the 'pre' and 'post' data.
