@@ -388,16 +388,19 @@ class ExtractEphysData:
             print(f"An error occurred: {e}")
             return None
     
-    def get_unit_data(self):
+    def get_unit_data(self, unit_id=None):
         """
         Creates a DataFrame where each row corresponds to a unit, indexed by the unit IDs, 
         and the columns contain data for each unit up to the level just before the 'pre' and 'post' data.
+        
+        Args:
+            unit_id (str, optional): The unique unit ID to get data for. If None, gets data for all unit IDs. Defaults to None.
         
         Returns:
             pd.DataFrame: The DataFrame containing the data for each unit.
         """
         # Get all unit IDs using the existing method
-        unit_ids = self.get_all_unit_ids()
+        unit_ids = self.get_all_unit_ids() if unit_id is None else [unit_id]
         
         # Create an empty list to store the data for each unit
         data_list = []
@@ -405,9 +408,8 @@ class ExtractEphysData:
         # Iterate over all unit IDs
         for unit_id in unit_ids:
             # Get the data for the current unit up to the level just before the 'pre' and 'post' data
-            #  with get_unit_level_data method 
-            # to get the data at the desired level)
             unit_data = self.get_unit_level_data(unit_id)
+            
             # Append the data for the current unit to the list
             data_list.append(unit_data)
         
