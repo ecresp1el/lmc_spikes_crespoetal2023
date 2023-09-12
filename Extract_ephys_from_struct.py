@@ -358,7 +358,7 @@ class ExtractEphysData:
         If no unit ID is provided, retrieves data for all unit IDs.
 
         Args:
-            unit_id (str, optional): The unique unit ID. Defaults to None.
+            unit_id (str, optional): The unique unit ID. Defaults to None to retrieve data for all unit IDs.
 
         Returns:
             dict: A dictionary with unit IDs as keys and data as values, or None if not found.
