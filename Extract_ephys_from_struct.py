@@ -62,8 +62,8 @@ class ExtractEphysData:
             list: A list of recording names for the given group name.
         """
         # Type checking
-        if not isinstance(unit_id, str):
-            raise TypeError("unit_id must be a string")
+        if not isinstance(group_name, str):
+            raise TypeError("group_name must be a string")
         
         # Check if the group_name exists in the data structure
         if group_name not in self.mat['all_data']:
