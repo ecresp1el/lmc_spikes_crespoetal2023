@@ -1,8 +1,9 @@
 import mat73 
 import matplotlib.pyplot as plt
 import numpy as np
+import hashlib
 
-class ExtractEphysData: 
+class ExtractEphysData:
     """_summary_
     Create a class that will allow me to extract the ephys data from the matfiles 
     Args:
@@ -10,46 +11,88 @@ class ExtractEphysData:
         
     Attributes:
         mat (matfile): the matfile
-        group_names (list): the names of the groups in the matfile
-        lmc_opsin_recording_names (list): the names of the recordings in the lmc_opsin group
-        lmc_noopsin_recording_names (list): the names of the recordings in the lmc_noopsin group
+        # group_names attribute has been removed
         
     Returns:
         _type_: _description_
         #TODO: add the return types and descriptions for each function
-        
-        
     """
     
-    #initialize the class
     def __init__(self, matfile_directory):
-
-            #use mat73.loadmat to load mat files
-            mat = mat73.loadmat(matfile_directory, use_attrdict=True)
-            
-            #store the matfile
-            self.mat = mat 
-            
-            #store the group names
-            self.group_names = mat['all_data'].keys() 
-            
-            #store the recording names for the lmc_opsin group
-            self.lmc_opsin_recording_names = mat['all_data']['Lmc_opsin'].keys() 
-            
-            #store the recording names for the lmc_noopsin group
-            self.lmc_noopsin_recording_names = mat['all_data']['Lmc_noopsin'].keys()
-            
-    
-    def extract_ephys_data(self, group_name, recording_name, cellid_name):
-            
-            #extract the data from the matfile
-            data = self.mat['all_data'][group_name][recording_name][cellid_name]
-            
-            #return the data
-            return data
+        # use mat73.loadmat to load mat files
+        mat = mat73.loadmat(matfile_directory, use_attrdict=True)
         
-    #create a function that will take in a .mat file directory and print the keys of each group, and recording, and tell you how many mice are in each group
-    #this will become a module that can be imported into other notebooks
+        # store the matfile
+        self.mat = mat 
+        
+        # The group_names attribute initialization has been moved to a separate method
+
+    def get_group_names(self):
+        """
+        Returns a list of group names present in the matfile.
+        
+        Returns:
+            list: A list of group names.
+        """
+        # Getting the group names dynamically whenever the method is called
+        group_names = list(self.mat['all_data'].keys())
+        return group_names
+
+    def get_recording_names(self, group_name):
+        """
+        Returns a list of recording names for a given group name.
+        
+        Args:
+            group_name (str): The name of the group to retrieve recording names from.
+            
+        Returns:
+            list: A list of recording names for the given group name.
+        """
+        # implementation code here
+        recording_names = []
+        for recording in self.mat['all_data'][group_name]:
+            recording_names.append(recording)
+        return recording_names 
+
+    def get_cellid_names(self, group_name, recording_name):
+        """
+        Returns a list of unique unit IDs for a specific group and recording.
+
+        Args:
+            group_name (str): The name of the group to retrieve unit IDs from.
+            recording_name (str): The name of the recording to retrieve unit IDs from.
+
+        Returns:
+            list: A list of unique unit IDs for the given group and recording.
+        """
+        unit_ids = []
+        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
+            # Creating a unique unit ID using group name, recording name, and cell ID
+            unique_unit_id = hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest()
+            unit_ids.append(unique_unit_id)
+        return unit_ids
+    
+    def extract_ephys_data(self, group_name, recording_name, unit_id):
+        """
+        Extracts the ephys data for a specific unit ID.
+
+        Args:
+            group_name (str): The name of the group.
+            recording_name (str): The name of the recording.
+            unit_id (str): The unique unit ID.
+
+        Returns:
+            dict: The ephys data for the specified unit ID.
+        """
+        # Decoding the unit ID to get the original cell ID name
+        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
+            if hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest() == unit_id:
+                # Extract the data using the original cell ID name
+                data = self.mat['all_data'][group_name][recording_name][cellid_name]
+                return data
+        raise ValueError(f"Unit ID {unit_id} not found.")
+
+
     
     def load_matfiles_printdata(self):
         #kind the level of all_data that contains the group level data
@@ -64,51 +107,6 @@ class ExtractEphysData:
                     
                     print('For the recording', recording, 'there are', len(self.mat['all_data'][group_name][recording]), 'cells')
                     
-    #create a method that will access the name of each recording in a group using the attributes of the class
-    def get_recording_names(self, group_name):
-        """
-        Returns a list of recording names for a given group name.
-        
-        Args:
-            group_name (str): The name of the group to retrieve recording names from.
-            
-        Returns:
-            list: A list of recording names for the given group name.
-        """
-        # implementation code here
-            
-        #create an empty list to store the recording names
-        recording_names = []
-            
-        #for each recording in the group, append the recording names to the recording_names list
-        for recording in self.mat['all_data'][group_name]:
-                
-            recording_names.append(recording)
-                
-        #return the recording names
-        return recording_names 
-    
-    def get_cellid_names(self, group_name, recording_name):
-        """
-        Returns a list of cell ID names for a specific group and recording.
-
-        Args:
-            group_name (str): The name of the group to retrieve cell ID names from.
-            recording_name (str): The name of the recording to retrieve cell ID names from.
-
-        Returns:
-            list: A list of cell ID names for the given group and recording.
-        """
-        # Create an empty list to store the cell ID names
-        cellid_names = []
-
-        # Get the cell ID names for the specified recording
-        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
-            cellid_names.append(cellid_name)
-
-        # Return the list of cell ID names
-        return cellid_names
-
     
 
     def get_pre_post_data(self, group_name=None, recording_name=None, cellid_name=None):
