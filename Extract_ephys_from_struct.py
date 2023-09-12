@@ -122,17 +122,20 @@ class ExtractEphysData:
             dict: A dictionary containing the summary information for the unit ID.
         """
         # Type checking
+         #check that the unit_id parameter is a string, raising a TypeError with a descriptive message if not.
         if not isinstance(unit_id, str):
             raise TypeError("unit_id must be a string") 
         
-        # Existence checking 
+        # Existence checking
+        # check unit_id exists in your data structure using the get_original_cellid method, raising a ValueError with a descriptive message if not.
         mapping = self.get_original_cellid(unit_id) 
-        if mapping is None:
+        if mapping is None: #
             raise ValueError(f"Unit ID '{unit_id}' does not exist in the data structure")
         
         group, recording, original_cell_id = mapping # unpacking the tuple
         
         # Check if the unit passed the dict keys check
+        # retrieve whether the unit passed the dict keys check from the dict_keys_check_results attribute
         passed_dict_keys_check = self.dict_keys_check_results.get(unit_id, False)
         
         # Create a summary dictionary
