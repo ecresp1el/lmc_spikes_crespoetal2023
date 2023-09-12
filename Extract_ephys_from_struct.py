@@ -61,10 +61,19 @@ class ExtractEphysData:
         Returns:
             list: A list of recording names for the given group name.
         """
+        # Type checking
+        if not isinstance(unit_id, str):
+            raise TypeError("unit_id must be a string")
+        
+        # Check if the group_name exists in the data structure
+        if group_name not in self.mat['all_data']:
+            raise ValueError(f"The group name '{group_name}' does not exist in the data structure.")
+        
         # implementation code here
         recording_names = []
         for recording in self.mat['all_data'][group_name]:
             recording_names.append(recording)
+        
         return recording_names 
 
     def get_cellid_names(self, group_name, recording_name):
