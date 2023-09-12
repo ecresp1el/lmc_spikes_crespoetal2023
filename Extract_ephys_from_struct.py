@@ -358,7 +358,7 @@ class ExtractEphysData:
         If no unit ID is provided, retrieves data for all unit IDs.
 
         Args:
-            unit_id (str, optional): The unique unit ID. Defaults to None to retrieve data for all unit IDs.
+            unit_id (str, optional): The unique unit ID. Defaults to None t
 
         Returns:
             dict: A dictionary with unit IDs as keys and data as values, or None if not found.
@@ -417,7 +417,7 @@ class ExtractEphysData:
         except Exception as e:
             print(f"An error occurred: {e}")
             return None
-
+    
     def get_unit_table(self):
         """
         Creates a DataFrame where each row corresponds to a unit, indexed by the unit IDs, 
@@ -434,19 +434,19 @@ class ExtractEphysData:
         
         # Specify the keys you are interested in (excluding 'Pre' and 'Post')
         keys_of_interest = [
-            'Amplitude', 'Cell_Type', 'ChemStimTime_note', 'ChemStimTime_s', 'ChemStimTime_samples', 
-            'FR_time_cutoff_after_stim_ms', 'FRs_baseline', 'FRs_baseline_vec', 'FRs_stim', 'FanoFactor_baseline', 
-            'FanoFactor_stim', 'FirstSpikeLatency', 'FirstSpikeLatency_Reliability', 'FirstSpikeLatency_pdf_x', 
-            'FirstSpikeLatency_pdf_y', 'FirstSpikeLatency_perTrial', 'Header', 'ISI_baseline_CV', 'ISI_baseline_vec', 
-            'ISI_pdf_peak_xy', 'ISI_pdf_x', 'ISI_pdf_y', 'ISI_violations_percent', 'IsSingleUnit', 
-            'MeanFR_baseline', 'MeanFR_inst_baseline', 'MeanFR_inst_stim', 'MeanFR_stim', 'MeanFR_total', 
-            'Mean_Waveform', 'ModulationIndex', 'Normalized_Template_Waveform', 'PSTHs_conv', 'PSTHs_raw', 
-            'Peak1ToTrough_ratio', 'Peak2ToTrough_ratio', 'PeakEvokedFR', 'PeakEvokedFR_Latency', 'PeakToPeak_ratio', 
-            'Recording_Duration', 'Sampling_Frequency', 'SpikeHalfWidth', 'SpikeTimes_all', 'SpikeTimes_baseline', 'SpikeTimes_stim', 
-            'SpikeTimes_trials', 'SpikeTrains_baseline', 'SpikeTrains_baseline_ms', 'SpikeTrains_for_PSTHs', 'SpikeTrains_stim', 
-            'SpikeTrains_stim_ms', 'SpikeTrains_trials', 'SpikeTrains_trials_ms', 'StimProb', 'StimResponsivity', 'Stim_Intensity', 
-            'Stim_Offsets_samples', 'Stim_Onsets_samples', 'Template_Channel', 'Template_Channel_Position', 'TroughToPeak_duration', 
-            'UnNormalized_Template_Waveform', 'peak1_normalized_amplitude'
+                'Amplitude', 'Cell_Type', 'ChemStimTime_note', 'ChemStimTime_s', 'ChemStimTime_samples', 
+                'FR_time_cutoff_after_stim_ms', 'FRs_baseline', 'FRs_baseline_vec', 'FRs_stim', 'FanoFactor_baseline', 
+                'FanoFactor_stim', 'FirstSpikeLatency', 'FirstSpikeLatency_Reliability', 'FirstSpikeLatency_pdf_x', 
+                'FirstSpikeLatency_pdf_y', 'FirstSpikeLatency_perTrial', 'Header', 'ISI_baseline_CV', 'ISI_baseline_vec', 
+                'ISI_pdf_peak_xy', 'ISI_pdf_x', 'ISI_pdf_y', 'ISI_violations_percent', 'IsSingleUnit', 
+                'MeanFR_baseline', 'MeanFR_inst_baseline', 'MeanFR_inst_stim', 'MeanFR_stim', 'MeanFR_total', 
+                'Mean_Waveform', 'ModulationIndex', 'Normalized_Template_Waveform', 'PSTHs_conv', 'PSTHs_raw', 
+                'Peak1ToTrough_ratio', 'Peak2ToTrough_ratio', 'PeakEvokedFR', 'PeakEvokedFR_Latency', 'PeakToPeak_ratio', 
+                'Recording_Duration', 'Sampling_Frequency', 'SpikeHalfWidth', 'SpikeTimes_all', 'SpikeTimes_baseline', 'SpikeTimes_stim', 
+                'SpikeTimes_trials', 'SpikeTrains_baseline', 'SpikeTrains_baseline_ms', 'SpikeTrains_for_PSTHs', 'SpikeTrains_stim', 
+                'SpikeTrains_stim_ms', 'SpikeTrains_trials', 'SpikeTrains_trials_ms', 'StimProb', 'StimResponsivity', 'Stim_Intensity', 
+                'Stim_Offsets_samples', 'Stim_Onsets_samples', 'Template_Channel', 'Template_Channel_Position', 'TroughToPeak_duration', 
+                'UnNormalized_Template_Waveform', 'peak1_normalized_amplitude'
         ]
         
         # Iterate over all unit IDs
@@ -462,6 +462,10 @@ class ExtractEphysData:
                 # Create a dictionary to hold the selected data for the current unit
                 selected_data = {key: unit_data.get(key, None) for key in keys_of_interest}
             
+                # Add group name and original cell ID to the selected data dictionary
+                selected_data['Group'] = group_name
+                selected_data['OriginalCellID'] = cellid_name
+            
                 # Append the selected data for the current unit to the list
                 data_list.append(selected_data)
             else:
@@ -470,8 +474,8 @@ class ExtractEphysData:
         # Create a DataFrame from the list of data, with the unit IDs as the index
         unit_data_df = pd.DataFrame(data_list, index=unit_ids)
         
-        
         return unit_data_df
+
 
 
 
