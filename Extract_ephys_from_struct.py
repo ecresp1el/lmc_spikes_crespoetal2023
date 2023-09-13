@@ -40,6 +40,8 @@ class ExtractEphysData:
         self.dict_keys_check_results = self.check_dict_keys()
         
         # The group_names attribute initialization has been moved to a separate method
+        
+    
 
     def get_group_names(self):
         """
@@ -475,6 +477,83 @@ class ExtractEphysData:
         unit_data_df = pd.DataFrame(data_list, index=unit_ids)
         
         return unit_data_df
+    
+    def construct_stimulus_table(self, recording_name):
+        # Get all unit IDs
+        all_unit_ids = self.get_all_unit_ids()
+
+        # Create a list to store unit IDs associated with the specified recording
+        unit_ids_for_recording = []
+
+        # Iterate through all unit IDs to find those associated with the specified recording
+        for unit_id in all_unit_ids:
+            # Get the unit summary for the current unit ID
+            unit_summary = self.get_unit_summary(unit_id)
+            
+            # Check if the unit is associated with the specified recording
+            if unit_summary['Recording'] == recording_name:
+                unit_ids_for_recording.append(unit_id)
+        
+        # The next steps will involve using the unit IDs associated with the specified recording 
+        # to retrieve pre and post epoch data and build the stimulus table
+ 
+        # Check if we have any unit IDs for the specified recording
+        if not unit_ids_for_recording: # if the list is empty
+            print(f"No unit IDs found for the recording: {recording_name}")
+            return
+
+        # Use the first unit ID to get the pre and post epoch data
+        unit_id = unit_ids_for_recording[0] # get the first unit ID in the list
+        
+        # Get the pre and post epoch data
+        pre_data = self.get_pre_data(unit_id) # get the pre epoch data for the current unit ID
+        post_data = self.get_post_data(unit_id) # get the post epoch data for the current unit ID
+
+        # The next steps will involve extracting stimulus details from the pre and post epoch data
+        # and creating a dataframe to build the stimulus table
+        
+        # Initialize lists to store stimulus details
+        trial_ids = []
+        onsets = []
+        offsets = []
+        intensities = []
+        epochs = []
+
+        # Extract stimulus details from pre epoch data
+        for i, (onset, offset, intensity) in enumerate(zip(pre_data['Stim_Onset_samples'], pre_data['Stim_Offset_samples'], pre_data['Stim_Intensity'])):
+            trial_ids.append(f"trial{i+1}")
+            onsets.append(onset)
+            offsets.append(offset)
+            intensities.append(intensity)
+            epochs.append('Pre')
+
+        # Extract stimulus details from post epoch data
+        for i, (onset, offset, intensity) in enumerate(zip(post_data['Stim_Onset_samples'], post_data['Stim_Offset_samples'], post_data['Stim_Intensity']), start=len(onsets)):
+            trial_ids.append(f"trial{i+1}")
+            onsets.append(onset)
+            offsets.append(offset)
+            intensities.append(intensity)
+            epochs.append('Post')
+
+        # Create a dataframe to store the stimulus details
+        stimulus_table = pd.DataFrame({
+            'Trial_ID': trial_ids,
+            'Stim_Onset_samples': onsets,
+            'Stim_Offset_samples': offsets,
+            'Stim_Intensity': intensities,
+            'Epoch': epochs,
+        })
+        
+        # Get the original cell IDs for the unit IDs associated with the recording
+        original_cell_ids = [self.get_unit_summary(unit_id)['Original Cell ID'] for unit_id in unit_ids_for_recording]
+
+        # Add columns to the stimulus table to store the unit IDs and original cell IDs
+        stimulus_table['Unit_IDs'] = [unit_ids_for_recording] * len(stimulus_table)
+        stimulus_table['Original_Cell_IDs'] = [original_cell_ids] * len(stimulus_table)
+
+        # The stimulus table is now complete and ready for return
+        return stimulus_table
+
 
 
 
