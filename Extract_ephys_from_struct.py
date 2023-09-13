@@ -579,6 +579,56 @@ class ExtractEphysData:
         
         # The stimulus table is now complete and ready for return
         return stimulus_table
+    
+    def get_spike_times(self, unit_id, trial_type=None, epoch=None):
+        """
+        Get the spike times for a specified unit, optionally filtered by trial type and epoch.
+
+        Parameters:
+        - unit_id (str): The ID of the unit whose spike times you want to analyze.
+        - trial_type (str, optional): The type of trial ('zero', 'low', 'mid', 'max') to filter by. Defaults to None, which includes all trial types.
+        - epoch (str, optional): The epoch ('Pre' or 'Post') to filter by. Defaults to None, which includes both epochs.
+
+        Returns:
+        - dict: A dictionary where keys are the trial IDs and values are arrays/lists of spike times (in seconds) for each trial.
+        """
+        
+        # Get the spike times and sampling frequency for the specified unit
+        unit_data = self.get_unit_level_data(unit_id)
+        spike_times_all = unit_data['SpikeTimes_all']
+        sampling_frequency = unit_data['Sampling_Frequency']
+        
+        # Convert spike times from samples to seconds
+        spike_times_all = spike_times_all / sampling_frequency
+        
+        # Get the stimulus table for the recording the unit belongs to
+        # (You would need a way to get the recording name from the unit ID)
+        recording_name = self.get_recording_name_from_unit_id(unit_id)
+        stimulus_table = self.construct_stimulus_table(recording_name)
+        
+        # Convert onset and offset times from samples to seconds
+        stimulus_table['Stim_Onset_samples'] = stimulus_table['Stim_Onset_samples'] / sampling_frequency
+        stimulus_table['Stim_Offset_samples'] = stimulus_table['Stim_Offset_samples'] / sampling_frequency
+        
+        # Filter the stimulus table based on the trial_type and epoch parameters
+        if trial_type:
+            stimulus_table = stimulus_table[stimulus_table['Stim_Intensity'] == trial_type]
+        if epoch:
+            stimulus_table = stimulus_table[stimulus_table['Epoch'] == epoch]
+        
+        # Create a dictionary to store the spike times for each trial
+        trial_spike_times = {}
+        
+        # Loop through each trial and extract the relevant spike times
+        for trial_id, trial_data in stimulus_table.iterrows():
+            onset = trial_data['Stim_Onset_samples']
+            offset = trial_data['Stim_Offset_samples']
+            
+            # Get the spike times that fall within the onset and offset times of the trial
+            trial_spike_times[trial_id] = spike_times_all[(spike_times_all >= onset) & (spike_times_all <= offset)]
+        
+        return trial_spike_times
+
 
 class ResponseDistributionPlotter:
     def __init__(self, data):
