@@ -508,6 +508,8 @@ class ExtractEphysData:
         # Get the pre and post epoch data
         pre_data = self.get_pre_data(unit_id) # get the pre epoch data for the current unit ID
         post_data = self.get_post_data(unit_id) # get the post epoch data for the current unit ID
+        
+        
 
 
 
@@ -525,7 +527,7 @@ class ExtractEphysData:
         pre_stim_data = pre_data[unit_id]
         post_stim_data = post_data[unit_id]
 
-        for i, (onset, offset, intensity) in enumerate(zip(pre_stim_data['Stim_Onset_samples'], pre_stim_data['Stim_Offset_samples'], pre_stim_data['Stim_Intensity'])):
+        for i, (onset, offset, intensity) in enumerate(zip(pre_stim_data['Stim_Onsets_samples'], pre_stim_data['Stim_Offsets_samples'], pre_stim_data['Stim_Intensity'])):
             trial_ids.append(f"trial{i+1}")
             onsets.append(onset)
             offsets.append(offset)
@@ -533,7 +535,7 @@ class ExtractEphysData:
             epochs.append('Pre')
 
         # Extract stimulus details from post epoch data
-        for i, (onset, offset, intensity) in enumerate(zip(post_stim_data['Stim_Onset_samples'], post_stim_data['Stim_Offset_samples'], post_stim_data['Stim_Intensity']), start=len(onsets)):
+        for i, (onset, offset, intensity) in enumerate(zip(post_stim_data['Stim_Onsets_samples'], post_stim_data['Stim_Offsets_samples'], post_stim_data['Stim_Intensity']), start=len(onsets)):
             trial_ids.append(f"trial{i+1}")
             onsets.append(onset)
             offsets.append(offset)
