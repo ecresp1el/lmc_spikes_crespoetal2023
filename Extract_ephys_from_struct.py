@@ -544,12 +544,22 @@ class ExtractEphysData:
 
         # Create a dataframe to store the stimulus details
         stimulus_table = pd.DataFrame({
-            'Trial_ID': trial_ids,
             'Stim_Onset_samples': onsets,
             'Stim_Offset_samples': offsets,
             'Stim_Intensity': intensities,
             'Epoch': epochs,
         })
+
+        # Set the 'Trial_ID' column as the index
+        stimulus_table.index = trial_ids
+        stimulus_table.index.name = 'Trial_ID'
+
+        # Convert 'Stim_Onset_samples' and 'Stim_Offset_samples' to integers
+        stimulus_table['Stim_Onset_samples'] = stimulus_table['Stim_Onset_samples'].astype(int)
+        stimulus_table['Stim_Offset_samples'] = stimulus_table['Stim_Offset_samples'].astype(int)
+
+        # Convert 'Stim_Intensity' to integers (if they are not already)
+        stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].astype(int)
         
         # Get the original cell IDs for the unit IDs associated with the recording
         original_cell_ids = [self.get_unit_summary(unit_id)['Original Cell ID'] for unit_id in unit_ids_for_recording]
@@ -558,6 +568,7 @@ class ExtractEphysData:
         stimulus_table['Unit_IDs'] = [unit_ids_for_recording] * len(stimulus_table)
         stimulus_table['Original_Cell_IDs'] = [original_cell_ids] * len(stimulus_table)
 
+        
         # The stimulus table is now complete and ready for return
         return stimulus_table
 
