@@ -509,6 +509,7 @@ class ExtractEphysData:
         pre_data = self.get_pre_data(unit_id) # get the pre epoch data for the current unit ID
         post_data = self.get_post_data(unit_id) # get the post epoch data for the current unit ID
 
+
         # The next steps will involve extracting stimulus details from the pre and post epoch data
         # and creating a dataframe to build the stimulus table
         
@@ -520,7 +521,7 @@ class ExtractEphysData:
         epochs = []
 
         # Extract stimulus details from pre epoch data
-        for i, (onset, offset, intensity) in enumerate(zip(pre_data['Stim_Onset_samples'], pre_data['Stim_Offset_samples'], pre_data['Stim_Intensity'])):
+        for i, (onset, offset, intensity) in enumerate(zip(pre_data[unit_id]['Stim_Onset_samples'], pre_data[unit_id]['Stim_Offset_samples'], pre_data[unit_id]['Stim_Intensity'])):
             trial_ids.append(f"trial{i+1}")
             onsets.append(onset)
             offsets.append(offset)
@@ -528,7 +529,7 @@ class ExtractEphysData:
             epochs.append('Pre')
 
         # Extract stimulus details from post epoch data
-        for i, (onset, offset, intensity) in enumerate(zip(post_data['Stim_Onset_samples'], post_data['Stim_Offset_samples'], post_data['Stim_Intensity']), start=len(onsets)):
+        for i, (onset, offset, intensity) in enumerate(zip(post_data[unit_id]['Stim_Onset_samples'], post_data[unit_id]['Stim_Offset_samples'], post_data[unit_id]['Stim_Intensity']), start=len(onsets)):
             trial_ids.append(f"trial{i+1}")
             onsets.append(onset)
             offsets.append(offset)
@@ -553,10 +554,6 @@ class ExtractEphysData:
 
         # The stimulus table is now complete and ready for return
         return stimulus_table
-
-
-
-
 
 class ResponseDistributionPlotter:
     def __init__(self, data):
