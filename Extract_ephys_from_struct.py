@@ -561,6 +561,14 @@ class ExtractEphysData:
         # Convert 'Stim_Intensity' to integers (if they are not already)
         stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].astype(int)
         
+        # Map the Stim_Intensity values to descriptive labels
+        stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].replace({
+            1: 'zero',
+            2: 'low',
+            3: 'mid',
+            4: 'max'
+        })      
+        
         # Get the original cell IDs for the unit IDs associated with the recording
         original_cell_ids = [self.get_unit_summary(unit_id)['Original Cell ID'] for unit_id in unit_ids_for_recording]
 
