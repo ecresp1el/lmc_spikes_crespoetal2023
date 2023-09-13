@@ -495,109 +495,96 @@ class ExtractEphysData:
             
         # Loop over the recording names and construct the stimulus table for each
         for recording_name in recording_names:
-            # ... existing code to construct a stimulus table ...
-            self.stimulus_tables[recording_name] = stimulus_table
-        
-        # Get all unit IDs
-        all_unit_ids = self.get_all_unit_ids()
-
-        # Create a list to store unit IDs associated with the specified recording
-        unit_ids_for_recording = []
-
-        # Iterate through all unit IDs to find those associated with the specified recording
-        for unit_id in all_unit_ids:
-            # Get the unit summary for the current unit ID
-            unit_summary = self.get_unit_summary(unit_id)
             
-            # Check if the unit is associated with the specified recording
-            if unit_summary['Recording'] == recording_name:
-                unit_ids_for_recording.append(unit_id)
-        
-        # The next steps will involve using the unit IDs associated with the specified recording 
-        # to retrieve pre and post epoch data and build the stimulus table
- 
-        # Check if we have any unit IDs for the specified recording
-        if not unit_ids_for_recording: # if the list is empty
-            print(f"No unit IDs found for the recording: {recording_name}")
-            return
+            # Get all unit IDs
+            all_unit_ids = self.get_all_unit_ids()
 
-        # Use the first unit ID to get the pre and post epoch data
-        unit_id = unit_ids_for_recording[0] # get the first unit ID in the list
-        
-        # Get the pre and post epoch data
-        pre_data = self.get_pre_data(unit_id) # get the pre epoch data for the current unit ID
-        post_data = self.get_post_data(unit_id) # get the post epoch data for the current unit ID
-        
-        
+            # Create a list to store unit IDs associated with the specified recording
+            unit_ids_for_recording = []
 
+            # Iterate through all unit IDs to find those associated with the specified recording
+            for unit_id in all_unit_ids:
+                # Get the unit summary for the current unit ID
+                unit_summary = self.get_unit_summary(unit_id)
+                
+                # Check if the unit is associated with the specified recording
+                if unit_summary['Recording'] == recording_name:
+                    unit_ids_for_recording.append(unit_id)
+            
+            # Check if we have any unit IDs for the specified recording
+            if not unit_ids_for_recording: # if the list is empty
+                print(f"No unit IDs found for the recording: {recording_name}")
+                continue
 
+            # Use the first unit ID to get the pre and post epoch data
+            unit_id = unit_ids_for_recording[0] # get the first unit ID in the list
+            
+            # Get the pre and post epoch data
+            pre_data = self.get_pre_data(unit_id) # get the pre epoch data for the current unit ID
+            post_data = self.get_post_data(unit_id) # get the post epoch data for the current unit ID
+            
+            # Initialize lists to store stimulus details
+            trial_ids = []
+            onsets = []
+            offsets = []
+            intensities = []
+            epochs = []   
+            
+            # Extract stimulus details from pre epoch data
+            pre_stim_data = pre_data[unit_id]
+            post_stim_data = post_data[unit_id]
 
-        # The next steps will involve extracting stimulus details from the pre and post epoch data
-        # and creating a dataframe to build the stimulus table
-        
-        # Initialize lists to store stimulus details
-        trial_ids = []
-        onsets = []
-        offsets = []
-        intensities = []
-        epochs = []   
-        
-        # Extract stimulus details from pre epoch data
-        pre_stim_data = pre_data[unit_id]
-        post_stim_data = post_data[unit_id]
+            for i, (onset, offset, intensity) in enumerate(zip(pre_stim_data['Stim_Onsets_samples'], pre_stim_data['Stim_Offsets_samples'], pre_stim_data['Stim_Intensity'])):
+                trial_ids.append(f"trial{i+1}")
+                onsets.append(onset)
+                offsets.append(offset)
+                intensities.append(intensity)
+                epochs.append('Pre')
 
-        for i, (onset, offset, intensity) in enumerate(zip(pre_stim_data['Stim_Onsets_samples'], pre_stim_data['Stim_Offsets_samples'], pre_stim_data['Stim_Intensity'])):
-            trial_ids.append(f"trial{i+1}")
-            onsets.append(onset)
-            offsets.append(offset)
-            intensities.append(intensity)
-            epochs.append('Pre')
+            # Extract stimulus details from post epoch data
+            for i, (onset, offset, intensity) in enumerate(zip(post_stim_data['Stim_Onsets_samples'], post_stim_data['Stim_Offsets_samples'], post_stim_data['Stim_Intensity']), start=len(onsets)):
+                trial_ids.append(f"trial{i+1}")
+                onsets.append(onset)
+                offsets.append(offset)
+                intensities.append(intensity)
+                epochs.append('Post')
 
-        # Extract stimulus details from post epoch data
-        for i, (onset, offset, intensity) in enumerate(zip(post_stim_data['Stim_Onsets_samples'], post_stim_data['Stim_Offsets_samples'], post_stim_data['Stim_Intensity']), start=len(onsets)):
-            trial_ids.append(f"trial{i+1}")
-            onsets.append(onset)
-            offsets.append(offset)
-            intensities.append(intensity)
-            epochs.append('Post')
+            # Create a dataframe to store the stimulus details
+            stimulus_table = pd.DataFrame({
+                'Stim_Onset_samples': onsets,
+                'Stim_Offset_samples': offsets,
+                'Stim_Intensity': intensities,
+                'Epoch': epochs,
+            })
+            
+            # Set the 'Trial_ID' column as the index
+            stimulus_table.index = trial_ids
+            stimulus_table.index.name = 'Trial_ID'
 
-        # Create a dataframe to store the stimulus details
-        stimulus_table = pd.DataFrame({
-            'Stim_Onset_samples': onsets,
-            'Stim_Offset_samples': offsets,
-            'Stim_Intensity': intensities,
-            'Epoch': epochs,
-        })
+            # Convert 'Stim_Onset_samples' and 'Stim_Offset_samples' to integers
+            stimulus_table['Stim_Onset_samples'] = stimulus_table['Stim_Onset_samples'].astype(int)
+            stimulus_table['Stim_Offset_samples'] = stimulus_table['Stim_Offset_samples'].astype(int)
 
-        # Set the 'Trial_ID' column as the index
-        stimulus_table.index = trial_ids
-        stimulus_table.index.name = 'Trial_ID'
+            # Convert 'Stim_Intensity' to integers (if they are not already)
+            stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].astype(int)
+            
+            # Map the Stim_Intensity values to descriptive labels
+            stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].replace({
+                1: 'zero',
+                2: 'low',
+                3: 'mid',
+                4: 'max'
+            })      
+            
+            # Get the original cell IDs for the unit IDs associated with the recording
+            original_cell_ids = [self.get_unit_summary(unit_id)['Original Cell ID'] for unit_id in unit_ids_for_recording]
 
-        # Convert 'Stim_Onset_samples' and 'Stim_Offset_samples' to integers
-        stimulus_table['Stim_Onset_samples'] = stimulus_table['Stim_Onset_samples'].astype(int)
-        stimulus_table['Stim_Offset_samples'] = stimulus_table['Stim_Offset_samples'].astype(int)
+            # Add columns to the stimulus table to store the unit IDs and original cell IDs
+            stimulus_table['Unit_IDs'] = [unit_ids_for_recording] * len(stimulus_table)
+            stimulus_table['Original_Cell_IDs'] = [original_cell_ids] * len(stimulus_table)
 
-        # Convert 'Stim_Intensity' to integers (if they are not already)
-        stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].astype(int)
-        
-        # Map the Stim_Intensity values to descriptive labels
-        stimulus_table['Stim_Intensity'] = stimulus_table['Stim_Intensity'].replace({
-            1: 'zero',
-            2: 'low',
-            3: 'mid',
-            4: 'max'
-        })      
-        
-        # Get the original cell IDs for the unit IDs associated with the recording
-        original_cell_ids = [self.get_unit_summary(unit_id)['Original Cell ID'] for unit_id in unit_ids_for_recording]
-
-        # Add columns to the stimulus table to store the unit IDs and original cell IDs
-        stimulus_table['Unit_IDs'] = [unit_ids_for_recording] * len(stimulus_table)
-        stimulus_table['Original_Cell_IDs'] = [original_cell_ids] * len(stimulus_table)
-
-        
-        # The stimulus table is now complete and ready for return
-        return stimulus_table
+            # Add the completed stimulus table to the stimulus_tables dictionary
+            self.stimulus_tables[recording_name] = stimulus_table
     
     def get_recording_name_from_unit_id(self, unit_id):
         """
