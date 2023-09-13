@@ -580,6 +580,27 @@ class ExtractEphysData:
         # The stimulus table is now complete and ready for return
         return stimulus_table
     
+    def get_recording_name_from_unit_id(self, unit_id):
+        """
+        Get the recording name associated with a given unit ID.
+
+        Parameters:
+        - unit_id (str): The ID of the unit.
+
+        Returns:
+        - str: The name of the recording the unit belongs to.
+        """
+        
+        # Get the unit summary for the specified unit ID
+        unit_summary = self.get_unit_summary(unit_id)
+        
+        # Get and return the recording name from the unit summary
+        # (You would need to know the exact key where the recording name is stored in the unit summary dictionary)
+        recording_name = unit_summary['Recording']
+        
+        return recording_name
+  
+    
     def get_spike_times(self, unit_id, trial_type=None, epoch=None):
         """
         Get the spike times for a specified unit, optionally filtered by trial type and epoch.
@@ -594,7 +615,10 @@ class ExtractEphysData:
         """
         
         # Get the spike times and sampling frequency for the specified unit
-        unit_data = self.get_unit_level_data(unit_id)
+        unit_data_dict = self.get_unit_level_data(unit_id)
+        unit_data = unit_data_dict[unit_id]
+        
+        
         spike_times_all = unit_data['SpikeTimes_all']
         sampling_frequency = unit_data['Sampling_Frequency']
         
