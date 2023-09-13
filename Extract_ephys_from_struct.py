@@ -38,7 +38,7 @@ class ExtractEphysData:
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
         # which you can reference at any point in your analysis to know which unit IDs passed the check.
         self.dict_keys_check_results = self.check_dict_keys()
-        
+        self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
         self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
 
         
