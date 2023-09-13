@@ -39,6 +39,9 @@ class ExtractEphysData:
         # which you can reference at any point in your analysis to know which unit IDs passed the check.
         self.dict_keys_check_results = self.check_dict_keys()
         
+        self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
+
+        
         # The group_names attribute initialization has been moved to a separate method
         
     
@@ -478,7 +481,23 @@ class ExtractEphysData:
         
         return unit_data_df
     
-    def construct_stimulus_table(self, recording_name):
+    def construct_stimulus_table(self, recording_names=None):
+
+        # If no recording names are provided, get all recording names
+        if recording_names is None:
+            group_names = self.get_group_names()
+            recording_names = [self.get_recording_names(group_name) for group_name in group_names]
+            recording_names = [item for sublist in recording_names for item in sublist]  # Flatten the list
+        
+        # Allow for a single recording name to be passed as a string
+        if isinstance(recording_names, str):
+            recording_names = [recording_names]
+            
+        # Loop over the recording names and construct the stimulus table for each
+        for recording_name in recording_names:
+            # ... existing code to construct a stimulus table ...
+            self.stimulus_tables[recording_name] = stimulus_table
+        
         # Get all unit IDs
         all_unit_ids = self.get_all_unit_ids()
 
