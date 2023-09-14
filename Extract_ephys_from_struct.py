@@ -36,7 +36,7 @@ class ExtractEphysData:
         # Initialize the new attributes based on the nested dictionary structure
         self.all_data = mat['all_data']
         self.group_names = list(self.all_data.keys())
-        self.recording_names = {group: list(recordings.keys()) for group, recordings in self.all_data.items()}
+        self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()}
 
         # Perform the dict keys check early on and store the results as an attribute 
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
@@ -80,11 +80,26 @@ class ExtractEphysData:
         Returns:
             list: A list of unique unit IDs for the given group and recording.
         """
+        # Check if the provided group_name is valid
+        if group_name not in self.group_names:
+            raise ValueError(f"Invalid group name: {group_name}. Valid options are: {self.group_names}")
+
+        # Check if the provided recording_name is valid
+        if recording_name not in self.recording_names[group_name]:
+            raise ValueError(f"Invalid recording name: {recording_name}. Valid options are: {self.recording_names[group_name]}")
+
         unit_ids = []
-        for cellid_name in self.mat['all_data'][group_name][recording_name].keys():
+        for cellid_name in self.all_data[group_name][recording_name].keys():
             # Creating a unique unit ID using group name, recording name, and cell ID
             unique_unit_id = hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest()
             unit_ids.append(unique_unit_id)
+
+            # Populate the unit_id_map attribute
+            self.unit_id_map[unique_unit_id] = {
+                "group_name": group_name,
+                "recording_name": recording_name,
+                "cellid_name": cellid_name
+            }
         return unit_ids
     
     def load_matfiles_printdata(self):
