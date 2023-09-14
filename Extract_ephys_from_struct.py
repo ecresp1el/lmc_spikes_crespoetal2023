@@ -413,7 +413,61 @@ class ExtractEphysData:
             xarrays[unit_id] = xarray # Store the xarray in the dictionary with the unit ID as the key
         
         return xarrays            
-                
+
+    def get_psths(self, unit_ids=None):
+        """
+        Retrieve PSTH data for specified units or all units in the data.
+
+        This method iterates through the specified unit IDs (if provided) or all unit IDs, 
+        extracts the 'Pre' and 'Post' PSTH data for each unit, and combines them into a dictionary 
+        where keys are unit IDs (str), and values are dictionaries containing the 'Pre' and 'Post' PSTH data. 
+        If a unit has no PSTH data or is not found in the data, it will not be included in the result.
+
+        Args:
+            unit_ids (list or None): A list of specific unit IDs to retrieve PSTH data for. If None, PSTH data
+                for all units will be retrieved. Default is None.
+
+        Returns:
+            dict: A dictionary where keys are unit IDs (str), and values are dictionaries containing 'Pre' and 'Post' 
+            PSTH data. Each 'Pre' and 'Post' dictionary contains keys 'PSTH_raw' whose values are the corresponding data.
+
+        Examples:
+        >>> eed = ExtractEphysData('path/to/matfile.mat')
+        >>> psth_data = eed.get_psths(unit_ids=['unit_id1', 'unit_id2'])
+        >>> print(psth_data)
+        {'unit_id1': {'Pre': {'PSTH_raw': [...]}, 'Post': {'PSTH_raw': [...]}},
+        'unit_id2': {'Pre': {'PSTH_raw': [...]}, 'Post': {'PSTH_raw': [...]}}}
+
+        Notes:
+        - This method relies on the 'Pre' and 'Post' PSTH data being present in the unit data dictionary.
+        - The result may contain fewer entries if some units lack PSTH data or do not exist in the data.
+        """
+        psth_data = {}  # initialize an empty dictionary to store the PSTH data
+
+        # Determine the list of unit IDs to process based on the input or all unit IDs
+        if unit_ids is None:
+            unit_ids_to_process = list(self.unit_id_map.keys())
+        else:
+            unit_ids_to_process = unit_ids
+
+        for unit_id in unit_ids_to_process:  # iterate over the specified or all unit IDs
+            unit_data = self.get_unit_data(unit_id)  # retrieve the unit data for the current unit ID with the get_unit_data method
+            if unit_data:  # check if the unit data is not None
+                pre_psths = unit_data.get('Pre', {}).get('PSTHs_raw')  # retrieve the 'Pre' PSTH data
+                post_psths = unit_data.get('Post', {}).get('PSTHs_raw')  # retrieve the 'Post' PSTH data
+
+                # Create a dictionary to store the 'Pre' and 'Post' PSTH data
+                unit_psth_data = {}
+                if pre_psths is not None:
+                    unit_psth_data['Pre'] = {'PSTH_raw': pre_psths}
+                if post_psths is not None:
+                    unit_psth_data['Post'] = {'PSTH_raw': post_psths}
+
+                # Add the unit ID and combined 'Pre' and 'Post' PSTH data to the psth_data dictionary
+                psth_data[unit_id] = unit_psth_data
+
+        return psth_data
+
             
 
 
