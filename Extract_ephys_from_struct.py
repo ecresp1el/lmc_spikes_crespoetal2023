@@ -229,6 +229,56 @@ class ExtractEphysData:
                     average_amplitudes[unit_id] = amplitude
 
         return average_amplitudes
+    
+    def get_stimulation_intensities(self, unique_unit_id, custom_func=None):
+        """
+        Retrieves stimulation intensities and spike trains for a unit's 'Pre' and 'Post' epochs.
+
+        Args:
+            unique_unit_id (str): The unique identifier for a unit.
+            custom_func (callable, optional): A custom function to modify the format of stim_data. 
+                If not provided, the default behavior is used.
+
+        Returns:
+            dict: A dictionary with keys 'Pre' and 'Post', each containing 'Intensity' and 'SpikeTrain' keys
+                associated with the 'Pre' and 'Post' epochs.
+        """
+        stim_data = {}
+
+        unit_data = self.get_unit_data(unique_unit_id)
+        if unit_data:
+            pre_intensity = unit_data.get('Pre', {}).get('Stim_Intensity')
+            post_intensity = unit_data.get('Post', {}).get('Stim_Intensity')
+            pre_spike_trains = unit_data.get('Pre', {}).get('SpikeTrains_trials')
+            post_spike_trains = unit_data.get('Post', {}).get('SpikeTrains_trials')
+
+            if custom_func:
+                stim_data = custom_func(pre_intensity, post_intensity, pre_spike_trains, post_spike_trains)
+            else:
+                stim_data['Pre'] = {'Intensity': pre_intensity, 'SpikeTrain': pre_spike_trains}
+                stim_data['Post'] = {'Intensity': post_intensity, 'SpikeTrain': post_spike_trains}
+
+        return stim_data 
+    
+    @staticmethod
+    def convert_stim_intensity_dict2_simplerdict(pre_intensity, post_intensity, pre_spike_trains, post_spike_trains):
+        """
+        Convert the stim_intensity dictionary to a simpler format.
+
+        Args:
+            pre_intensity (list or np.ndarray): Intensity values for the 'Pre' epoch.
+            post_intensity (list or np.ndarray): Intensity values for the 'Post' epoch.
+            pre_spike_trains (list or np.ndarray): Spike trains for the 'Pre' epoch.
+            post_spike_trains (list or np.ndarray): Spike trains for the 'Post' epoch.
+
+        Returns:
+            dict: A dictionary with keys 'Intensity' and 'SpikeTrain', each containing pre and post values combined.
+        """
+        stim_data_modified = {
+            'Intensity': np.concatenate((pre_intensity, post_intensity)),
+            'SpikeTrain': np.concatenate((pre_spike_trains, post_spike_trains))
+        }
+        return stim_data_modified
 
 
 
