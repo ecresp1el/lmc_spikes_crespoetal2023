@@ -163,8 +163,9 @@ class ExtractEphysData:
             results[unit_id] = func(unit_id, unit_data)
         return results
 
-
-
+    @staticmethod
+    def get_amplitude(unit_data):
+        return unit_data.get('Amplitude')
 
 
 
