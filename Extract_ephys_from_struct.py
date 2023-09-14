@@ -36,7 +36,7 @@ class ExtractEphysData:
         # Initialize the new attributes based on the nested dictionary structure
         self.all_data = mat['all_data']
         self.group_names = list(self.all_data.keys())
-        self.recordings = {group_name: list(rec_data.keys()) for group_name, rec_data in self.all_data.items()}
+        self.recording_names = {group: list(recordings.keys()) for group, recordings in self.all_data.items()}
 
         # Perform the dict keys check early on and store the results as an attribute 
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
