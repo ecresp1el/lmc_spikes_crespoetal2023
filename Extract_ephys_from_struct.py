@@ -5,36 +5,29 @@ import hashlib
 import pandas as pd
 
 class ExtractEphysData:
-    """_summary_
-    Create a class that will allow me to extract the ephys data from the matfiles 
+    """
+    A class to facilitate the extraction of electrophysiological data from .mat files.
+
     Args:
-        matfile_directory (str): the directory of the matfile
-        
+        matfile_directory (str): The directory where the .mat file is located.
+
     Attributes:
-        mat (matfile): the matfile
-        # group_names attribute has been removed
-        
-    Returns:
-        _type_: _description_
-        #TODO: add the return types and descriptions for each function
+        mat (dict): The loaded .mat file represented as a dictionary.
+        all_data (dict): A dictionary containing all data from the .mat file.
+        group_names (list of str): A list of group names extracted from the all_data attribute.
+        recordings (dict): A dictionary mapping group names to lists of recording names.
+        unit_id_map (dict): A dictionary to store unit ID mappings (initialized as empty).
     """
     
     def __init__(self, matfile_directory):
         """
-        This is the initializer method that takes a directory path to a .mat file as its parameter. 
-        It uses the mat73.loadmat function to load the .mat file and stores it in the self.mat attribute.
-        
+        Initializes the ExtractEphysData class by loading a .mat file using the mat73 library.
+
         Args:
             matfile_directory (str): The directory path to the .mat file.
         """
-        # use mat73.loadmat to load mat files
         mat = mat73.loadmat(matfile_directory, use_attrdict=True)
-        
-        # store the matfile
-        self.mat = mat 
-
-        # Initialize the new attributes based on the nested dictionary structure
-        self.all_data = mat['all_data']
+        self.all_data = mat['all_data'] 
         self.group_names = list(self.all_data.keys()) # get the group names from the all_data attribute and store them in the group_names attribute
         self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()} # get the recording names for each group and store them in the recordings attribute
         self.unit_id_map = {}  # Initialize the unit_id_map attribute
@@ -49,7 +42,7 @@ class ExtractEphysData:
 
     def get_group_names(self):
         """
-        This method returns a list of all group names available in the data.
+        Retrieves all group names available in the data.
         
         Returns:
             list: A list of group names.
@@ -58,15 +51,18 @@ class ExtractEphysData:
 
     def get_recording_names(self, group_name):
         """
-        This method takes a group name as its parameter and returns a list of all recording names available for that group.
+        Retrieves all recording names available for a specified group.
         
         Args:
             group_name (str): The name of the group to get the recording names for.
         
         Returns:
-            list: A list of recording names.
+            list of str: A list containing all recording names for the specified group. 
+                         Returns an empty list if the group name is not found.
         """
-        return self.recordings.get(group_name, [])
+        # get method is a dictionary method that returns the value for a given key if the key is present in the dictionary. 
+        # If the key is not present, the method returns a default value instead of raising a KeyError exception.
+        return self.recordings.get(group_name, []) 
 
 
     def get_cellid_names(self):
