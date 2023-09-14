@@ -42,6 +42,7 @@ class ExtractEphysData:
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
         # which you can reference at any point in your analysis to know which unit IDs passed the check.
         self.dict_keys_check_results = self.check_dict_keys()
+        self.unit_id_map = {}  # Initialize the unit_id_map attribute
         self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
         self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
 
@@ -85,8 +86,8 @@ class ExtractEphysData:
             raise ValueError(f"Invalid group name: {group_name}. Valid options are: {self.group_names}")
 
         # Check if the provided recording_name is valid
-        if recording_name not in self.recording_names[group_name]:
-            raise ValueError(f"Invalid recording name: {recording_name}. Valid options are: {self.recording_names[group_name]}")
+        if recording_name not in self.recordings[group_name]:
+            raise ValueError(f"Invalid recording name: {recording_name}. Valid options are: {self.recordings[group_name]}")
 
         unit_ids = []
         for cellid_name in self.all_data[group_name][recording_name].keys():
@@ -101,6 +102,7 @@ class ExtractEphysData:
                 "cellid_name": cellid_name
             }
         return unit_ids
+
     
     def load_matfiles_printdata(self):
         """
