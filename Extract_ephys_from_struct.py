@@ -625,9 +625,14 @@ class ExtractEphysData:
         
         spike_times_all = unit_data['SpikeTimes_all']
         sampling_frequency = unit_data['Sampling_Frequency']
+        # Print the value of sampling_frequency to verify it
+        print(f"Sampling frequency: {sampling_frequency}")
         
         # Convert spike times from samples to seconds
         spike_times_all = spike_times_all / sampling_frequency
+        
+        # Print the entire spike_times_all array to verify the spike times
+        print(spike_times_all)
         
         # Get the stimulus table for the recording the unit belongs to
         recording_name = self.get_recording_name_from_unit_id(unit_id)
@@ -639,10 +644,12 @@ class ExtractEphysData:
             # If not available, construct the stimulus table and store it in the stimulus_tables attribute
             stimulus_table = self.construct_stimulus_table(recording_name)
             self.stimulus_tables[recording_name] = stimulus_table
-
-        # Convert onset and offset times from samples to seconds
-        stimulus_table['Stim_Onset_samples'] = stimulus_table['Stim_Onset_samples'] / sampling_frequency
-        stimulus_table['Stim_Offset_samples'] = stimulus_table['Stim_Offset_samples'] / sampling_frequency
+            # Check if the conversion from samples to seconds has already been done to prevent multiple conversions
+        
+        if not hasattr(self, 'conversion_done'):
+            stimulus_table['Stim_Onset_samples'] = stimulus_table['Stim_Onset_samples'] / sampling_frequency
+            stimulus_table['Stim_Offset_samples'] = stimulus_table['Stim_Offset_samples'] / sampling_frequency
+            self.conversion_done = True
         
         # Filter the stimulus table based on the trial_type and epoch parameters
         if trial_type:
@@ -657,6 +664,10 @@ class ExtractEphysData:
         for trial_id, trial_data in stimulus_table.iterrows():
             onset = trial_data['Stim_Onset_samples']
             offset = trial_data['Stim_Offset_samples']
+            
+            # Print onset and offset times for each trial
+            print(f"Onset time for {trial_id}: {onset}")
+            print(f"Offset time for {trial_id}: {offset}")
             
             # Get the spike times that fall within the onset and offset times of the trial
             trial_spike_times[trial_id] = spike_times_all[(spike_times_all >= onset) & (spike_times_all <= offset)]
