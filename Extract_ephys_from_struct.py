@@ -320,11 +320,11 @@ class ExtractEphysData:
 
     def create_trial_intensity_dataframe(self, reorganized_data):
         """
-        Create a DataFrame with trial IDs and mapped intensity labels for each unit's data.
+        Create DataFrames with trial IDs and mapped intensity labels for each unit's data.
 
         This method takes a dictionary containing reorganized stimulation data for multiple units and
-        constructs a DataFrame with trial IDs and corresponding intensity labels. The trial IDs are
-        generated as 'Trial_1', 'Trial_2', ..., 'Trial_N', where N is the number of trials for all units.
+        constructs DataFrames with trial IDs and corresponding intensity labels for each unit. The trial IDs are
+        generated as 'Trial_1', 'Trial_2', ..., 'Trial_N', where N is the number of trials for each unit.
 
         The intensity labels are mapped as follows:
             - 1 corresponds to 'Zero'
@@ -332,7 +332,7 @@ class ExtractEphysData:
             - 3 corresponds to 'Mid'
             - 4 corresponds to 'Max'
 
-        The resulting DataFrame is stored as an attribute with the unit ID as the key in the
+        The resulting DataFrames are stored as attributes with the unit ID as the key in the
         'trial_intensity_dataframes' dictionary.
 
         Args:
@@ -350,26 +350,34 @@ class ExtractEphysData:
         >>> eed.create_trial_intensity_dataframe(reorganized_data)
         >>> print(eed.trial_intensity_dataframes)
         {'unit_id1': DataFrame with Trial_ID and Intensity columns,
-        'unit_id2': DataFrame with Trial_ID and Intensity columns}
+         'unit_id2': DataFrame with Trial_ID and Intensity columns}
 
         Notes:
-        - The method appends trial IDs and intensity labels for all units into a single DataFrame for each unit.
-        - The resulting DataFrames are stored as attributes with unit IDs as keys in the 'trial_intensity_dataframes' dictionary.
+        - The method creates a separate DataFrame for each unique unit ID and stores them as attributes
+          with the unit ID as the key in the 'trial_intensity_dataframes' dictionary.
         """
-        
-        trial_ids = []
-        intensities = []
 
         for unit_id, unit_data in reorganized_data.items():
-            intensity_values = unit_data['Intensity']
-            intensity_labels = {1: 'Zero', 2: 'Low', 3: 'Mid', 4: 'Max'}
-            trial_ids.extend([f'Trial_{i}' for i in range(1, len(intensity_values) + 1)])
-            intensities.extend([intensity_labels[i] for i in intensity_values])
+            # Extract Intensity data from the unit's data
+            intensity_data = unit_data['Intensity']
 
-        df = pd.DataFrame({'Trial_ID': trial_ids, 'Intensity': intensities})
+            # Create trial IDs based on the length of Intensity data
+            trial_ids = [f'Trial_{i + 1}' for i in range(len(intensity_data))]
 
-        # Save the DataFrame as an attribute with the unit_id as the key
-        self.trial_intensity_dataframes[unit_id] = df
+            # Map Intensity values to labels
+            intensity_labels = {
+                1: 'Zero',
+                2: 'Low',
+                3: 'Mid',
+                4: 'Max'
+            }
+            intensity_data_labels = [intensity_labels[i] for i in intensity_data]
+
+            # Create a DataFrame
+            df = pd.DataFrame({'Trial_ID': trial_ids, 'Intensity': intensity_data_labels})
+
+            # Store the DataFrame in the dictionary with the unit ID as the key
+            self.trial_intensity_dataframes[unit_id] = df
 
 
 
