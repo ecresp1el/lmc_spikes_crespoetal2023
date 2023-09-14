@@ -37,12 +37,12 @@ class ExtractEphysData:
         self.all_data = mat['all_data']
         self.group_names = list(self.all_data.keys())
         self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()}
+        self.unit_id_map = {}  # Initialize the unit_id_map attribute
 
         # Perform the dict keys check early on and store the results as an attribute 
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
         # which you can reference at any point in your analysis to know which unit IDs passed the check.
         self.dict_keys_check_results = self.check_dict_keys()
-        self.unit_id_map = {}  # Initialize the unit_id_map attribute
         self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
         self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
 
