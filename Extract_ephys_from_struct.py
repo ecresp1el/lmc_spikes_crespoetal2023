@@ -68,6 +68,7 @@ class ExtractEphysData:
         """
         return self.recordings.get(group_name, [])
 
+
     def get_cellid_names(self, group_name, recording_name):
         """
         Returns a list of unique unit IDs for a specific group and recording.
