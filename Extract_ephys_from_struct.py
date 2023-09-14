@@ -165,7 +165,33 @@ class ExtractEphysData:
 
     @staticmethod
     def get_amplitude(unit_id, unit_data):
-        """A helper function to get the amplitude from a unit data dictionary."""
+        """
+        Retrieves the 'Amplitude' metric from the unit data dictionary for a given unit ID.
+
+        This method is designed to be used as a helper function with the iterate_unit_ids method, 
+        to facilitate the extraction of amplitude data for each unit in a batch operation.
+
+        Args:
+            unit_id (str): The unique identifier for a unit. This ID is used to track the unit 
+                        during the iteration process, but is not used within this method.
+            unit_data (dict): A dictionary containing the data for a single unit. This dictionary 
+                            is expected to have a key 'Amplitude' whose value is to be retrieved.
+
+        Returns:
+            float or None: The amplitude value associated with the unit. If the 'Amplitude' key 
+                        does not exist in the unit_data dictionary, None is returned.
+
+        Raises:
+            TypeError: If unit_data is not a dictionary.
+
+        Example:
+            >>> unit_data = {'Amplitude': 1.23, 'OtherMetric': 4.56}
+            >>> ExtractEphysData.get_amplitude('some_unit_id', unit_data)
+            1.23
+        """
+        if not isinstance(unit_data, dict):
+            raise TypeError("unit_data must be a dictionary.")
+        
         return unit_data.get('Amplitude')
 
 
