@@ -48,39 +48,24 @@ class ExtractEphysData:
 
     def get_group_names(self):
         """
-        Returns a list of group names present in the matfile.
+        This method returns a list of all group names available in the data.
         
         Returns:
             list: A list of group names.
         """
-        # Getting the group names dynamically whenever the method is called
-        group_names = list(self.mat['all_data'].keys())
-        return group_names
+        return self.group_names
 
     def get_recording_names(self, group_name):
         """
-        Returns a list of recording names for a given group name.
+        This method takes a group name as its parameter and returns a list of all recording names available for that group.
         
         Args:
-            group_name (str): The name of the group to retrieve recording names from.
-            
+            group_name (str): The name of the group to get the recording names for.
+        
         Returns:
-            list: A list of recording names for the given group name.
+            list: A list of recording names.
         """
-        # Type checking
-        if not isinstance(group_name, str):
-            raise TypeError("group_name must be a string")
-        
-        # Check if the group_name exists in the data structure
-        if group_name not in self.mat['all_data']:
-            raise ValueError(f"The group name '{group_name}' does not exist in the data structure.")
-        
-        # implementation code here
-        recording_names = []
-        for recording in self.mat['all_data'][group_name]:
-            recording_names.append(recording)
-        
-        return recording_names 
+        return self.recordings.get(group_name, [])
 
     def get_cellid_names(self, group_name, recording_name):
         """
