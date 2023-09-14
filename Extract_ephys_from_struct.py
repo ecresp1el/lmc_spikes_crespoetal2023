@@ -20,19 +20,23 @@ class ExtractEphysData:
     """
     
     def __init__(self, matfile_directory):
-        """_summary_
-        
+        """
         This is the initializer method that takes a directory path to a .mat file as its parameter. 
         It uses the mat73.loadmat function to load the .mat file and stores it in the self.mat attribute.
         
         Args:
-            matfile_directory (_type_): _description_
+            matfile_directory (str): The directory path to the .mat file.
         """
         # use mat73.loadmat to load mat files
         mat = mat73.loadmat(matfile_directory, use_attrdict=True)
         
         # store the matfile
         self.mat = mat 
+
+        # Create attributes for each level of the nested dictionary
+        self.all_data = mat['all_data']
+        self.group_names = list(self.all_data.keys())
+        self.recordings = {group_name: list(self.all_data[group_name].keys()) for group_name in self.group_names}
         
         # Perform the dict keys check early on and store the results as an attribute 
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
@@ -41,10 +45,6 @@ class ExtractEphysData:
         self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
         self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
 
-        
-        # The group_names attribute initialization has been moved to a separate method
-        
-    
 
     def get_group_names(self):
         """
