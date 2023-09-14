@@ -31,6 +31,7 @@ class ExtractEphysData:
         self.group_names = list(self.all_data.keys()) # get the group names from the all_data attribute and store them in the group_names attribute
         self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()} # get the recording names for each group and store them in the recordings attribute
         self.generate_unit_id_map()
+        self.trial_intensity_dataframes = {}  # Initialize an empty dictionary to store DataFrames
 
         # Perform the dict keys check early on and store the results as an attribute 
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
@@ -317,10 +318,58 @@ class ExtractEphysData:
 
         return reorganized_data
 
+    def create_trial_intensity_dataframe(self, reorganized_data):
+        """
+        Create a DataFrame with trial IDs and mapped intensity labels for each unit's data.
 
+        This method takes a dictionary containing reorganized stimulation data for multiple units and
+        constructs a DataFrame with trial IDs and corresponding intensity labels. The trial IDs are
+        generated as 'Trial_1', 'Trial_2', ..., 'Trial_N', where N is the number of trials for all units.
 
+        The intensity labels are mapped as follows:
+            - 1 corresponds to 'Zero'
+            - 2 corresponds to 'Low'
+            - 3 corresponds to 'Mid'
+            - 4 corresponds to 'Max'
 
+        The resulting DataFrame is stored as an attribute with the unit ID as the key in the
+        'trial_intensity_dataframes' dictionary.
 
+        Args:
+            reorganized_data (dict): A dictionary where keys are unique unit IDs, and each unit's data
+                contains 'Intensity' and 'SpikeTrain' keys with values being the combined 'Pre' and 'Post' data.
+
+        Returns:
+            None
+
+        Examples:
+        >>> eed = ExtractEphysData('path/to/matfile.mat')
+        >>> reorganized_data = {'unit_id1': {'Intensity': [1, 2, 3], 'SpikeTrain': [...]},
+        ...                     'unit_id2': {'Intensity': [2, 3, 4], 'SpikeTrain': [...]}}
+
+        >>> eed.create_trial_intensity_dataframe(reorganized_data)
+        >>> print(eed.trial_intensity_dataframes)
+        {'unit_id1': DataFrame with Trial_ID and Intensity columns,
+        'unit_id2': DataFrame with Trial_ID and Intensity columns}
+
+        Notes:
+        - The method appends trial IDs and intensity labels for all units into a single DataFrame for each unit.
+        - The resulting DataFrames are stored as attributes with unit IDs as keys in the 'trial_intensity_dataframes' dictionary.
+        """
+        
+        trial_ids = []
+        intensities = []
+
+        for unit_id, unit_data in reorganized_data.items():
+            intensity_values = unit_data['Intensity']
+            intensity_labels = {1: 'Zero', 2: 'Low', 3: 'Mid', 4: 'Max'}
+            trial_ids.extend([f'Trial_{i}' for i in range(1, len(intensity_values) + 1)])
+            intensities.extend([intensity_labels[i] for i in intensity_values])
+
+        df = pd.DataFrame({'Trial_ID': trial_ids, 'Intensity': intensities})
+
+        # Save the DataFrame as an attribute with the unit_id as the key
+        self.trial_intensity_dataframes[unit_id] = df
 
 
 
