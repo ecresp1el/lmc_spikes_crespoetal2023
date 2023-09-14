@@ -219,66 +219,64 @@ class ExtractEphysData:
         - This method relies on the 'Amplitude' metric being present in the unit data dictionary.
         - The result may contain fewer entries if some units lack amplitude data or do not exist in the data.
         """
-        average_amplitudes = {}
+        average_amplitudes = {} # initialize an empty dictionary to store the average amplitudes 
 
-        for unit_id in self.unit_id_map:
-            unit_data = self.get_unit_data(unit_id)
-            if unit_data:
-                amplitude = unit_data.get('Amplitude')
-                if amplitude is not None:
-                    average_amplitudes[unit_id] = amplitude
+        for unit_id in self.unit_id_map: # iterate over all unit IDs using the unit_id_map attribute
+            unit_data = self.get_unit_data(unit_id) # retrieve the unit data for the current unit ID with the get_unit_data method 
+            if unit_data: # check if the unit data is not None
+                amplitude = unit_data.get('Amplitude') # retrieve the amplitude metric from the unit data dictionary with the get method
+                if amplitude is not None: # check if the amplitude is not None 
+                    average_amplitudes[unit_id] = amplitude # add the unit ID and amplitude to the average_amplitudes dictionary
 
         return average_amplitudes
     
-    def get_stimulation_intensities(self, unique_unit_id, custom_func=None):
+    def get_stimulation_data(self):
         """
-        Retrieves stimulation intensities and spike trains for a unit's 'Pre' and 'Post' epochs.
+        Retrieve stimulation data for all units in the data.
 
-        Args:
-            unique_unit_id (str): The unique identifier for a unit.
-            custom_func (callable, optional): A custom function to modify the format of stim_data. 
-                If not provided, the default behavior is used.
+        This method iterates through all unit IDs, extracts the 'Pre' and 'Post' stimulation data for each unit, 
+        and combines them into a dictionary where keys are unit IDs (str), and values are dictionaries containing 
+        the 'Pre' and 'Post' stimulation data. If a unit has no stimulation data or is not found in the data, it will 
+        not be included in the result.
 
         Returns:
-            dict: A dictionary with keys 'Pre' and 'Post', each containing 'Intensity' and 'SpikeTrain' keys
-                associated with the 'Pre' and 'Post' epochs.
+            dict: A dictionary where keys are unit IDs (str), and values are dictionaries containing 'Pre' and 'Post' 
+            stimulation data. Each 'Pre' and 'Post' dictionary contains keys 'Intensity' and 'SpikeTrain' whose 
+            values are the corresponding data.
+
+        Examples:
+        >>> eed = ExtractEphysData('path/to/matfile.mat')
+        >>> stimulation_data = eed.get_stimulation_data()
+        >>> print(stimulation_data)
+        {'unit_id1': {'Pre': {'Intensity': [...], 'SpikeTrain': [...]}, 'Post': {'Intensity': [...], 'SpikeTrain': [...]}},
+         'unit_id2': {'Pre': {'Intensity': [...], 'SpikeTrain': [...]}, 'Post': {'Intensity': [...], 'SpikeTrain': [...]}},
+         ...}
+
+        Notes:
+        - This method relies on the 'Pre' and 'Post' stimulation data being present in the unit data dictionary.
+        - The result may contain fewer entries if some units lack stimulation data or do not exist in the data.
         """
-        stim_data = {}
+        stimulation_data = {} # initialize an empty dictionary to store the stimulation data 
 
-        unit_data = self.get_unit_data(unique_unit_id)
-        if unit_data:
-            pre_intensity = unit_data.get('Pre', {}).get('Stim_Intensity')
-            post_intensity = unit_data.get('Post', {}).get('Stim_Intensity')
-            pre_spike_trains = unit_data.get('Pre', {}).get('SpikeTrains_trials')
-            post_spike_trains = unit_data.get('Post', {}).get('SpikeTrains_trials')
+        for unit_id in self.unit_id_map: # iterate over all unit IDs using the unit_id_map attribute
+            unit_data = self.get_unit_data(unit_id) # retrieve the unit data for the current unit ID with the get_unit_data method 
+            if unit_data: # check if the unit data is not None
+                pre_intensity = unit_data.get('Pre', {}).get('Stim_Intensity') # retrieve the 'Pre' intensity data
+                post_intensity = unit_data.get('Post', {}).get('Stim_Intensity') # retrieve the 'Post' intensity data
+                pre_spike_trains = unit_data.get('Pre', {}).get('SpikeTrains_trials') # retrieve the 'Pre' spike train data
+                post_spike_trains = unit_data.get('Post', {}).get('SpikeTrains_trials') # retrieve the 'Post' spike train data
 
-            if custom_func:
-                stim_data = custom_func(pre_intensity, post_intensity, pre_spike_trains, post_spike_trains)
-            else:
-                stim_data['Pre'] = {'Intensity': pre_intensity, 'SpikeTrain': pre_spike_trains}
-                stim_data['Post'] = {'Intensity': post_intensity, 'SpikeTrain': post_spike_trains}
+                # Create a dictionary to store the 'Pre' and 'Post' data
+                unit_stim_data = {}
+                if pre_intensity is not None:
+                    unit_stim_data['Pre'] = {'Intensity': pre_intensity, 'SpikeTrain': pre_spike_trains}
+                if post_intensity is not None:
+                    unit_stim_data['Post'] = {'Intensity': post_intensity, 'SpikeTrain': post_spike_trains}
 
-        return stim_data 
-    
-    @staticmethod
-    def convert_stim_intensity_dict2_simplerdict(pre_intensity, post_intensity, pre_spike_trains, post_spike_trains):
-        """
-        Convert the stim_intensity dictionary to a simpler format.
+                # Add the unit ID and combined 'Pre' and 'Post' data to the stimulation_data dictionary
+                stimulation_data[unit_id] = unit_stim_data
 
-        Args:
-            pre_intensity (list or np.ndarray): Intensity values for the 'Pre' epoch.
-            post_intensity (list or np.ndarray): Intensity values for the 'Post' epoch.
-            pre_spike_trains (list or np.ndarray): Spike trains for the 'Pre' epoch.
-            post_spike_trains (list or np.ndarray): Spike trains for the 'Post' epoch.
-
-        Returns:
-            dict: A dictionary with keys 'Intensity' and 'SpikeTrain', each containing pre and post values combined.
-        """
-        stim_data_modified = {
-            'Intensity': np.concatenate((pre_intensity, post_intensity)),
-            'SpikeTrain': np.concatenate((pre_spike_trains, post_spike_trains))
-        }
-        return stim_data_modified
+        return stimulation_data
 
 
 
