@@ -70,26 +70,16 @@ class ExtractEphysData:
         return self.recordings.get(group_name, [])
 
 
-    def get_cellid_names(self, group_name, recording_name):
+    def get_cellid_names(self):
         """
-        Returns a list of unique unit IDs for a specific group and recording.
-
-        Args:
-            group_name (str): The name of the group to retrieve unit IDs from.
-            recording_name (str): The name of the recording to retrieve unit IDs from.
+        Returns a list of unique unit IDs for the current group and recording.
 
         Returns:
-            list: A list of unique unit IDs for the given group and recording.
+            list: A list of unique unit IDs for the current group and recording.
         """
-        # Check if the provided group_name is valid
-        if group_name not in self.group_names:
-            raise ValueError(f"Invalid group name: {group_name}. Valid options are: {self.group_names}")
-
-        # Check if the provided recording_name is valid
-        if recording_name not in self.recordings[group_name]:
-            raise ValueError(f"Invalid recording name: {recording_name}. Valid options are: {self.recordings[group_name]}")
-
         unit_ids = []
+        group_name = self.group_name  # Accessing group_name attribute
+        recording_name = self.recording_name  # Accessing recording_name attribute
         for cellid_name in self.all_data[group_name][recording_name].keys():
             # Creating a unique unit ID using group name, recording name, and cell ID
             unique_unit_id = hashlib.md5(f"{group_name}_{recording_name}_{cellid_name}".encode()).hexdigest()
