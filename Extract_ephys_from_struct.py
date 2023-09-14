@@ -30,13 +30,13 @@ class ExtractEphysData:
         self.all_data = mat['all_data'] 
         self.group_names = list(self.all_data.keys()) # get the group names from the all_data attribute and store them in the group_names attribute
         self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()} # get the recording names for each group and store them in the recordings attribute
-        self.unit_id_map = {}  # Initialize the unit_id_map attribute
+        self.generate_unit_id_map()
 
         # Perform the dict keys check early on and store the results as an attribute 
         # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
         # which you can reference at any point in your analysis to know which unit IDs passed the check.
-        self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
-        self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
+        #self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
+        #self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
 
 
 
@@ -63,12 +63,53 @@ class ExtractEphysData:
         # get method is a dictionary method that returns the value for a given key if the key is present in the dictionary. 
         # If the key is not present, the method returns a default value instead of raising a KeyError exception.
         return self.recordings.get(group_name, []) 
+    
+    def generate_unit_id_map(self):
+        """
+        Generates a unique unit ID map that associates a unique identifier with each cell ID based on the group name, 
+        recording name, and cell ID. This ensures no conflicts between cell IDs across different recordings or groups.
+
+        The unique unit ID is created by generating a hex hash of the concatenated group name, recording name, and cell ID.
+
+        This method should be called during initialization to create the unit ID map for further analysis.
+        """
+        self.unit_id_map = {}
+
+        for group_name in self.group_names:
+            for recording_name in self.recordings[group_name]:
+                for cell_id in self.all_data[group_name][recording_name].keys():
+                    # Create a unique unit ID by generating a hex hash of the concatenated strings
+                    unique_unit_id = hashlib.sha256(f"{group_name}_{recording_name}_{cell_id}".encode()).hexdigest()
+                    self.unit_id_map[unique_unit_id] = {
+                        "group": group_name,
+                        "recording": recording_name,
+                        "cell_id": cell_id,
+                        "path": [group_name, recording_name, cell_id],  # Storing the path to the data
+                    }
+    def get_unit_data(self, unique_unit_id):
+        """
+        Retrieves the data associated with a specific unique unit ID.
+
+        Args:
+            unique_unit_id (str): The unique identifier for a unit.
+
+        Returns:
+            dict: The data associated with the unit, or None if the unit ID is not found.
+        """
+        unit_info = self.unit_id_map.get(unique_unit_id)
+        if unit_info:
+            # Using the path to get the data from the all_data attribute
+            data = self.all_data
+            for key in unit_info["path"]:
+                data = data.get(key)
+                if data is None:
+                    return None
+            return data 
 
 
     def get_cellid_names(self):
         """
         Returns a list of unique unit IDs for the current group and recording.
-
         Returns:
             list: A list of unique unit IDs for the current group and recording.
         """
