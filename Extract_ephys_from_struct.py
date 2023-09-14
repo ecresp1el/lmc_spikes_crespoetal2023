@@ -145,6 +145,33 @@ class ExtractEphysData:
         unit_data = self.get_unit_data(unique_unit_id)
         if unit_data:
             return unit_data.get(metric_name)
+        
+    def iterate_unit_ids(self, func):
+        """
+        Iterates over all unit IDs and applies a function to each unit's data.
+
+        Args:
+            func (callable): A function to apply to each unit's data. 
+                            The function should take a unit ID and a unit data dictionary as parameters.
+
+        Returns:
+            A dictionary with unit IDs as keys and the results of applying the function as values.
+        """
+        results = {}
+        for unit_id in self.unit_id_map:
+            unit_data = self.get_unit_data(unit_id)
+            results[unit_id] = func(unit_id, unit_data)
+        return results
+
+
+
+
+
+
+
+
+
+
 
 
 
