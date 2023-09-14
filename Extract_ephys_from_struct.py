@@ -86,6 +86,7 @@ class ExtractEphysData:
                         "cell_id": cell_id,
                         "path": [group_name, recording_name, cell_id],  # Storing the path to the data
                     }
+                    
     def get_unit_data(self, unique_unit_id):
         """
         Retrieves the data associated with a specific unique unit ID.
@@ -105,6 +106,46 @@ class ExtractEphysData:
                 if data is None:
                     return None
             return data 
+        
+    def get_metric(self, unique_unit_id, metric_name):
+        """
+        Retrieves a specific metric for a unit.
+
+        Args:
+            unique_unit_id (str): The unique identifier for a unit.
+            metric_name (str): The name of the metric to retrieve.
+
+        Returns:
+            The requested metric, or None if the unit ID or metric name is not found.
+        """
+        valid_metric_names = {
+            'Amplitude', 'Cell_Type', 'ChemStimTime_note', 'ChemStimTime_s', 
+            'ChemStimTime_samples', 'FR_time_cutoff_after_stim_ms', 'FRs_baseline', 
+            'FRs_baseline_vec', 'FRs_stim', 'FanoFactor_baseline', 'FanoFactor_stim', 
+            'FirstSpikeLatency', 'FirstSpikeLatency_Reliability', 'FirstSpikeLatency_pdf_x', 
+            'FirstSpikeLatency_pdf_y', 'FirstSpikeLatency_perTrial', 'Header', 'ISI_baseline_CV', 
+            'ISI_baseline_vec', 'ISI_pdf_peak_xy', 'ISI_pdf_x', 'ISI_pdf_y', 
+            'ISI_violations_percent', 'IsSingleUnit', 'MeanFR_baseline', 'MeanFR_inst_baseline', 
+            'MeanFR_inst_stim', 'MeanFR_stim', 'MeanFR_total', 'Mean_Waveform', 'ModulationIndex', 
+            'Normalized_Template_Waveform', 'PSTHs_conv', 'PSTHs_raw', 'Peak1ToTrough_ratio', 
+            'Peak2ToTrough_ratio', 'PeakEvokedFR', 'PeakEvokedFR_Latency', 'PeakToPeak_ratio', 
+            'Post', 'Pre', 'Recording_Duration', 'Sampling_Frequency', 'SpikeHalfWidth', 
+            'SpikeTimes_all', 'SpikeTimes_baseline', 'SpikeTimes_stim', 'SpikeTimes_trials', 
+            'SpikeTrains_baseline', 'SpikeTrains_baseline_ms', 'SpikeTrains_for_PSTHs', 
+            'SpikeTrains_stim', 'SpikeTrains_stim_ms', 'SpikeTrains_trials', 
+            'SpikeTrains_trials_ms', 'StimProb', 'StimResponsivity', 'Stim_Intensity', 
+            'Stim_Offsets_samples', 'Stim_Onsets_samples', 'Template_Channel', 
+            'Template_Channel_Position', 'TroughToPeak_duration', 'UnNormalized_Template_Waveform', 
+            'peak1_normalized_amplitude'
+        }
+        
+        if metric_name not in valid_metric_names:
+            raise ValueError(f"Invalid metric name: '{metric_name}'. Must be one of {valid_metric_names}")
+
+        unit_data = self.get_unit_data(unique_unit_id)
+        if unit_data:
+            return unit_data.get(metric_name)
+
 
 
     def get_cellid_names(self):
