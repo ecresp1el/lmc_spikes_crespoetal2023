@@ -117,6 +117,9 @@ class ExtractEphysData:
 
         Returns:
             The requested metric, or None if the unit ID or metric name is not found.
+            
+        Raises:
+            ValueError: If the metric name is not valid.
         """
         valid_metric_names = {
             'Amplitude', 'Cell_Type', 'ChemStimTime_note', 'ChemStimTime_s', 
