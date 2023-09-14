@@ -152,7 +152,7 @@ class ExtractEphysData:
 
         Args:
             func (callable): A function to apply to each unit's data. 
-                            The function should take a unit ID and a unit data dictionary as parameters.
+                             The function should take a unit ID and a unit data dictionary as parameters.
 
         Returns:
             A dictionary with unit IDs as keys and the results of applying the function as values.
@@ -164,7 +164,8 @@ class ExtractEphysData:
         return results
 
     @staticmethod
-    def get_amplitude(unit_data):
+    def get_amplitude(unit_id, unit_data):
+        """A helper function to get the amplitude from a unit data dictionary."""
         return unit_data.get('Amplitude')
 
 
