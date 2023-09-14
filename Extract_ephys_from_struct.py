@@ -197,7 +197,38 @@ class ExtractEphysData:
         
         return unit_data.get('Amplitude')
 
+    def calculate_average_amplitude(self):
+        """
+        Calculate the average amplitude for all units in the data.
 
+        This method iterates through all unit IDs, extracts the amplitude metric for each unit, 
+        and calculates the average amplitude across all units.
+
+        Returns:
+            dict: A dictionary where keys are unit IDs (str), and values are the corresponding
+            average amplitudes (float). If a unit has no amplitude data or is not found in the data,
+            it will not be included in the result.
+
+        Examples:
+        >>> eed = ExtractEphysData('path/to/matfile.mat')
+        >>> average_amplitudes = eed.calculate_average_amplitude()
+        >>> print(average_amplitudes)
+        {'unit_id1': 1.23, 'unit_id2': 2.45, ...}
+
+        Notes:
+        - This method relies on the 'Amplitude' metric being present in the unit data dictionary.
+        - The result may contain fewer entries if some units lack amplitude data or do not exist in the data.
+        """
+        average_amplitudes = {}
+
+        for unit_id in self.unit_id_map:
+            unit_data = self.get_unit_data(unit_id)
+            if unit_data:
+                amplitude = unit_data.get('Amplitude')
+                if amplitude is not None:
+                    average_amplitudes[unit_id] = amplitude
+
+        return average_amplitudes
 
 
 
