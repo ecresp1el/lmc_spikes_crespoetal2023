@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import hashlib
 import pandas as pd
+import xarray as xr
 
 class ExtractEphysData:
     """
@@ -378,6 +379,43 @@ class ExtractEphysData:
 
             # Store the DataFrame in the dictionary with the unit ID as the key
             self.trial_intensity_dataframes[unit_id] = df
+
+    def create_xarray(self, converted_data, trial_intensity_dataframes):
+        """
+        Create xarrays for all units using the converted_data and trial_intensity_dataframes attributes.
+
+        Args:
+            converted_data (dict): A dictionary containing the reorganized stimulation data for all units.
+            trial_intensity_dataframes (dict): A dictionary containing trial intensity dataframes for all units.
+
+        Returns:
+            dict: A dictionary where keys are unit IDs (str), and values are xarray DataArrays containing the data.
+
+        Notes:
+        - This method assumes that the 'Sample' dimension corresponds to the number of columns in the SpikeTrains.
+        """
+        xarrays = {} # Initialize an empty dictionary to store xarrays
+        
+        for unit_id, data in converted_data.items():
+            intensity = data['Intensity']
+            spike_train = data['SpikeTrain']
+            
+            # Create a DataArray with 'Sample' as the dimension (number of columns in SpikeTrains)
+            xarray = xr.DataArray(
+                spike_train,
+                dims=['Trial_ID', 'Sample'],
+                coords={'Trial_ID': trial_intensity_dataframes[unit_id]['Trial_ID']}
+            )
+            
+            # Assign the 'Intensity' values as an attribute
+            xarray.attrs['Intensity'] = intensity
+            
+            xarrays[unit_id] = xarray # Store the xarray in the dictionary with the unit ID as the key
+        
+        return xarrays            
+                
+            
+
 
 
 
