@@ -380,7 +380,7 @@ class ExtractEphysData:
             # Store the DataFrame in the dictionary with the unit ID as the key
             self.trial_intensity_dataframes[unit_id] = df
 
-    def create_xarray(self, converted_data, trial_intensity_dataframes):
+    def create_xarray(self, converted_data):
         """
         Create xarrays for all units using the converted_data and trial_intensity_dataframes attributes.
 
@@ -404,7 +404,7 @@ class ExtractEphysData:
             xarray = xr.DataArray(
                 spike_train,
                 dims=['Trial_ID', 'Sample'],
-                coords={'Trial_ID': trial_intensity_dataframes[unit_id]['Trial_ID']}
+                coords={'Trial_ID':  self.trial_intensity_dataframes[unit_id]['Trial_ID']}
             )
             
             # Assign the 'Intensity' values as an attribute
