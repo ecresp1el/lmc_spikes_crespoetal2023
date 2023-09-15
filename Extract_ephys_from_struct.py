@@ -495,80 +495,44 @@ class ExtractEphysData:
                 psth_data[unit_id] = unit_psth_data
 
         return psth_data
-    
+
     def query_xarrays(self, xarrays, unit_id, intensity=None, epoch=None):
         """
         Query xarrays based on specified criteria such as intensity and epoch.
 
-        This method filters the data of a specified unit based on the given intensity and/or epoch parameters.
-        The method uses pandas query functionality to filter the trial IDs that meet the criteria, and then uses 
-        these IDs to index into the xarray DataArray to get the relevant data.
+        Parameters:
+        - xarrays (dict): A dictionary where keys are unit IDs (str), and values are xarray DataArrays containing the data.
+        - unit_id (str): The ID of the unit to be queried.
+        - intensity (str, optional): The stimulation intensity to be used for filtering. Possible values are 'Zero', 'Low', 'Mid', 'Max'. Defaults to None.
+        - epoch (str, optional): The epoch to be used for filtering. Possible values are 'Pre', 'Post'. Defaults to None.
 
-        Parameters
-        ----------
-        xarrays : dict
-            A dictionary where keys are unit IDs (str) and values are xarray DataArrays containing the neural data.
-        unit_id : str
-            The ID of the unit to be queried.
-        intensity : str, optional
-            The stimulation intensity to be used for filtering. This should be a string representing one of the 
-            intensity categories: 'Zero', 'Low', 'Mid', 'Max'. If None, no filtering based on intensity is applied. 
-            Default is None.
-        epoch : str, optional
-            The epoch to be used for filtering. This should be a string representing one of the epochs: 'Pre' or 
-            'Post'. If None, no filtering based on epoch is applied. Default is None.
-
-        Returns
-        -------
-        xarray.DataArray
-            An xarray DataArray containing the queried data. The 'Intensity' attribute of the DataArray is also 
-            updated to reflect the filtering done based on the intensity parameter.
-
-        Examples
-        --------
-        >>> queried_data = EED.query_xarrays(xarrays_dict, 'unit1', intensity='Mid', epoch='Post')
-        >>> print(queried_data)
-        
-        Notes
-        -----
-        - The intensity and epoch filters are applied using a logical AND operation, meaning that only trials that 
-        satisfy both conditions (if both are provided) will be selected.
-        
-        - The 'Intensity' attribute in the resulting DataArray will be an array where all values match the numerical 
-        code for the selected intensity level.
+        Returns:
+        - xarray.DataArray: An xarray DataArray containing the queried data.
         """
 
-        # Mapping from intensity labels to their corresponding numerical values
-        intensity_mapping = {'Zero': 1, 'Low': 2, 'Mid': 3, 'Max': 4}
-
-        # Step 1: Retrieve the DataFrame associated with the specified unit ID
+        # Step 1: Access the relevant DataFrame using the unit_id
         df = self.trial_intensity_dataframes[unit_id]
 
-        # Step 2: Convert intensity label to its numerical representation to build the query
-        if intensity:
-            intensity = intensity_mapping[intensity]
-
-        # Step 3: Build the query string using the specified parameters
+        # Step 2: Build the query string based on provided parameters
         query_str = ' & '.join([f'{col} == "{val}"' for col, val in zip(['Intensity', 'Epoch'], [intensity, epoch]) if val])
 
-        # Step 4: Use the query string to filter the DataFrame and get the relevant trial IDs
+        # Step 3: Filter the DataFrame using the query string to get relevant Trial_IDs
         filtered_df = df.query(query_str) if query_str else df
 
-        # Step 5: Get a list of the trial IDs that satisfy the filtering criteria
+        # Step 4: Get the list of relevant Trial_IDs
         trial_ids = filtered_df['Trial_ID'].tolist()
 
-        # Step 6: Retrieve the xarray DataArray for the specified unit
+        # Step 5: Access and filter the xarray DataArray using the Trial_IDs
         xarray_data = xarrays[unit_id]
-
-        # Step 7: Use the list of trial IDs to select the corresponding data from the xarray DataArray
         filtered_xarray_data = xarray_data.sel(Trial_ID=trial_ids)
         
-        # Step 8: If an intensity filter was applied, update the 'Intensity' attribute to reflect the filter
+        # Step 6: Update the intensity attribute to reflect the filtering
         if intensity:
+            intensity_mapping = {'Zero': 1, 'Low': 2, 'Mid': 3, 'Max': 4}
             filtered_xarray_data.attrs['Intensity'] = np.full_like(filtered_xarray_data.attrs['Intensity'], intensity_mapping[intensity])
 
-        # Step 9: Return the filtered xarray DataArray
         return filtered_xarray_data
+
     
     def query_units(self, xarrays, unit_ids, intensity=None, epoch=None):
         """
