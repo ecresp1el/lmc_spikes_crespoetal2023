@@ -510,23 +510,36 @@ class ExtractEphysData:
         - xarray.DataArray: An xarray DataArray containing the queried data.
         """
         
+        # Mapping intensity labels to numbers
+        intensity_labels_to_numbers = {
+            'Zero': 1,
+            'Low': 2,
+            'Mid': 3,
+            'Max': 4
+        }
+        
         # Step 1: Access the relevant DataFrame using the unit_id
         df = self.trial_intensity_dataframes[unit_id]
 
-        # Step 2: Build the query string based on provided parameters
-        query_str = ' & '.join([f'{col} == "{val}"' for col, val in zip(['Intensity', 'Epoch'], [intensity, epoch]) if val])
+        # Step 2: Convert string labels to their respective numerical values for querying
+        if intensity:
+            intensity = intensity_labels_to_numbers[intensity]
 
-        # Step 3: Filter the DataFrame using the query string to get relevant Trial_IDs
+        # Step 3: Build the query string based on provided parameters
+        query_str = ' & '.join([f'{col} == {val!r}' for col, val in zip(['Intensity', 'Epoch'], [intensity, epoch]) if val])
+
+        # Step 4: Filter the DataFrame using the query string to get relevant Trial_IDs
         filtered_df = df.query(query_str) if query_str else df
 
-        # Step 4: Get the list of relevant Trial_IDs
+        # Step 5: Get the list of relevant Trial_IDs
         trial_ids = filtered_df['Trial_ID'].tolist()
 
-        # Step 5: Access and filter the xarray DataArray using the Trial_IDs
+        # Step 6: Access and filter the xarray DataArray using the Trial_IDs
         xarray_data = xarrays[unit_id]
         filtered_xarray_data = xarray_data.sel(Trial_ID=trial_ids)
         
         return filtered_xarray_data
+
     
     def query_units(self, unit_ids, epochs, intensity_levels, xarrays):
         """
