@@ -563,36 +563,31 @@ class ExtractEphysData:
         return queried_data
     
     def convert_sample_to_time(self, xarrays):
-        """
-        Convert the sample dimension in xarrays to a time dimension.
-
-        Args:
-        EED_instance: Instance of your main data handling class.
-        xarrays (dict): Dictionary of xarrays keyed by unit IDs.
-
-        Returns:
-        dict: Dictionary of xarrays with the sample dimension converted to time in milliseconds.
-        """
-        
-        # Create a new dictionary to store the xarrays with time dimension
-        xarrays_with_time = {}
-
+        new_xarrays = {}
         for unit_id, xarray in xarrays.items():
-            # Get the sampling frequency for the current unit
-            sampling_rate = self.get_metric(unit_id, 'Sampling_Frequency')
+            # Get the sampling frequency for the unit
+            sampling_freq = self.get_metric(unit_id, 'Sampling_Frequency')
             
-            # Calculate the time values in milliseconds
-            time_ms = (np.arange(0, xarray.shape[1]) / sampling_rate) * 1000
+            # Determine the new time points with 1 ms bins
+            time_points = np.linspace(0, 1500, 1500)
+            
+            # Downsample the data to 1 ms bins
+            bin_width_in_samples = int(sampling_freq / 1000)  # Number of samples in 1 ms
+            downsampled_data = xarray.data.reshape((xarray.shape[0], -1, bin_width_in_samples)).sum(axis=2)
 
-            # Create a new xarray with the time dimension
-            xarrays_with_time[unit_id] = xr.DataArray(
-                xarray.values, 
-                dims=['Trial_ID', 'Time'], 
-                coords={'Trial_ID': xarray['Trial_ID'].values, 'Time': time_ms}
+            # Create a new xarray with the downsampled data and new time points
+            new_xarray = xr.DataArray(
+                downsampled_data,
+                dims=['Trial_ID', 'Time'],
+                coords={'Trial_ID': xarray['Trial_ID'], 'Time': time_points}
             )
             
-            # Assign the attributes from the original xarray
-            xarrays_with_time[unit_id].attrs = xarray.attrs
+            # Copy the attributes from the original xarray
+            new_xarray.attrs = xarray.attrs
+            
+            # Store the new xarray in the dictionary
+            new_xarrays[unit_id] = new_xarray
+        
+        return new_xarrays
 
-        return xarrays_with_time
 
