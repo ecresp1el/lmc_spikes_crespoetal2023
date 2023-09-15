@@ -414,16 +414,25 @@ class ExtractEphysData:
         - This method assumes that the 'Sample' dimension corresponds to the number of columns in the SpikeTrains.
         """
         xarrays = {} # Initialize an empty dictionary to store xarrays
+    
         
         for unit_id, data in converted_data.items():
-            intensity = data['Intensity']
+            intensity = data['Intensity'].astype(int)
             spike_train = data['SpikeTrain']
+            
+            # Fetch the trial IDs for the current unit
+            trial_ids = self.trial_intensity_dataframes[unit_id]['Trial_ID']
+            
+            # Debug print statements to check the alignment
+            print(f"Unit ID: {unit_id}")
+            print(f"Spike train shape: {spike_train.shape}")
+            print(f"Trial_IDs from dataframes: {trial_ids}")
             
             # Create a DataArray with 'Sample' as the dimension (number of columns in SpikeTrains)
             xarray = xr.DataArray(
                 spike_train,
                 dims=['Trial_ID', 'Sample'],
-                coords={'Trial_ID':  self.trial_intensity_dataframes[unit_id]['Trial_ID']}
+                coords={'Trial_ID': trial_ids}
             )
             
             # Assign the 'Intensity' values as an attribute
