@@ -41,7 +41,6 @@ class ExtractEphysData:
         #self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
 
 
-
     def get_group_names(self):
         """
         Retrieves all group names available in the data.
@@ -488,7 +487,37 @@ class ExtractEphysData:
 
         return psth_data
 
-            
+    def query_xarrays(self, xarrays, unit_id, intensity=None, epoch=None):
+        """
+        Query xarrays based on specified criteria such as intensity and epoch.
+
+        Parameters:
+        - xarrays (dict): A dictionary where keys are unit IDs (str), and values are xarray DataArrays containing the data.
+        - unit_id (str): The ID of the unit to be queried.
+        - intensity (str, optional): The stimulation intensity to be used for filtering. Possible values are 'Zero', 'Low', 'Mid', 'Max'. Defaults to None.
+        - epoch (str, optional): The epoch to be used for filtering. Possible values are 'Pre', 'Post'. Defaults to None.
+
+        Returns:
+        - xarray.DataArray: An xarray DataArray containing the queried data.
+        """
+        
+        # Step 1: Access the relevant DataFrame using the unit_id
+        df = self.trial_intensity_dataframes[unit_id]
+
+        # Step 2: Build the query string based on provided parameters
+        query_str = ' & '.join([f'{col} == "{val}"' for col, val in zip(['Intensity', 'Epoch'], [intensity, epoch]) if val])
+
+        # Step 3: Filter the DataFrame using the query string to get relevant Trial_IDs
+        filtered_df = df.query(query_str) if query_str else df
+
+        # Step 4: Get the list of relevant Trial_IDs
+        trial_ids = filtered_df['Trial_ID'].tolist()
+
+        # Step 5: Access and filter the xarray DataArray using the Trial_IDs
+        xarray_data = xarrays[unit_id]
+        filtered_xarray_data = xarray_data.sel(Trial_ID=trial_ids)
+        
+        return filtered_xarray_data
 
 
 
