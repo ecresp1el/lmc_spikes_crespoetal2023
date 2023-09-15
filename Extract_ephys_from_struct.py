@@ -534,12 +534,18 @@ class ExtractEphysData:
         """
         filtered_data = {}
 
+        # Mapping of intensity labels to numerical values
+        intensity_labels_to_values = {'Zero': 1, 'Low': 2, 'Mid': 3, 'Max': 4}
+
         for unit_id in unit_ids:
             # Get the dataframe for the current unit
             df = self.trial_intensity_dataframes.get(unit_id)
 
-            # Filter the dataframe based on the specified epochs and intensity levels
-            mask = df['Epoch'].isin(epochs) & df['Intensity'].isin(intensity_levels)
+            # Convert the intensity labels to numerical values for filtering
+            intensity_values = [intensity_labels_to_values[label] for label in intensity_levels]
+
+            # Filter the dataframe based on the specified epochs and intensity values
+            mask = df['Epoch'].isin(epochs) & df['Intensity'].isin(intensity_values)
             
             # Get the Trial_IDs that satisfy the conditions
             trial_ids = df.loc[mask, 'Trial_ID'].values
@@ -551,6 +557,7 @@ class ExtractEphysData:
             filtered_data[unit_id] = xarray.sel(Trial_ID=trial_ids)
 
         return filtered_data
+
 
 
 
