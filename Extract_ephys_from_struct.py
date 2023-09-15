@@ -562,7 +562,7 @@ class ExtractEphysData:
         
         return queried_data
     
-    def convert_sample_to_time(EED_instance, xarrays):
+    def convert_sample_to_time(self, xarrays):
         """
         Convert the sample dimension in xarrays to a time dimension.
 
@@ -579,7 +579,7 @@ class ExtractEphysData:
 
         for unit_id, xarray in xarrays.items():
             # Get the sampling frequency for the current unit
-            sampling_rate = EED_instance.get_metric(unit_id, 'Sampling_Frequency')
+            sampling_rate = self.get_metric(unit_id, 'Sampling_Frequency')
             
             # Calculate the time values in milliseconds
             time_ms = (np.arange(0, xarray.shape[1]) / sampling_rate) * 1000
