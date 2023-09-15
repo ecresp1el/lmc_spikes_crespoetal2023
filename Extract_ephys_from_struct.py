@@ -312,8 +312,10 @@ class ExtractEphysData:
 
             combined_data = {
                 'Intensity': np.concatenate((pre_intensity, post_intensity)),
-                'SpikeTrain': np.concatenate((pre_spike_trains, post_spike_trains))
+                'SpikeTrain': np.concatenate((pre_spike_trains, post_spike_trains)),
+                'Epoch': np.concatenate((['Pre'] * len(pre_intensity), ['Post'] * len(post_intensity)))  # new line
             }
+
 
             reorganized_data[unit_id] = combined_data
 
@@ -375,7 +377,7 @@ class ExtractEphysData:
             intensity_data_labels = [intensity_labels[i] for i in intensity_data]
 
             # Create a DataFrame
-            df = pd.DataFrame({'Trial_ID': trial_ids, 'Intensity': intensity_data_labels})
+            df = pd.DataFrame({'Trial_ID': trial_ids, 'Intensity': intensity_data_labels, 'Epoch': epoch_data})  # modified line
 
             # Store the DataFrame in the dictionary with the unit ID as the key
             self.trial_intensity_dataframes[unit_id] = df
