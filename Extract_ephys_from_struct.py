@@ -561,3 +561,38 @@ class ExtractEphysData:
             queried_data[unit_id] = self.query_xarrays(xarrays, unit_id, intensity=intensity, epoch=epoch)
         
         return queried_data
+    
+    def convert_sample_to_time(EED_instance, xarrays):
+        """
+        Convert the sample dimension in xarrays to a time dimension.
+
+        Args:
+        EED_instance: Instance of your main data handling class.
+        xarrays (dict): Dictionary of xarrays keyed by unit IDs.
+
+        Returns:
+        dict: Dictionary of xarrays with the sample dimension converted to time in milliseconds.
+        """
+        
+        # Create a new dictionary to store the xarrays with time dimension
+        xarrays_with_time = {}
+
+        for unit_id, xarray in xarrays.items():
+            # Get the sampling frequency for the current unit
+            sampling_rate = EED_instance.get_metric(unit_id, 'Sampling_Frequency')
+            
+            # Calculate the time values in milliseconds
+            time_ms = (np.arange(0, xarray.shape[1]) / sampling_rate) * 1000
+
+            # Create a new xarray with the time dimension
+            xarrays_with_time[unit_id] = xr.DataArray(
+                xarray.values, 
+                dims=['Trial_ID', 'Time'], 
+                coords={'Trial_ID': xarray['Trial_ID'].values, 'Time': time_ms}
+            )
+            
+            # Assign the attributes from the original xarray
+            xarrays_with_time[unit_id].attrs = xarray.attrs
+
+        return xarrays_with_time
+
