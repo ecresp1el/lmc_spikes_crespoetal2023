@@ -518,7 +518,39 @@ class ExtractEphysData:
         filtered_xarray_data = xarray_data.sel(Trial_ID=trial_ids)
         
         return filtered_xarray_data
+    
+    def query_units(self, unit_ids, epochs, intensity_levels, xarrays):
+        """
+        Query the xarrays data based on unit IDs, epochs, and intensity levels.
+        
+        Args:
+            unit_ids (list of str): List of unit IDs to query.
+            epochs (list of str): List of epochs to query ('Pre' or 'Post').
+            intensity_levels (list of str): List of intensity levels to query ('Zero', 'Low', 'Mid', or 'Max').
+            xarrays (dict): Dictionary holding the xarray DataArrays for each unit.
+        
+        Returns:
+            dict: Dictionary holding the filtered xarray DataArrays for each unit.
+        """
+        filtered_data = {}
 
+        for unit_id in unit_ids:
+            # Get the dataframe for the current unit
+            df = self.trial_intensity_dataframes.get(unit_id)
+
+            # Filter the dataframe based on the specified epochs and intensity levels
+            mask = df['Epoch'].isin(epochs) & df['Intensity'].isin(intensity_levels)
+            
+            # Get the Trial_IDs that satisfy the conditions
+            trial_ids = df.loc[mask, 'Trial_ID'].values
+            
+            # Get the xarray for the current unit
+            xarray = xarrays.get(unit_id)
+            
+            # Filter the xarray based on the Trial_IDs
+            filtered_data[unit_id] = xarray.sel(Trial_ID=trial_ids)
+
+        return filtered_data
 
 
 
