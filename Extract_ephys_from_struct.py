@@ -363,6 +363,7 @@ class ExtractEphysData:
         for unit_id, unit_data in reorganized_data.items():
             # Extract Intensity data from the unit's data
             intensity_data = unit_data['Intensity']
+            epoch_data = unit_data['Epoch']  # new line
 
             # Create trial IDs based on the length of Intensity data
             trial_ids = [f'Trial_{i + 1}' for i in range(len(intensity_data))]
