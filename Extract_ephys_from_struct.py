@@ -427,11 +427,11 @@ class ExtractEphysData:
             )
             
             # Assign the 'Intensity' values as an attribute
-            xarray.attrs['Intensity'] = intensity
+            xarray.attrs['Intensity'] = intensity.astype(int) # Convert to integer type here
             
             xarrays[unit_id] = xarray # Store the xarray in the dictionary with the unit ID as the key
         
-        return xarrays            
+        return xarrays         
 
     def get_psths(self, unit_ids=None):
         """
