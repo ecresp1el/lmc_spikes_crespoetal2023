@@ -551,6 +551,20 @@ class ExtractEphysData:
         ```
         # Example 1: Querying multiple units with the same criteria
         queried_data = EED.query_units(xarrays, ['unit1', 'unit2'], intensity='Mid', epoch='Post')
+        
+        Dimensions:
+            Trial_ID: This dimension represents different trials or experiments, indexed by unique trial identifiers. It has a total of 999 trials.
+            Time: This dimension represents time in milliseconds (ms) and is indexed with time points. It has a total of 1500 time points.
+        
+        Coordinates:
+            Trial_ID: These are the trial identifiers, which are labels for each trial. It includes values like 'Trial_1', 'Trial_2', and so on for a total of 999 trials.
+            Time: These are time values in milliseconds corresponding to different time points.
+        
+        Attributes:
+            Intensity: This attribute is an array of intensity values associated with each trial and time point. It contains an array of values, e.g., [2, 2, 1, 1, ...].
+        
+        Data:
+            The data itself is stored in the DataArray. It appears to be a 2D array with values of 0 and 1, indicating the presence or absence of certain events or observations at different time points during different trials.
         ```
         """
         # Initializing an empty dictionary to store the queried data arrays for each unit
