@@ -13,8 +13,8 @@ dependencies:
   - notebook
   - pillow
   - pip
-  - xarrays
+  - xarray
   - pip:
-    mat73
+    - mat73
 
       # - some-pip-package # if you need any pip packages that are not available in Conda
