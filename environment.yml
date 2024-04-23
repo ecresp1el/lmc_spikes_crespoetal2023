@@ -1,0 +1,17 @@
+name: biolumi_calcium_imaging
+channels:
+  - defaults
+dependencies:
+  - python=3.8  # specify your python version
+  - numpy
+  - opencv
+  - scikit-image
+  - matplotlib
+  - seaborn
+  - pandas
+  - scipy
+  - notebook
+  - pillow
+  - pip
+  # - pip:
+      # - some-pip-package # if you need any pip packages that are not available in Conda
