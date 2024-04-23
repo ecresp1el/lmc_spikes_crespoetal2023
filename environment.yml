@@ -2,7 +2,7 @@ name: spiketurnpike_postanalysis
 channels:
   - defaults
 dependencies:
-  - python=3.8  # specify your python version
+  - python=3.9  # specify your python version
   - numpy
   - opencv
   - scikit-image
@@ -13,5 +13,8 @@ dependencies:
   - notebook
   - pillow
   - pip
-  # - pip:
+  - xarrays
+  - pip:
+    mat73
+
       # - some-pip-package # if you need any pip packages that are not available in Conda
