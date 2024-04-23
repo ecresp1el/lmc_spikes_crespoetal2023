@@ -1,4 +1,4 @@
-name: biolumi_calcium_imaging
+name: spiketurnpike_postanalysis
 channels:
   - defaults
 dependencies:
