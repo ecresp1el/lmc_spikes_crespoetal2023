@@ -6,39 +6,36 @@ import pandas as pd
 import xarray as xr
 
 class ExtractEphysData:
-    """
-    A class to facilitate the extraction of electrophysiological data from .mat files.
-
-    Args:
-        matfile_directory (str): The directory where the .mat file is located.
-
-    Attributes:
-        mat (dict): The loaded .mat file represented as a dictionary.
-        all_data (dict): A dictionary containing all data from the .mat file.
-        group_names (list of str): A list of group names extracted from the all_data attribute.
-        recordings (dict): A dictionary mapping group names to lists of recording names.
-        unit_id_map (dict): A dictionary to store unit ID mappings (initialized as empty).
-    """
-    
-    def __init__(self, matfile_directory):
+    def __init__(self, base_directory, matfile_name):
         """
-        Initializes the ExtractEphysData class by loading a .mat file using the mat73 library.
+        Initializes the ExtractEphysData class by loading .mat files from a specified directory.
 
         Args:
-            matfile_directory (str): The directory path to the .mat file.
+            base_directory (str): The directory path where .mat files are stored.
         """
-        mat = mat73.loadmat(matfile_directory, use_attrdict=True)
-        self.all_data = mat['all_data'] 
-        self.group_names = list(self.all_data.keys()) # get the group names from the all_data attribute and store them in the group_names attribute
-        self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()} # get the recording names for each group and store them in the recordings attribute
+        # Load the main .mat file
+        mat_file_directory = base_directory + matfile_name
+        mat = mat73.loadmat(mat_file_directory, use_attrdict=True)
+        self.all_data = mat['all_data']
+        self.group_names = list(self.all_data.keys())
+        self.recordings = {group: list(recordings.keys()) for group, recordings in self.all_data.items()}
         self.generate_unit_id_map()
-        self.trial_intensity_dataframes = {}  # Initialize an empty dictionary to store DataFrames
+        self.trial_intensity_dataframes = {}
 
-        # Perform the dict keys check early on and store the results as an attribute 
-        # results of the check_dict_keys method are stored in the self.dict_keys_check_results attribute, 
-        # which you can reference at any point in your analysis to know which unit IDs passed the check.
-        #self.stimulus_tables = {}  # Initialize stimulus_tables as an empty dictionary
-        #self.construct_stimulus_table()  # Construct stimulus tables for all recordings at initialization
+        # List of additional .mat files to load as attributes
+        additional_files = [
+            'relative_time_ms.mat', 'relative_time_samples.mat', 'trialTagsLabels.mat',
+            'StimVoltageTraces_ms.mat', 'StimVoltageTraces_samples.mat', 'cell_types.mat'
+        ]
+
+        # Dynamically load each additional file and set it as an attribute
+        for file_name in additional_files:
+            file_path = base_directory + file_name
+            try:
+                setattr(self, file_name.replace('.mat', ''), mat73.loadmat(file_path))
+            except FileNotFoundError:
+                print(f"File not found: {file_path}")
+                setattr(self, file_name.replace('.mat', ''), None)
 
 
     def get_group_names(self):
