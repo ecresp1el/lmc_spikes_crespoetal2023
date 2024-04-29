@@ -31,6 +31,7 @@ class ExtractEphysData:
         # Dynamically load each additional file and set it as an attribute
         for file_name in additional_files:
             file_path = base_directory + file_name
+            print(file_path)
             try:
                 setattr(self, file_name.replace('.mat', ''), mat73.loadmat(file_path))
             except FileNotFoundError:
