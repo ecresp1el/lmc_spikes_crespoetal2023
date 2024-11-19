@@ -187,10 +187,6 @@ class DataFrameManagerAxionMEA:
                             row['IsSingleUnit'] = 1.0
                             continue  # Skip to the next column
                         
-                        # Always print debug information about the condition
-                        print(f"Debug: Group: {groupname}, Recording: {recordingname}, CID: {cid}, "
-                            f"TroughToPeak_duration: {value}, Condition Met: {value is not None and value < 0.4}")
-                        
                         # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
                         if column == 'TroughToPeak_duration' and value is not None and value < 0.4:
                             print(f"Changing Cell_Type to FS for group: {groupname}, recording: {recordingname}, cid: {cid}")
