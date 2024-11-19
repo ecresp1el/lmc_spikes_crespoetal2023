@@ -165,6 +165,60 @@ class ExtractEphysData:
             results[unit_id] = func(unit_id, unit_data)
         return results
 
+class DataFrameManagerAxionMEA:
+    def __init__(self, eed_object):
+        self.eed = eed_object
+        self.dataframes = {}  # Dictionary to hold multiple DataFrames
+        self.detailed_dataframes = {}
+        
+    def create_dataframe(self, columns, df_name):
+        data = []
+        for groupname, recordings in self.eed.all_data.items():
+            for recordingname, cells in recordings.items():
+                for cid, metrics in cells.items():
+                    
+                    row = {'groupname': groupname, 'recordingname': recordingname, 'cid': cid}
+                    for column in columns:
+                        value = metrics.get(column, None)
+                        
+                        # Reassign 'IsSingleUnit' based on 'ISI_violations_percent' if necessary
+                        if column == 'ISI_violations_percent' and value is not None and value < 0.01:
+                            print(f"Changing IsSingleUnit to 1.0 for group: {groupname}, recording: {recordingname}, cid: {cid}")
+                            row['IsSingleUnit'] = 1.0
+                            continue  # Skip to the next column
+                        
+                        # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
+                        if column == 'TroughToPeak_duration' and value is not None and value <= 0.4:
+                            print(f"Changing Cell_Type to FS for group: {groupname}, recording: {recordingname}, cid: {cid}")
+                            row['Cell_Type'] = 'FS'
+                            # Now add the 'TroughToPeak_duration' value to the row
+                            row['TroughToPeak_duration'] = value
+                            continue  # Skip to the next column
+                        
+                        # Reassign 'ModulationIndex' based on its value if necessary
+                        if column == 'ModulationIndex' and value is not None:
+                            if value >= 0.3:
+                                print(f"Changing ModulationIndex {value} to positive for group: {groupname}, recording: {recordingname}, cid: {cid}")
+                                row['ModulationIndex'] = 'positive'
+                            elif value <= -0.3:
+                                print(f"Changing ModulationIndex {value} to negative for group: {groupname}, recording: {recordingname}, cid: {cid}")
+                                row['ModulationIndex'] = 'negative'
+                            else:
+                                print(f"Changing ModulationIndex {value} to none for group: {groupname}, recording: {recordingname}, cid: {cid}")
+                                row['ModulationIndex'] = 'none'
+                            continue  # Skip to the next column
+
+                        # Add the original value if no reassignment happened
+                        row[column] = value
+                    
+                    data.append(row)
+        
+        new_df = pd.DataFrame(data)
+        if df_name in self.dataframes:
+            self.dataframes[df_name] = pd.concat([self.dataframes[df_name], new_df], ignore_index=True)
+        else:
+            self.dataframes[df_name] = new_df
+            
     @staticmethod
     def get_amplitude(unit_id, unit_data):
         """
