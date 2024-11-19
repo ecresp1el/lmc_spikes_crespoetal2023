@@ -181,11 +181,6 @@ class DataFrameManagerAxionMEA:
                     for column in columns:
                         value = metrics.get(column, None)
                         
-                        # Reassign 'IsSingleUnit' based on 'ISI_violations_percent' if necessary
-                        if column == 'ISI_violations_percent' and value is not None and value < 0.01:
-                            print(f"Changing IsSingleUnit to 1.0 for group: {groupname}, recording: {recordingname}, cid: {cid}")
-                            row['IsSingleUnit'] = 1.0
-                            continue  # Skip to the next column
                         
                         # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
                         if column == 'TroughToPeak_duration' and value is not None and value < 0.4:
@@ -195,19 +190,6 @@ class DataFrameManagerAxionMEA:
                             row['TroughToPeak_duration'] = value
                             continue  # Skip to the next column
                         
-                        # Reassign 'ModulationIndex' based on its value if necessary
-                        if column == 'ModulationIndex' and value is not None:
-                            if value >= 0.3:
-                                print(f"Changing ModulationIndex {value} to positive for group: {groupname}, recording: {recordingname}, cid: {cid}")
-                                row['ModulationIndex'] = 'positive'
-                            elif value <= -0.3:
-                                print(f"Changing ModulationIndex {value} to negative for group: {groupname}, recording: {recordingname}, cid: {cid}")
-                                row['ModulationIndex'] = 'negative'
-                            else:
-                                print(f"Changing ModulationIndex {value} to none for group: {groupname}, recording: {recordingname}, cid: {cid}")
-                                row['ModulationIndex'] = 'none'
-                            continue  # Skip to the next column
-
                         # Add the original value if no reassignment happened
                         row[column] = value
                     
