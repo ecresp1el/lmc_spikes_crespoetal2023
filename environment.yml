@@ -16,5 +16,6 @@ dependencies:
   - xarray
   - pip:
     - mat73
+    - pyabf
 
       # - some-pip-package # if you need any pip packages that are not available in Conda
