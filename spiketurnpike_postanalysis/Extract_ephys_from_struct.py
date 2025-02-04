@@ -177,52 +177,74 @@ class DataFrameManagerAxionMEA:
         # Track total modifications and which recordings were changed
         changed_cells_count = 0
         modified_recordings = set()
-        
+
         for groupname, recordings in self.eed.all_data.items():
             for recordingname, cells in recordings.items():
                 for cid, metrics in cells.items():
+                    # Prepare a row dictionary
+                    row = {
+                        'groupname': groupname,
+                        'recordingname': recordingname,
+                        'cid': cid
+                    }
                     
-                    row = {'groupname': groupname, 'recordingname': recordingname, 'cid': cid}
-                    
-                    # Get the original cell type if available
+                    # Grab the original cell type (if present)
                     original_cell_type = metrics.get('Cell_Type', None)
+                    # Grab the original TTP
+                    ttp_value = metrics.get('TroughToPeak_duration', None)
                     
+                    # Whether the TTP meets the FS criterion
+                    meets_fs_criteria = (ttp_value is not None and ttp_value < 0.40)
+                    
+                    # Iterate over requested columns
                     for column in columns:
                         value = metrics.get(column, None)
-
-                        # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
-                        if column == 'TroughToPeak_duration' and value is not None and value < 0.40:
-                            # Only print/log if this is actually changing something
+                        
+                        # If the column is TTP and it is below 0.40, force 'Cell_Type'='FS'
+                        if column == 'TroughToPeak_duration' and meets_fs_criteria:
+                            # Only count it as “changed” if original_cell_type was not FS
                             if original_cell_type != 'FS':
                                 changed_cells_count += 1
                                 modified_recordings.add(recordingname)
                                 print(
-                                    f"[INFO] Changing Cell_Type -> FS\n"
+                                    "[INFO] Changing Cell_Type -> FS\n"
                                     f"       group:       {groupname}\n"
                                     f"       recording:   {recordingname}\n"
                                     f"       cid:         {cid}\n"
                                     f"       Original Cell_Type:  {original_cell_type}\n"
-                                    f"       TroughToPeak_duration: {value}   (new FS)"
+                                    f"       TroughToPeak_duration: {value:.4f}   (new FS)"
                                 )
                             
                             row['Cell_Type'] = 'FS'
-                            # Store the TroughToPeak_duration as is
+                            # Keep the TTP value
                             row['TroughToPeak_duration'] = value
-                            # Move on to next column
+                            # Move on to the next column
                             continue
                         
-                        # Otherwise, just copy over the metric value
+                        # Otherwise, just assign the raw metric
                         row[column] = value
                     
+                    # Now that the row is fully populated, we can check the final cell type
+                    final_cell_type = row.get('Cell_Type', original_cell_type)
+                    
+                    # Print a line summarizing each row's “FS check”
+                    print(
+                        f"[DEBUG] Row summary:\n"
+                        f"        group='{groupname}', recording='{recordingname}', cid='{cid}'\n"
+                        f"        TTP={ttp_value}, "
+                        f"        meets_FS_criteria={'Yes' if meets_fs_criteria else 'No'},\n"
+                        f"        original_cell_type='{original_cell_type}', final_cell_type='{final_cell_type}'\n"
+                    )
+                    
                     data.append(row)
-        
+
         # Build or extend the DataFrame
         new_df = pd.DataFrame(data)
         if df_name in self.dataframes:
             self.dataframes[df_name] = pd.concat([self.dataframes[df_name], new_df], ignore_index=True)
         else:
             self.dataframes[df_name] = new_df
-        
+
         # Final summary of changes
         print(f"[INFO] Done creating '{df_name}' DataFrame.")
         print(f"[INFO] Total cells re-labeled as FS: {changed_cells_count}")
