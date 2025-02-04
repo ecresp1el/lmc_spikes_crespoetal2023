@@ -180,8 +180,7 @@ class DataFrameManagerAxionMEA:
                     row = {'groupname': groupname, 'recordingname': recordingname, 'cid': cid}
                     for column in columns:
                         value = metrics.get(column, None)
-                        
-                        
+
                         # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
                         if column == 'TroughToPeak_duration' and value is not None and value < 0.4:
                             print(f"Changing Cell_Type to FS for group: {groupname}, recording: {recordingname}, cid: {cid}")
