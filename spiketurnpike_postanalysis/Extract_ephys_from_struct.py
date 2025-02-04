@@ -183,7 +183,7 @@ class DataFrameManagerAxionMEA:
                         
                         
                         # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
-                        if column == 'TroughToPeak_duration' and value is not None and value < 0.5:
+                        if column == 'TroughToPeak_duration' and value is not None and value < 0.4:
                             print(f"Changing Cell_Type to FS for group: {groupname}, recording: {recordingname}, cid: {cid}")
                             row['Cell_Type'] = 'FS'
                             # Now add the 'TroughToPeak_duration' value to the row
