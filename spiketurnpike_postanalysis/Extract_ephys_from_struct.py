@@ -173,33 +173,63 @@ class DataFrameManagerAxionMEA:
         
     def create_dataframe(self, columns, df_name):
         data = []
+        
+        # Track total modifications and which recordings were changed
+        changed_cells_count = 0
+        modified_recordings = set()
+        
         for groupname, recordings in self.eed.all_data.items():
             for recordingname, cells in recordings.items():
                 for cid, metrics in cells.items():
                     
                     row = {'groupname': groupname, 'recordingname': recordingname, 'cid': cid}
+                    
+                    # Get the original cell type if available
+                    original_cell_type = metrics.get('Cell_Type', None)
+                    
                     for column in columns:
                         value = metrics.get(column, None)
 
                         # Reassign 'Cell_Type' based on 'TroughToPeak_duration' if necessary
-                        if column == 'TroughToPeak_duration' and value is not None and value < 0.4:
-                            print(f"Changing Cell_Type to FS for group: {groupname}, recording: {recordingname}, cid: {cid}")
+                        if column == 'TroughToPeak_duration' and value is not None and value < 0.40:
+                            # Only print/log if this is actually changing something
+                            if original_cell_type != 'FS':
+                                changed_cells_count += 1
+                                modified_recordings.add(recordingname)
+                                print(
+                                    f"[INFO] Changing Cell_Type -> FS\n"
+                                    f"       group:       {groupname}\n"
+                                    f"       recording:   {recordingname}\n"
+                                    f"       cid:         {cid}\n"
+                                    f"       Original Cell_Type:  {original_cell_type}\n"
+                                    f"       TroughToPeak_duration: {value}   (new FS)"
+                                )
+                            
                             row['Cell_Type'] = 'FS'
-                            # Now add the 'TroughToPeak_duration' value to the row
+                            # Store the TroughToPeak_duration as is
                             row['TroughToPeak_duration'] = value
-                            continue  # Skip to the next column
+                            # Move on to next column
+                            continue
                         
-                        # Add the original value if no reassignment happened
+                        # Otherwise, just copy over the metric value
                         row[column] = value
                     
                     data.append(row)
         
+        # Build or extend the DataFrame
         new_df = pd.DataFrame(data)
         if df_name in self.dataframes:
             self.dataframes[df_name] = pd.concat([self.dataframes[df_name], new_df], ignore_index=True)
         else:
             self.dataframes[df_name] = new_df
-            
+        
+        # Final summary of changes
+        print(f"[INFO] Done creating '{df_name}' DataFrame.")
+        print(f"[INFO] Total cells re-labeled as FS: {changed_cells_count}")
+        print(f"[INFO] Number of distinct recordings with modifications: {len(modified_recordings)}")
+        if changed_cells_count > 0:
+            print(f"[INFO] Recordings modified: {list(modified_recordings)}")
+                
     @staticmethod
     def get_amplitude(unit_id, unit_data):
         """
