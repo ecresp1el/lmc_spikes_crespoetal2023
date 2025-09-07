@@ -105,13 +105,10 @@ class MetadataExtractor:
     @staticmethod
     def extract_basic(path: Path) -> BasicInfo:
         """
-        Best-effort extraction of sampling rate, channel count, and duration.
-        Strategy:
-        1) Try McsPyDataTools/McsPy (if installed) for structured info.
-        2) Fallback to h5py: choose the largest 2D dataset; infer channels and samples.
-        3) Else: return fields as None.
+        Extract sampling rate, channel count, and duration strictly via
+        McsPyDataTools/McsPy. No h5py fallback is used.
         """
-        # 1) McsPyDataTools / McsPy
+        # McsPyDataTools / McsPy
         try:
             # Try new-style McsPyDataTools
             from McsPyDataTools import McsRecording  # type: ignore
@@ -163,86 +160,7 @@ class MetadataExtractor:
         except Exception:
             pass
 
-        try:
-            # Try legacy McsPy
-            from McsPy import MCSData  # type: ignore
-
-            rec = MCSData.McsRecording(path.as_posix())
-            sr = getattr(rec, "sample_rate", None)
-            nchan = getattr(rec, "channel_count", None)
-            dur = getattr(rec, "duration", None)
-            return BasicInfo(
-                sampling_rate_hz=_to_float(sr),
-                n_channels=_to_int(nchan),
-                duration_seconds=_to_float(dur),
-            )
-        except Exception:
-            pass
-
-        # 2) Fallback: h5py heuristic
-        try:
-            import h5py  # type: ignore
-
-            with h5py.File(path, "r") as h5:
-                # Choose the largest 2D dataset as candidate [channels x samples] or [samples x channels]
-                best = None
-                best_size = -1
-                for ds in _walk_h5_datasets(h5):
-                    try:
-                        if ds.ndim == 2:
-                            size = ds.shape[0] * ds.shape[1]
-                            if size > best_size:
-                                best = ds
-                                best_size = size
-                    except Exception:
-                        continue
-
-                nchan = None
-                samples = None
-                sr = None
-
-                if best is not None:
-                    a, b = best.shape
-                    # Assume larger dim is samples
-                    if a >= b:
-                        samples, nchan = a, b
-                    else:
-                        samples, nchan = b, a
-
-                    # Search for sampling rate in attributes upward
-                    sr = _find_attr_number(best, [
-                        "SamplingRate", "SamplingRateHz", "SampleRate", "SampleRateHz",
-                        "sampling_rate", "sample_rate", "StreamSampleRateHz",
-                        "SamplingFrequency", "Fs", "fs",
-                    ])
-                    if sr is None:
-                        # try group and file root
-                        sr = _find_attr_number(best.parent, [
-                            "SamplingRate", "SamplingRateHz", "SampleRate", "SampleRateHz",
-                            "sampling_rate", "sample_rate", "StreamSampleRateHz",
-                            "SamplingFrequency", "Fs", "fs",
-                        ]) or _find_attr_number(h5, [
-                            "SamplingRate", "SamplingRateHz", "SampleRate", "SampleRateHz",
-                            "sampling_rate", "sample_rate", "StreamSampleRateHz",
-                            "SamplingFrequency", "Fs", "fs",
-                        ])
-
-                dur = None
-                if sr and samples is not None:
-                    try:
-                        dur = float(samples) / float(sr)
-                    except Exception:
-                        pass
-
-                return BasicInfo(
-                    sampling_rate_hz=_to_float(sr),
-                    n_channels=_to_int(nchan),
-                    duration_seconds=_to_float(dur),
-                )
-        except Exception:
-            pass
-
-        # 3) No info available
+        # No info available without McsPyDataTools
         return BasicInfo(sampling_rate_hz=None, n_channels=None, duration_seconds=None)
 
 
@@ -278,4 +196,3 @@ def _find_attr_number(h5obj: Any, keys: list[str]) -> Optional[float]:
         return None
     except Exception:
         return None
-

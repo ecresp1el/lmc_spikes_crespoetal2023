@@ -3,24 +3,13 @@ from __future__ import annotations
 """
 Reader utilities for MCS MEA .h5 files.
 
-Prefers McsPyDataTools when available. Falls back to verifying HDF5 signature
-if McsPyDataTools (or h5py) is not installed, so we can at least confirm access.
+Policy: Only McsPyDataTools is used to access/read data. If the package is not
+available or cannot open the file, we do not fall back to other readers.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
-
-
-def _has_hdf5_signature(path: Path) -> bool:
-    """Quick HDF5 signature check without dependencies."""
-    try:
-        with path.open("rb") as f:
-            sig = f.read(8)
-        # HDF5 magic signature
-        return sig == b"\x89HDF\r\n\x1a\n"
-    except Exception:
-        return False
 
 
 @dataclass
@@ -61,14 +50,14 @@ def probe_mcs_h5(path: Path) -> ProbeResult:
     # Default: no metadata yet
     metadata: dict[str, Any] | None = None
 
-    # Try McsPyDataTools
+    # Try McsPyDataTools (only allowed access path)
     if _mcs_available():
         try:
             md, meta = _try_mcs_load(path)
             return ProbeResult(
                 path=path,
                 exists=True,
-                is_hdf5_signature=True,  # if MCS opened, it is HDF5
+                is_hdf5_signature=True,  # opened via MCS implies valid HDF5
                 mcs_available=True,
                 mcs_loaded=True,
                 loader=md,
@@ -81,33 +70,11 @@ def probe_mcs_h5(path: Path) -> ProbeResult:
     else:
         mcs_err = None
 
-    # Try h5py (optional)
-    try:
-        import h5py  # type: ignore
-
-        with h5py.File(path, "r") as h5:
-            # Minimal metadata
-            keys = list(h5.keys())
-            metadata = {"h5_top_level_keys": keys[:16], "h5_key_count": len(keys)}
-        return ProbeResult(
-            path=path,
-            exists=True,
-            is_hdf5_signature=True,
-            mcs_available=_mcs_available(),
-            mcs_loaded=False,
-            loader="h5py",
-            error=mcs_err,
-            metadata=metadata,
-        )
-    except Exception:
-        pass
-
-    # Fallback: raw HDF5 signature check only
-    is_h5 = _has_hdf5_signature(path)
+    # No other access is allowed. Report existence and MCS status only.
     return ProbeResult(
         path=path,
         exists=True,
-        is_hdf5_signature=is_h5,
+        is_hdf5_signature=False,
         mcs_available=_mcs_available(),
         mcs_loaded=False,
         loader=None,
@@ -175,4 +142,3 @@ def _try_mcs_load(path: Path) -> tuple[str, dict[str, Any]]:
     raise RuntimeError(
         "McsPyDataTools is installed, but no supported loader entry point matched."
     )
-

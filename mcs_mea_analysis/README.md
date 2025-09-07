@@ -18,11 +18,11 @@ Paths and Outputs
 
 First Step: Ensure Access
 - Use `pipeline.run_probe()` to discover `.h5` files and probe them.
-- Prefers `McsPyDataTools` to open files; falls back to `h5py` if available; finally an HDF5 signature check.
+- Only McsPyDataTools is used to access/read MCS data; there is no h5py fallback.
 
-Install (optional)
-- McsPyDataTools (preferred for MCS `.h5`) and h5py are optional but recommended:
-  - Add to environment and install: `pip install McsPyDataTools h5py`
+Install
+- McsPyDataTools is required to access MCS `.h5` content:
+  - `pip install McsPyDataTools`
 
 Minimal Usage (Python)
 ```
@@ -39,4 +39,3 @@ Command-line Runner
 Notes
 - This package does not import or execute `spiketurnpike_postanalysis/organize_h5_files.py` to avoid side effects.
 - If Manny2TB is not mounted, discovery will return empty and probe will log an empty set.
-
