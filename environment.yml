@@ -17,5 +17,7 @@ dependencies:
   - pip:
     - mat73
     - pyabf
+    - h5py
+    - McsPyDataTools
 
       # - some-pip-package # if you need any pip packages that are not available in Conda
