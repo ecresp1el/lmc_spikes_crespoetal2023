@@ -26,6 +26,7 @@ class GroupInfo:
 class BasicInfo:
     sampling_rate_hz: Optional[float]
     n_channels: Optional[int]
+    n_samples: Optional[int]
     duration_seconds: Optional[float]
 
 
@@ -101,6 +102,35 @@ def _walk_h5_datasets(h5obj: Any) -> Iterator[Any]:
     yield from _recur(h5obj)
 
 
+def _as_float(val: Any, preferred_unit: str | None = None) -> Optional[float]:
+    """Try to coerce a numeric or Pint-like quantity to float.
+    If preferred_unit is given, attempt unit conversion via `.to(preferred_unit)`.
+    Supports attributes like `.magnitude`, `.m`.
+    """
+    try:
+        if val is None:
+            return None
+        # Attempt Pint quantity handling
+        if preferred_unit and hasattr(val, "to"):
+            try:
+                v2 = val.to(preferred_unit)
+                if hasattr(v2, "magnitude"):
+                    return float(v2.magnitude)
+                if hasattr(v2, "m"):
+                    return float(v2.m)
+            except Exception:
+                pass
+        # Direct magnitude
+        if hasattr(val, "magnitude"):
+            return float(val.magnitude)
+        if hasattr(val, "m"):
+            return float(val.m)
+        # Plain number
+        return float(val)
+    except Exception:
+        return None
+
+
 class MetadataExtractor:
     @staticmethod
     def extract_basic(path: Path) -> BasicInfo:
@@ -110,8 +140,11 @@ class MetadataExtractor:
         """
         # McsPyDataTools / McsPy
         try:
-            # Try new-style McsPyDataTools
-            from McsPyDataTools import McsRecording  # type: ignore
+            # Try McsPyDataTools under common names
+            try:
+                from McsPyDataTools import McsRecording  # type: ignore
+            except Exception:
+                from mcspydatatools import McsRecording  # type: ignore
 
             rec = McsRecording(path.as_posix())
             # Heuristic introspection: look for an analog stream-like object with shape info
@@ -136,15 +169,24 @@ class MetadataExtractor:
                     items = []
                 for _, st in items:
                     # Common attribute guesses
-                    sr = sr or getattr(st, "sample_rate", None) or getattr(st, "sampling_rate", None)
+                    sr = sr or getattr(st, "sample_rate", None) or getattr(st, "sampling_rate", None) or getattr(st, "sampling_frequency", None)
                     # Try nested channel info
                     nchan = nchan or getattr(st, "channel_count", None) or getattr(st, "num_channels", None)
+                    if nchan is None:
+                        for cname in ("channel_infos", "channels", "channel_ids", "channel_labels"):
+                            ci = getattr(st, cname, None)
+                            try:
+                                nchan = len(ci) if ci is not None else nchan
+                            except Exception:
+                                pass
                     # Try duration or convert from sample count
-                    dur = dur or getattr(st, "duration", None)
+                    dur = dur or getattr(st, "duration", None) or getattr(st, "time_extent", None)
                     samples = getattr(st, "sample_count", None)
+                    if samples is None:
+                        samples = getattr(st, "num_samples", None)
                     if dur is None and samples is not None and sr:
                         try:
-                            dur = float(samples) / float(sr)
+                            dur = float(samples) / float(_as_float(sr, "Hz") or float(sr))
                         except Exception:
                             pass
                     if sr or nchan or dur:
@@ -152,16 +194,73 @@ class MetadataExtractor:
                 if sr or nchan or dur:
                     break
 
+            # Derive samples if possible from recording/streams (API-specific; skip here)
             return BasicInfo(
-                sampling_rate_hz=_to_float(sr),
+                sampling_rate_hz=_as_float(sr, "Hz"),
                 n_channels=_to_int(nchan),
-                duration_seconds=_to_float(dur),
+                n_samples=None,
+                duration_seconds=_as_float(dur, "s"),
             )
         except Exception:
             pass
 
-        # No info available without McsPyDataTools
-        return BasicInfo(sampling_rate_hz=None, n_channels=None, duration_seconds=None)
+        # Legacy McsPy.McsData API
+        try:
+            import McsPy.McsData as McsData  # type: ignore
+
+            raw = McsData.RawData(path.as_posix())
+            recs = getattr(raw, "recordings", {}) or {}
+            # choose first recording
+            first_rec = next(iter(recs.values())) if recs else None
+            sr = None
+            nchan = None
+            dur = None
+            if first_rec is not None:
+                # duration as Pint quantity
+                dur = getattr(first_rec, "duration_time", None)
+                # pick first analog stream
+                analogs = getattr(first_rec, "analog_streams", {}) or {}
+                if analogs:
+                    st = next(iter(analogs.values()))
+                    # channel count
+                    ci = getattr(st, "channel_infos", None)
+                    try:
+                        nchan = len(ci) if ci is not None else None
+                    except Exception:
+                        nchan = None
+                    # sampling frequency
+                    # use any channel's sampling_frequency
+                    if ci:
+                        try:
+                            any_chan = next(iter(ci.values()))
+                            sr = getattr(any_chan, "sampling_frequency", None)
+                        except Exception:
+                            sr = None
+                    # sample count from ChannelData shape
+                    try:
+                        nsmpl = int(getattr(st, "channel_data").shape[1])  # channels x samples
+                    except Exception:
+                        nsmpl = None
+
+            sr_f = _as_float(sr, "Hz")
+            dur_f = _as_float(dur, "s")
+            if dur_f is None and (nsmpl is not None) and (sr_f is not None and sr_f > 0):
+                try:
+                    dur_f = float(nsmpl) / float(sr_f)
+                except Exception:
+                    pass
+
+            return BasicInfo(
+                sampling_rate_hz=sr_f,
+                n_channels=_to_int(nchan),
+                n_samples=nsmpl,
+                duration_seconds=dur_f,
+            )
+        except Exception:
+            pass
+
+        # No info available without MCS packages
+        return BasicInfo(sampling_rate_hz=None, n_channels=None, n_samples=None, duration_seconds=None)
 
 
 def _to_float(x: Any) -> Optional[float]:

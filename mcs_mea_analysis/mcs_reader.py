@@ -9,7 +9,7 @@ available or cannot open the file, we do not fall back to other readers.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 
 @dataclass
@@ -83,13 +83,21 @@ def probe_mcs_h5(path: Path) -> ProbeResult:
     )
 
 
-def _mcs_available() -> bool:
-    try:
-        import McsPyDataTools  # type: ignore  # noqa: F401
+def _import_mcspy() -> Tuple[Optional[Any], Optional[str]]:
+    """Attempt to import McsPyDataTools under common module names.
+    Returns (module, import_name) or (None, None)."""
+    for name in ("McsPyDataTools", "mcspydatatools", "McsPy"):
+        try:
+            mod = __import__(name)
+            return mod, name
+        except Exception:
+            continue
+    return None, None
 
-        return True
-    except Exception:
-        return False
+
+def _mcs_available() -> bool:
+    mod, _ = _import_mcspy()
+    return mod is not None
 
 
 def _try_mcs_load(path: Path) -> tuple[str, dict[str, Any]]:
@@ -100,45 +108,43 @@ def _try_mcs_load(path: Path) -> tuple[str, dict[str, Any]]:
     We only query very light metadata to keep this step fast and robust.
     """
     # Strategy 1: new-style `McsRawData`/`McsRecording` (if present)
-    try:
-        from McsPyDataTools import McsRecording  # type: ignore
+    mod, import_name = _import_mcspy()
+    if mod is None:
+        raise RuntimeError("McsPyDataTools not importable")
 
-        rec = McsRecording(path.as_posix())
+    # Try attribute lookup on the imported module
+    McsRecording = getattr(mod, "McsRecording", None)
+    if McsRecording is not None:
+        rec = McsRecording(path.as_posix())  # type: ignore[call-arg]
         meta = {
-            "loader": "McsRecording",
+            "loader": f"{import_name}.McsRecording",
             "recording_name": getattr(rec, "name", None),
             "num_segments": getattr(rec, "channel_segments", None),
         }
         return "McsRecording", meta
-    except Exception:
-        pass
+    # Fallback within same package: look for a generic open
+    open_file = getattr(mod, "open_file", None)
+    if callable(open_file):
+        h = open_file(path.as_posix())  # type: ignore[misc]
+        meta = {"loader": f"{import_name}.open_file", "repr": repr(h)}
+        return "open_file", meta
 
-    # Strategy 2: legacy `MCSData` module
+    # Strategy 2: legacy McsPy.McsData API
     try:
-        from McsPy import MCSData  # type: ignore
+        import McsPy.McsData as McsData  # type: ignore
 
-        rec = MCSData.McsRecording(path.as_posix())
+        raw = McsData.RawData(path.as_posix())
         meta = {
-            "loader": "MCSData.McsRecording",
-            "recording_name": getattr(rec, "name", None),
+            "loader": "McsPy.McsData.RawData",
+            "n_recordings": len(getattr(raw, "recordings", {}) or {}),
+            "program_name": getattr(raw, "program_name", None),
+            "mea_layout": getattr(raw, "mea_layout", None),
         }
-        return "MCSData.McsRecording", meta
+        return "McsPy.McsData.RawData", meta
     except Exception:
         pass
 
-    # Strategy 3: open lower-level constructs if exposed
-    try:
-        import McsPyDataTools as mcs  # type: ignore
-
-        # Best effort: if package exposes a generic open
-        if hasattr(mcs, "open_file"):
-            h = mcs.open_file(path.as_posix())  # type: ignore[attr-defined]
-            meta = {"loader": "open_file", "repr": repr(h)}
-            return "open_file", meta
-    except Exception:
-        pass
-
-    # If we reached here, McsPyDataTools is installed but API didn't match.
+    # If we reached here, an MCS package is installed but API didn't match.
     raise RuntimeError(
-        "McsPyDataTools is installed, but no supported loader entry point matched."
+        "MCS Python package is installed, but no supported loader entry point matched."
     )

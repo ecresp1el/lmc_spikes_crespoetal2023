@@ -77,6 +77,13 @@ def run_probe(
     for r in results:
         gi = GroupLabeler.infer_from_path(r.path)
         bi = MetadataExtractor.extract_basic(r.path)
+        # Eligibility: ~10 kHz sampling and >= 300 seconds duration
+        sr = bi.sampling_rate_hz
+        dur = bi.duration_seconds
+        # allow small tolerance around 10 kHz (e.g., +/- 1 Hz)
+        sr_ok = (sr is not None) and (abs(sr - 10000.0) <= 1.0)
+        dur_ok = (dur is not None) and (dur >= 300.0)
+        eligible = bool(sr_ok and dur_ok)
         index_items.append(
             {
                 "file_name": r.path.name,
@@ -88,7 +95,9 @@ def run_probe(
                 "timestamp": gi.timestamp,
                 "sampling_rate_hz": bi.sampling_rate_hz,
                 "n_channels": bi.n_channels,
+                "n_samples": bi.n_samples,
                 "duration_seconds": bi.duration_seconds,
+                "eligible_10khz_ge300s": eligible,
                 "mcs_available": r.mcs_available,
                 "mcs_loaded": r.mcs_loaded,
                 "loader": r.loader,
@@ -112,7 +121,9 @@ def run_probe(
         "timestamp",
         "sampling_rate_hz",
         "n_channels",
+        "n_samples",
         "duration_seconds",
+        "eligible_10khz_ge300s",
         "mcs_available",
         "mcs_loaded",
         "loader",
@@ -122,6 +133,15 @@ def run_probe(
         w = csv.DictWriter(f, fieldnames=index_fields)
         w.writeheader()
         for item in index_items:
+            w.writerow(item)
+
+    # Write a filtered CSV with only eligible files
+    eligible_items = [it for it in index_items if it.get("eligible_10khz_ge300s")]
+    eligible_csv_path = csv_dir / f"file_index_eligible_{ts}.csv"
+    with eligible_csv_path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=index_fields)
+        w.writeheader()
+        for item in eligible_items:
             w.writerow(item)
 
     # Log list of discovered files
