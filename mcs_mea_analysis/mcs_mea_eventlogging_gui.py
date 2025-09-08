@@ -15,6 +15,7 @@ import pyqtgraph as pg
 from .mcs_reader import probe_mcs_h5
 from .plotting import PlotConfig, RawMEAPlotter
 from .config import CONFIG
+from .metadata import GroupLabeler
 from .fr_plots import compute_and_save_fr
 
 
@@ -40,6 +41,7 @@ class Annotation:
 
 
 class EventLoggingGUI(QtWidgets.QMainWindow):
+    status_signal = QtCore.pyqtSignal(str, int)
     """Interactive GUI for browsing MEA traces and logging events."""
 
     def __init__(
@@ -79,6 +81,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.categories_by_path: Dict[str, set] = {}
         self.overrides: Dict[str, Dict[str, object]] = {}
         self._fr_running: bool = False
+        self._fr_batch_running: bool = False
         # Chemical single-stamp state
         self.chem_mode: bool = False
         self.chem_time: Optional[float] = None
@@ -224,6 +227,10 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.setCentralWidget(splitter)
         # Status bar for quick feedback
         self.setStatusBar(QtWidgets.QStatusBar())
+        try:
+            self.status_signal.connect(self.statusBar().showMessage)
+        except Exception:
+            pass
 
         # Left panel (files from index + channels)
         left_panel = QtWidgets.QWidget()
@@ -699,6 +706,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self._log_index_status_summary()
         except Exception as e:
             print(f"[gui] index summary failed: {e}")
+        # Optionally kick a batch FR run for all chem-present files
+        try:
+            self._maybe_run_fr_batch()
+        except Exception as e:
+            print(f"[gui] FR batch check failed: {e}")
 
     def _annotation_dir_primary(self) -> Path:
         return CONFIG.annotations_root
@@ -1292,20 +1304,80 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.statusBar().showMessage("Computing FR plots…", 2000)
         threading.Thread(target=self._run_fr_worker, args=(chem_ts,), daemon=True).start()
 
+    def _has_fr_outputs(self, rec_path: Path) -> bool:
+        try:
+            gi = GroupLabeler.infer_from_path(rec_path)
+            out_dir = CONFIG.output_root / "plots" / gi.round_name / gi.label / rec_path.stem / "fr"
+            csv = out_dir / f"{rec_path.stem}_fr_summary.csv"
+            pdf = out_dir / f"{rec_path.stem}_fr_overview.pdf"
+            return csv.exists() and pdf.exists()
+        except Exception:
+            return False
+
+    def _maybe_run_fr_batch(self) -> None:
+        if self._fr_batch_running:
+            print("[gui] FR batch not triggered: already running")
+            return
+        if not self.index_items:
+            return
+        todo: List[Path] = []
+        for it in self.index_items:
+            p = Path(str(it.get('path', '')))
+            if not p.exists() or self._is_ignored(p):
+                continue
+            cats = self._annotation_categories_for(p)
+            if 'chemical' not in cats:
+                continue
+            if self._has_fr_outputs(p):
+                continue
+            todo.append(p)
+        if not todo:
+            print("[gui] FR batch: nothing to do")
+            return
+        self._fr_batch_running = True
+        print(f"[gui] FR batch: {len(todo)} recording(s) queued")
+        import threading
+        threading.Thread(target=self._run_fr_batch_worker, args=(todo,), daemon=True).start()
+
+    def _run_fr_batch_worker(self, paths: List[Path]) -> None:
+        try:
+            for p in paths:
+                try:
+                    chem_ts = self._chem_time_for_path(p)
+                    if chem_ts is None:
+                        print(f"[gui] FR batch skip (no chem): {p}")
+                        continue
+                    print(f"[gui] FR batch start: {p} chem={chem_ts:.6f}s")
+                    res = compute_and_save_fr(p, chem_ts, CONFIG.output_root)
+                    if res is None:
+                        print(f"[gui] FR batch done (no spikes) -> {p}")
+                    else:
+                        print(f"[gui] FR batch done -> {res.out_dir}")
+                except Exception as e:
+                    print(f"[gui] FR batch error: {p} -> {e}")
+        finally:
+            self._fr_batch_running = False
+
     def _run_fr_worker(self, chem_ts: float) -> None:
         try:
             res = compute_and_save_fr(self.recording, chem_ts, CONFIG.output_root)
             if res is None:
                 print("[gui] FR skipped (no spike streams detected).")
-                self.statusBar().showMessage("FR plots skipped (no spike streams).", 4000)
+                self._post_status("FR plots skipped (no spike streams).", 4000)
             else:
                 print(f"[gui] FR saved -> {res.out_dir}")
-                self.statusBar().showMessage(f"FR plots saved: {res.out_dir}", 4000)
+                self._post_status(f"FR plots saved: {res.out_dir}", 4000)
         except Exception as e:
             print(f"[gui] FR compute failed: {e}")
-            self.statusBar().showMessage("FR compute failed. See console.", 5000)
+            self._post_status("FR compute failed. See console.", 5000)
         finally:
             self._fr_running = False
+
+    def _post_status(self, msg: str, timeout_ms: int = 4000) -> None:
+        try:
+            self.status_signal.emit(str(msg), int(timeout_ms))
+        except Exception:
+            pass
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:
