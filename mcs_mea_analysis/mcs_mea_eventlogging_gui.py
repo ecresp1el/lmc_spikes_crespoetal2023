@@ -161,6 +161,21 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self._load_data()
         self._populate_channels()
         self._select_current_in_file_list()
+        # Reset annotations and preview state between files
+        self.annotations.clear()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        try:
+            self._clear_template()
+        except Exception:
+            self.template_anchor = None
+            self.template_lines = {}
+        try:
+            self._clear_chem()
+        except Exception:
+            self.chem_time = None
+            self.chem_lines = {}
+
         # Try to auto-open annotations for this file if present
         ap = self._find_existing_annotations(self.recording)
         if ap is not None:
@@ -228,12 +243,6 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.scope_box.setCurrentText("single")
         tb.addWidget(QtWidgets.QLabel("Apply to:"))
         tb.addWidget(self.scope_box)
-        # Category selector for manual annotations
-        tb.addWidget(QtWidgets.QLabel("Category:"))
-        self.category_box = QtWidgets.QComboBox()
-        self.category_box.addItems(["manual", "opto", "chemical"])  # default manual
-        self.category_box.setCurrentText("manual")
-        tb.addWidget(self.category_box)
 
         # Axis sync and controls
         self.act_link_x = QtWidgets.QAction("Link X", self, checkable=True)
@@ -318,10 +327,20 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         # Train template controls
         # ------------------------
         tb.addSeparator()
-        self.act_template = QtWidgets.QAction("Train Mode", self, checkable=True)
-        self.act_template.setToolTip("Toggle train template placement. Click in plot to set first pulse.")
-        self.act_template.toggled.connect(self._toggle_template_mode)
-        tb.addAction(self.act_template)
+        # Mode group (exclusive): Manual, Opto (Train), Chem
+        self.mode_group = QtWidgets.QActionGroup(self)
+        self.mode_group.setExclusive(True)
+        self.act_manual = QtWidgets.QAction("Manual", self, checkable=True)
+        self.act_template = QtWidgets.QAction("Opto", self, checkable=True)
+        self.act_template.setToolTip("Opto trains: click to set first pulse; Shift+Arrows to nudge; Commit.")
+        self.act_chem = QtWidgets.QAction("Chem", self, checkable=True)
+        self.act_chem.setToolTip("Chemical: click to set time; Shift+Arrows to nudge; Commit.")
+        for a, mode in ((self.act_manual, 'manual'), (self.act_template, 'opto'), (self.act_chem, 'chemical')):
+            self.mode_group.addAction(a)
+            a.triggered.connect(lambda checked, m=mode: self._set_mode(m))
+            tb.addAction(a)
+        self.act_manual.setChecked(True)
+        self._set_mode('manual')
         tb.addWidget(QtWidgets.QLabel("N:"))
         self.tpl_n_spin = QtWidgets.QSpinBox()
         self.tpl_n_spin.setRange(1, 500)
@@ -378,10 +397,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         # Chemical stamp controls
         # ------------------------
         tb.addSeparator()
-        self.act_chem = QtWidgets.QAction("Chem Mode", self, checkable=True)
-        self.act_chem.setToolTip("Toggle chemical stamp placement. Click to set time across channels.")
-        self.act_chem.toggled.connect(self._toggle_chem_mode)
-        tb.addAction(self.act_chem)
+        # self.act_chem added in mode group above
         tb.addWidget(QtWidgets.QLabel("Chem Label:"))
         self.chem_label_edit = QtWidgets.QLineEdit("chem")
         self.chem_label_edit.setFixedWidth(90)
@@ -493,7 +509,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             return
         label, _ = QtWidgets.QInputDialog.getText(self, "Annotation", "Label (optional):")
         scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'single'
-        category = self.category_box.currentText() if hasattr(self, 'category_box') else 'manual'
+        category = 'manual'
         if scope == "single":
             self.add_annotation(cid, timestamp, label, category)
         elif scope == "visible":
@@ -1110,10 +1126,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     # ------------------------
     def _toggle_chem_mode(self, enabled: bool) -> None:
         self.chem_mode = bool(enabled)
-        if enabled:
-            self.statusBar().showMessage("Chem Mode: Click to set time; Shift+Arrows to nudge; Commit Chem to annotate.", 8000)
-        else:
-            self.statusBar().clearMessage()
+        # kept for backward compatibility; now controlled via _set_mode()
 
     def _clear_chem_line_for(self, cid: int) -> None:
         ln = self.chem_lines.get(cid)
@@ -1155,22 +1168,56 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.statusBar().showMessage("No chem time placed yet.", 3000)
             return
         label = self.chem_label_edit.text().strip() or "chem"
-        scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'visible'
-        if scope == 'single':
-            scope = 'visible'
-        channels = sorted(self.plotwidgets.keys()) if scope == 'visible' else list(self.channel_ids)
+        # For chemical stamp, always apply to ALL channels in the recording
+        channels = list(self.channel_ids)
         self.add_annotations_bulk(channels, float(self.chem_time), label, category="chemical")
         self.statusBar().showMessage("Chem stamp committed. Save to persist.", 4000)
+
+    # ------------------------
+    # Mode management
+    # ------------------------
+    def _set_mode(self, mode: str) -> None:
+        mode = mode.lower()
+        self.template_mode = (mode == 'opto')
+        self.chem_mode = (mode == 'chemical')
+        manual = (mode == 'manual')
+        # Update actions
+        try:
+            self.act_manual.blockSignals(True)
+            self.act_template.blockSignals(True)
+            self.act_chem.blockSignals(True)
+            self.act_manual.setChecked(manual)
+            self.act_template.setChecked(self.template_mode)
+            self.act_chem.setChecked(self.chem_mode)
+        finally:
+            self.act_manual.blockSignals(False)
+            self.act_template.blockSignals(False)
+            self.act_chem.blockSignals(False)
+        # Status
+        if self.template_mode:
+            self.statusBar().showMessage("Opto (Train) Mode: Click to set first pulse; Shift+Arrows to nudge; Commit Template.", 8000)
+        elif self.chem_mode:
+            self.statusBar().showMessage("Chem Mode: Click to set time; Shift+Arrows to nudge; Commit Chem.", 8000)
+        else:
+            self.statusBar().showMessage("Manual Mode: Click to place timestamps (optional label).", 4000)
+        # Scope behavior: manual can choose; opto/chem force ALL
+        if hasattr(self, 'scope_box'):
+            if manual:
+                self.scope_box.setEnabled(True)
+            else:
+                try:
+                    self.scope_box.blockSignals(True)
+                    self.scope_box.setCurrentText('all')
+                finally:
+                    self.scope_box.blockSignals(False)
+                self.scope_box.setEnabled(False)
 
     # ------------------------
     # Train template helpers
     # ------------------------
     def _toggle_template_mode(self, enabled: bool) -> None:
         self.template_mode = bool(enabled)
-        if enabled:
-            self.statusBar().showMessage("Train Mode: Click to set first pulse; Shift+Arrows to nudge.", 8000)
-        else:
-            self.statusBar().clearMessage()
+        # kept for backward compatibility; now controlled via _set_mode()
 
     def _build_template_times(self) -> List[float]:
         if self.template_anchor is None:
@@ -1234,13 +1281,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         if not times:
             return
         base_label = self.template_label or "train"
-        scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'visible'
-        if scope == 'single':
-            scope = 'visible'
-        if scope == 'visible':
-            channels = sorted(self.plotwidgets.keys())
-        else:
-            channels = list(self.channel_ids)
+        # For opto trains, always apply to ALL channels in the recording
+        channels = list(self.channel_ids)
         added_all: List[Annotation] = []
         for idx, t in enumerate(times, start=1):
             pnum = 1 if (idx % 2) == 1 else 2
