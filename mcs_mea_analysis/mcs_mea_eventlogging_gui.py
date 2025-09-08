@@ -15,6 +15,7 @@ import pyqtgraph as pg
 from .mcs_reader import probe_mcs_h5
 from .plotting import PlotConfig, RawMEAPlotter
 from .config import CONFIG
+from .fr_plots import compute_and_save_fr
 
 
 @dataclass
@@ -77,6 +78,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.index_by_path: Dict[str, Dict[str, object]] = {}
         self.categories_by_path: Dict[str, set] = {}
         self.overrides: Dict[str, Dict[str, object]] = {}
+        self._fr_running: bool = False
         # Chemical single-stamp state
         self.chem_mode: bool = False
         self.chem_time: Optional[float] = None
@@ -839,6 +841,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 p = Path(str(path_str))
                 if self._is_ignored(p):
                     it.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+        # Also, if current file has chem, consider triggering FR update on load
+        self._maybe_run_fr_update()
 
     def _select_current_in_file_list(self) -> None:
         if not self.index_items:
@@ -1026,6 +1030,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self._rebuild_annotations_catalog()
         except Exception as e:  # noqa: BLE001
             print(f"[gui] save_annotations: catalog rebuild failed -> {e}")
+        # Run FR update if chem exists
+        self._maybe_run_fr_update()
 
     def _rebuild_annotations_catalog(self) -> None:
         """Scan all per-recording JSON files and write a catalog JSONL/CSV.
@@ -1106,6 +1112,55 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         with status_json.open("w", encoding="utf-8") as f:
             json.dump(status, f, indent=2)
         print(f"[gui] status: {len(status)} recordings -> {status_csv} and {status_json}")
+
+    # ------------------------
+    # FR plots trigger
+    # ------------------------
+    def _chem_time_from_annotations(self) -> Optional[float]:
+        for ann in self.annotations:
+            if ann.category == 'chemical':
+                return float(ann.timestamp)
+        # if not loaded, try disk
+        ap = self._find_existing_annotations(self.recording) if self.recording else None
+        if ap and ap.exists():
+            try:
+                if ap.suffix.lower() == '.json':
+                    data = json.loads(ap.read_text())
+                else:
+                    with ap.open('r', newline='') as fh:
+                        import csv
+                        data = list(csv.DictReader(fh))
+                for row in data:
+                    if str(row.get('category', 'manual')) == 'chemical':
+                        return float(row.get('timestamp', 0.0))
+            except Exception:
+                return None
+        return None
+
+    def _maybe_run_fr_update(self) -> None:
+        # Conditions: have recording, not running, chem timestamp exists
+        if not self.recording or self._fr_running:
+            return
+        chem_ts = self._chem_time_from_annotations()
+        if chem_ts is None:
+            return
+        self._fr_running = True
+        self.statusBar().showMessage("Computing FR plots…", 2000)
+        # Run in a basic background thread using Qt (simple wrapper)
+        QtCore.QTimer.singleShot(0, lambda: self._run_fr_worker(chem_ts))
+
+    def _run_fr_worker(self, chem_ts: float) -> None:
+        try:
+            res = compute_and_save_fr(self.recording, chem_ts, CONFIG.output_root)
+            if res is None:
+                self.statusBar().showMessage("FR plots skipped (no spike streams).", 4000)
+            else:
+                self.statusBar().showMessage(f"FR plots saved: {res.out_dir}", 4000)
+        except Exception as e:
+            print(f"[gui] FR compute failed: {e}")
+            self.statusBar().showMessage("FR compute failed. See console.", 5000)
+        finally:
+            self._fr_running = False
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:
@@ -1377,6 +1432,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.redo_stack.clear()
         self._update_annotation_lines()
         self.statusBar().showMessage("Chem stamp committed. Save to persist.", 4000)
+        # Auto-run FR update now that chem exists
+        self._maybe_run_fr_update()
 
     # ------------------------
     # Mode management
@@ -1507,6 +1564,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self._update_annotation_lines()
         print(f"[gui] template committed: n_annotations={len(added_all)} channels={len(channels)} trains={self.template_n_trains}")
         self.statusBar().showMessage("Template committed as annotations. Save to persist.", 4000)
+        # If chem already exists for this recording, rerun FR update
+        self._maybe_run_fr_update()
 
 
 def main() -> None:
