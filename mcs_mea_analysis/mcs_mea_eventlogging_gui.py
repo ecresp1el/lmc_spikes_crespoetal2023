@@ -4,6 +4,7 @@ import csv
 import json
 from dataclasses import dataclass
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -82,6 +83,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     def _load_data(self) -> None:
         """Load channel traces from the .h5 recording."""
+        t0 = time.perf_counter()
+        print(f"[gui] _load_data: start -> {self.recording}")
         # Check recording path and availability
         if self.recording is None:
             raise RuntimeError("No recording selected")
@@ -112,10 +115,18 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         ns = self.traces[self.channel_ids[0]].shape[0]
         self.x = np.arange(ns) / self.sr_hz
         self.total_time = float(ns) / self.sr_hz
+        t1 = time.perf_counter()
+        print(
+            f"[gui] _load_data: channels={len(self.channel_ids)} sr_hz={self.sr_hz:.2f} duration_s={self.total_time:.2f} elapsed={t1-t0:.2f}s"
+        )
 
     def _reload_recording(self, path: Path) -> None:
         """Tear down current plots and load a new recording."""
         self.recording = Path(path)
+        print(f"[gui] _reload_recording: {self.recording}")
+        self.statusBar().showMessage(f"Loading {self.recording.name}…")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        t0 = time.perf_counter()
         # Clear plots
         for pw in list(self.plotwidgets.values()):
             pw.setParent(None)
@@ -134,6 +145,10 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 self.open_annotations(ap)
             except Exception:
                 pass
+        t1 = time.perf_counter()
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(f"Loaded {self.recording.name} in {t1-t0:.2f}s", 5000)
+        print(f"[gui] _reload_recording: done in {t1-t0:.2f}s")
 
     # ------------------------------------------------------------------
     # UI construction
@@ -143,6 +158,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.resize(1200, 800)
         splitter = QtWidgets.QSplitter()
         self.setCentralWidget(splitter)
+        # Status bar for quick feedback
+        self.setStatusBar(QtWidgets.QStatusBar())
 
         # Left panel (files from index + channels)
         left_panel = QtWidgets.QWidget()
@@ -182,6 +199,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
 
         # Toolbar actions
         tb = self.addToolBar("Main")
+        # Scope selector for applying annotations across channels
+        self.scope_box = QtWidgets.QComboBox()
+        self.scope_box.addItems(["single", "visible", "all"])  # apply to one, plotted, or all channels
+        self.scope_box.setCurrentText("single")
+        tb.addWidget(QtWidgets.QLabel("Apply to:"))
+        tb.addWidget(self.scope_box)
         act_open_rec = QtWidgets.QAction("Open Recording…", self)
         act_open_rec.triggered.connect(self._open_recording_dialog)
         act_load_index = QtWidgets.QAction("Load Index…", self)
@@ -230,6 +253,9 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self._add_channel_plot(cid)
         else:
             self._remove_channel_plot(cid)
+        print(
+            f"[gui] channel_selection_changed: ch={cid} checked={item.checkState()==QtCore.Qt.Checked} visible={len(self.plotwidgets)}"
+        )
 
     def _add_channel_plot(self, cid: int) -> None:
         if cid in self.plotwidgets:
@@ -260,7 +286,17 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         mouse_point = pw.plotItem.vb.mapSceneToView(event.scenePos())
         timestamp = float(mouse_point.x())
         label, _ = QtWidgets.QInputDialog.getText(self, "Annotation", "Label (optional):")
-        self.add_annotation(cid, timestamp, label)
+        scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'single'
+        if scope == "single":
+            self.add_annotation(cid, timestamp, label)
+        elif scope == "visible":
+            targets = sorted(self.plotwidgets.keys())
+            for c in targets:
+                self.add_annotation(c, timestamp, label)
+        else:  # all
+            for c in self.channel_ids:
+                self.add_annotation(c, timestamp, label)
+        print(f"[gui] click: scope={scope} ts={timestamp:.3f} label='{label}' base_ch={cid}")
 
     def add_annotation(self, channel: int, timestamp: float, label: str = "") -> None:
         ann = Annotation(channel=channel, timestamp=timestamp, label=label)
@@ -268,6 +304,9 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.undo_stack.append(("add", ann))
         self.redo_stack.clear()
         self._update_annotation_lines()
+        # Keep status short when many are added
+        if len(self.annotations) <= 5 or len(self.annotations) % 10 == 0:
+            print(f"[gui] add_annotation: ch={channel} ts={timestamp:.3f} label='{label}' total={len(self.annotations)}")
 
     def _update_annotation_lines(self) -> None:
         # remove existing lines
@@ -298,6 +337,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         files = data.get("files", []) if isinstance(data, dict) else []
         self.index_items = [it for it in files if isinstance(it, dict)]
         self.index_by_path = {str(it.get("path")): it for it in self.index_items}
+        print(f"[gui] index loaded: {path} items={len(self.index_items)}")
 
     def _annotation_json_path(self, rec_path: Path) -> Path:
         out_dir = Path("_mcs_mea_outputs_local/annotations")
@@ -333,6 +373,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 item.setForeground(QtGui.QBrush(QtGui.QColor("gray")))
             self.file_list.addItem(item)
         self.file_list.blockSignals(False)
+        print(f"[gui] file list populated: rows={self.file_list.count()}")
 
     def _refresh_file_list_statuses(self) -> None:
         for i in range(self.file_list.count()):
@@ -354,8 +395,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
 
     def _file_item_activate(self, item: QtWidgets.QListWidgetItem) -> None:
         p = Path(str(item.data(QtCore.Qt.UserRole)))
+        print(f"[gui] file activate: {p}")
         if p.exists():
             self._reload_recording(p)
+        else:
+            print(f"[gui] file not found: {p}")
 
     def _open_selected_file(self) -> None:
         it = self.file_list.currentItem()
@@ -364,6 +408,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         p = Path(str(it.data(QtCore.Qt.UserRole)))
         if p.exists():
             self._reload_recording(p)
+        else:
+            print(f"[gui] open_selected: file not found {p}")
 
     def _open_recording_dialog(self) -> None:
         file_str, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -407,6 +453,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 if p.exists():
                     self._reload_recording(p)
                 break
+        print(f"[gui] jump_eligible: dir={direction} new_row={self.file_list.currentRow()}")
 
     # ------------------------------------------------------------------
     # Undo/redo
@@ -454,6 +501,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             writer.writerows(data)
         # Refresh status badges in file list (S flag)
         self._refresh_file_list_statuses()
+        print(f"[gui] save_annotations: {json_path} ({len(self.annotations)} items)")
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:
@@ -486,6 +534,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self._update_annotation_lines()
         # Refresh status badges, in case opening an existing file
         self._refresh_file_list_statuses()
+        print(f"[gui] open_annotations: {path} -> {len(self.annotations)} items")
 
     # ------------------------------------------------------------------
     # Navigation
