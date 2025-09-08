@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -34,7 +35,12 @@ class Annotation:
 class EventLoggingGUI(QtWidgets.QMainWindow):
     """Interactive GUI for browsing MEA traces and logging events."""
 
-    def __init__(self, recording: Path, parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(
+        self,
+        recording: Path,
+        index_path: Optional[Path] = None,
+        parent: Optional[QtWidgets.QWidget] = None,
+    ):
         super().__init__(parent)
         self.recording = Path(recording)
         self.annotations: List[Annotation] = []
@@ -44,9 +50,23 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.annotation_lines: Dict[int, List[pg.InfiniteLine]] = {}
         self.current_start: float = 0.0
         self.window_seconds: float = 10.0
+        # Optional file index context
+        self.index_path: Optional[Path] = Path(index_path) if index_path else None
+        self.index_items: List[Dict[str, object]] = []
+        self.index_by_path: Dict[str, Dict[str, object]] = {}
 
         self._load_data()
         self._init_ui()
+        if self.index_path:
+            self._load_index(self.index_path)
+            self._populate_file_list()
+            self._select_current_in_file_list()
+            ap = self._annotation_json_path(self.recording)
+            if ap.exists():
+                try:
+                    self.open_annotations(ap)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Data handling
@@ -82,6 +102,28 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.x = np.arange(ns) / self.sr_hz
         self.total_time = float(ns) / self.sr_hz
 
+    def _reload_recording(self, path: Path) -> None:
+        """Tear down current plots and load a new recording."""
+        self.recording = Path(path)
+        # Clear plots
+        for pw in list(self.plotwidgets.values()):
+            pw.setParent(None)
+        self.plotwidgets.clear()
+        self.annotation_lines.clear()
+        # Clear channel list
+        self.channel_list.clear()
+        # Load data and repopulate UI elements
+        self._load_data()
+        self._populate_channels()
+        self._select_current_in_file_list()
+        # Try to auto-open annotations for this file if present
+        ap = self._annotation_json_path(self.recording)
+        if ap.exists():
+            try:
+                self.open_annotations(ap)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -91,16 +133,26 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         splitter = QtWidgets.QSplitter()
         self.setCentralWidget(splitter)
 
+        # Left panel (files from index + channels)
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(4, 4, 4, 4)
+        left_layout.setSpacing(6)
+
+        # File list (only populated if index provided)
+        lbl_files = QtWidgets.QLabel("Files (from index)")
+        self.file_list = QtWidgets.QListWidget()
+        self.file_list.itemDoubleClicked.connect(self._file_item_activate)
+        left_layout.addWidget(lbl_files)
+        left_layout.addWidget(self.file_list)
+
         # Channel list with checkboxes
+        lbl_channels = QtWidgets.QLabel("Channels")
         self.channel_list = QtWidgets.QListWidget()
-        for cid in self.channel_ids:
-            item = QtWidgets.QListWidgetItem(f"Ch {cid}")
-            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.Unchecked)
-            item.setData(QtCore.Qt.UserRole, cid)
-            self.channel_list.addItem(item)
         self.channel_list.itemChanged.connect(self._channel_selection_changed)
-        splitter.addWidget(self.channel_list)
+        left_layout.addWidget(lbl_channels)
+        left_layout.addWidget(self.channel_list)
+        splitter.addWidget(left_panel)
 
         # Trace display area
         self.trace_container = QtWidgets.QWidget()
@@ -114,20 +166,43 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.trace_scroll.setWidget(self.trace_container)
         splitter.addWidget(self.trace_scroll)
 
+        # Populate current recording's channel list
+        self._populate_channels()
+
         # Toolbar actions
         tb = self.addToolBar("Main")
         act_save = QtWidgets.QAction("Save", self)
         act_save.triggered.connect(self.save_annotations)
         act_load = QtWidgets.QAction("Load", self)
         act_load.triggered.connect(self.open_annotations)
+        act_open_selected = QtWidgets.QAction("Open Selected", self)
+        act_open_selected.triggered.connect(self._open_selected_file)
+        act_next_elig = QtWidgets.QAction("Next Eligible", self)
+        act_next_elig.triggered.connect(lambda: self._jump_eligible(+1))
+        act_prev_elig = QtWidgets.QAction("Prev Eligible", self)
+        act_prev_elig.triggered.connect(lambda: self._jump_eligible(-1))
         act_undo = QtWidgets.QAction("Undo", self)
         act_undo.triggered.connect(self.undo)
         act_redo = QtWidgets.QAction("Redo", self)
         act_redo.triggered.connect(self.redo)
         tb.addAction(act_save)
         tb.addAction(act_load)
+        tb.addAction(act_open_selected)
+        tb.addAction(act_prev_elig)
+        tb.addAction(act_next_elig)
         tb.addAction(act_undo)
         tb.addAction(act_redo)
+
+    def _populate_channels(self) -> None:
+        self.channel_list.blockSignals(True)
+        self.channel_list.clear()
+        for cid in self.channel_ids:
+            item = QtWidgets.QListWidgetItem(f"Ch {cid}")
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Unchecked)
+            item.setData(QtCore.Qt.UserRole, cid)
+            self.channel_list.addItem(item)
+        self.channel_list.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Channel selection
@@ -195,6 +270,102 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.annotation_lines.setdefault(ann.channel, []).append(line)
 
     # ------------------------------------------------------------------
+    # Index/file list handling
+    # ------------------------------------------------------------------
+    def _load_index(self, path: Path) -> None:
+        try:
+            data = json.loads(Path(path).read_text())
+        except Exception as e:  # noqa: BLE001
+            print(f"[gui] Failed to load index: {path} -> {e}")
+            return
+        files = data.get("files", []) if isinstance(data, dict) else []
+        self.index_items = [it for it in files if isinstance(it, dict)]
+        self.index_by_path = {str(it.get("path")): it for it in self.index_items}
+
+    def _annotation_json_path(self, rec_path: Path) -> Path:
+        out_dir = Path("_mcs_mea_outputs_local/annotations")
+        return (out_dir / rec_path.stem).with_suffix(".json")
+
+    def _annotation_exists_for(self, rec_path: Path) -> bool:
+        ap = self._annotation_json_path(rec_path)
+        cp = ap.with_suffix(".csv")
+        return ap.exists() or cp.exists()
+
+    def _format_file_item_text(self, item: Dict[str, object]) -> str:
+        fname = Path(str(item.get("path", ""))).name
+        elig = bool(item.get("eligible_10khz_ge300s", False))
+        saved = self._annotation_exists_for(Path(str(item.get("path", ""))))
+        e_flag = "E" if elig else "-"
+        s_flag = "S" if saved else "-"
+        return f"[{e_flag}|{s_flag}] {fname}"
+
+    def _populate_file_list(self) -> None:
+        if not self.index_items:
+            self.file_list.clear()
+            return
+        self.file_list.blockSignals(True)
+        self.file_list.clear()
+        for it in self.index_items:
+            txt = self._format_file_item_text(it)
+            item = QtWidgets.QListWidgetItem(txt)
+            item.setData(QtCore.Qt.UserRole, str(it.get("path")))
+            # Color hint for eligibility
+            if it.get("eligible_10khz_ge300s"):
+                item.setForeground(QtGui.QBrush(QtGui.QColor("green")))
+            else:
+                item.setForeground(QtGui.QBrush(QtGui.QColor("gray")))
+            self.file_list.addItem(item)
+        self.file_list.blockSignals(False)
+
+    def _refresh_file_list_statuses(self) -> None:
+        for i in range(self.file_list.count()):
+            it = self.file_list.item(i)
+            path_str = it.data(QtCore.Qt.UserRole)
+            idx_item = self.index_by_path.get(str(path_str))
+            if idx_item:
+                it.setText(self._format_file_item_text(idx_item))
+
+    def _select_current_in_file_list(self) -> None:
+        if not self.index_items:
+            return
+        cur = str(self.recording)
+        for i in range(self.file_list.count()):
+            it = self.file_list.item(i)
+            if str(it.data(QtCore.Qt.UserRole)) == cur:
+                self.file_list.setCurrentRow(i)
+                break
+
+    def _file_item_activate(self, item: QtWidgets.QListWidgetItem) -> None:
+        p = Path(str(item.data(QtCore.Qt.UserRole)))
+        if p.exists():
+            self._reload_recording(p)
+
+    def _open_selected_file(self) -> None:
+        it = self.file_list.currentItem()
+        if it is None:
+            return
+        p = Path(str(it.data(QtCore.Qt.UserRole)))
+        if p.exists():
+            self._reload_recording(p)
+
+    def _jump_eligible(self, direction: int) -> None:
+        if not self.index_items or self.file_list.count() == 0:
+            return
+        cur_row = self.file_list.currentRow()
+        n = self.file_list.count()
+        rng = range(cur_row + direction, n, direction) if direction > 0 else range(cur_row + direction, -1, direction)
+        for i in rng:
+            it = self.file_list.item(i)
+            path_str = str(it.data(QtCore.Qt.UserRole))
+            info = self.index_by_path.get(path_str)
+            if info and info.get("eligible_10khz_ge300s"):
+                self.file_list.setCurrentRow(i)
+                p = Path(path_str)
+                if p.exists():
+                    self._reload_recording(p)
+                break
+
+    # ------------------------------------------------------------------
     # Undo/redo
     # ------------------------------------------------------------------
     def undo(self) -> None:
@@ -238,6 +409,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             writer = csv.DictWriter(fh, fieldnames=["path", "channel", "timestamp", "label"])
             writer.writeheader()
             writer.writerows(data)
+        # Refresh status badges in file list (S flag)
+        self._refresh_file_list_statuses()
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:
@@ -268,6 +441,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.undo_stack.clear()
         self.redo_stack.clear()
         self._update_annotation_lines()
+        # Refresh status badges, in case opening an existing file
+        self._refresh_file_list_statuses()
 
     # ------------------------------------------------------------------
     # Navigation
@@ -298,10 +473,16 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="MCS MEA event logging GUI")
     parser.add_argument("recording", type=Path, help="Path to .h5 recording")
+    parser.add_argument("--index", type=Path, default=None, help="Optional index JSON with metadata for multiple files")
     args = parser.parse_args()
 
-    app = QtWidgets.QApplication([])
-    gui = EventLoggingGUI(args.recording)
+    # Improve macOS behavior and HiDPI scaling
+    try:
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    app = QtWidgets.QApplication(sys.argv)
+    gui = EventLoggingGUI(args.recording, index_path=args.index)
     gui.show()
     app.exec_()
 
