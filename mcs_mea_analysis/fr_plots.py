@@ -189,6 +189,28 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     plt.close(fig)
     print(f"[fr] wrote PDF: {overview_pdf}")
 
+    # Save mean FR over time to CSV for downstream (avoid re-compute)
+    try:
+        fr_ts_csv = out_dir / f"{recording.stem}_fr_timeseries.csv"
+        with fr_ts_csv.open("w", encoding="utf-8", newline="") as f:
+            import csv as _csv
+            w = _csv.writer(f)
+            w.writerow(["time_s", "mean_fr_hz"])
+            if fr_over_time_n > 0:
+                centers = (edges[:-1] + edges[1:]) / 2.0
+                fr_mean = fr_over_time_sum / fr_over_time_n
+                for t, v in zip(centers, fr_mean):
+                    w.writerow([float(t), float(v)])
+        print(f"[fr] wrote TS: {fr_ts_csv}")
+    except Exception as e:
+        print(f"[fr] write TS failed: {e}")
+
+    # Update global FR catalog (rebuild lightweight index)
+    try:
+        rebuild_fr_catalog(output_root)
+    except Exception as e:
+        print(f"[fr] rebuild catalog failed: {e}")
+
     return FRResults(
         out_dir=out_dir,
         summary_csv=summary_csv,
@@ -259,3 +281,73 @@ def _detect_spikes_from_analog(st: object, sr_hz: float, chem_time: float, thr_k
         spikes[cid_i] = np.asarray(out_idx, dtype=float) / sr
         print(f"[fr-fallback] ch={cid_i} thr={thr:.3f} sigma={sig:.3f} n={spikes[cid_i].size}")
     return spikes
+
+
+def rebuild_fr_catalog(output_root: Path) -> None:
+    """Scan FR summary files under plots and write a global catalog and status.
+
+    - Catalog: one row per channel with FR metrics and metadata
+    - Status: one row per recording with counts
+    """
+    base = output_root / "plots"
+    rows: List[Dict[str, object]] = []
+    status: Dict[str, Dict[str, object]] = {}
+    import csv as _csv
+    for round_dir in base.iterdir() if base.exists() else []:
+        if not round_dir.is_dir():
+            continue
+        for group_dir in round_dir.iterdir():
+            if not group_dir.is_dir():
+                continue
+            for rec_dir in group_dir.iterdir():
+                if not rec_dir.is_dir():
+                    continue
+                fr_dir = rec_dir / "fr"
+                if not fr_dir.exists():
+                    continue
+                stem = rec_dir.name
+                csv_path = fr_dir / f"{stem}_fr_summary.csv"
+                if not csv_path.exists():
+                    continue
+                # derive recording path via reverse from GroupLabeler (best-effort)
+                # Not having absolute path from here; store stem and inferred metadata
+                gi = GroupLabeler(round_dir.name, '', group_dir.name, False, None) if hasattr(GroupLabeler, '__init__') else None
+                with csv_path.open("r", encoding="utf-8", newline="") as f:
+                    rdr = _csv.DictReader(f)
+                    for r in rdr:
+                        row = {
+                            "round": round_dir.name,
+                            "group_label": group_dir.name,
+                            "recording_stem": stem,
+                            "channel": int(r.get("channel", 0)),
+                            "fr_full": float(r.get("fr_full", 0) or 0),
+                            "fr_pre": float(r.get("fr_pre", 0) or 0),
+                            "fr_post": float(r.get("fr_post", 0) or 0),
+                            "n_spikes": int(r.get("n_spikes", 0) or 0),
+                        }
+                        rows.append(row)
+                st = status.setdefault(stem, {"round": round_dir.name, "group_label": group_dir.name, "n_channels": 0})
+                st["n_channels"] = max(int(st.get("n_channels", 0)), len([r for r in rows if r.get("recording_stem") == stem]))
+
+    out_dir = output_root / "fr_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Write JSONL and CSV
+    jsonl = out_dir / "fr_catalog.jsonl"
+    csv_path_out = out_dir / "fr_catalog.csv"
+    with jsonl.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(__import__('json').dumps(r) + "\n")
+    import csv as _csv2
+    with csv_path_out.open("w", encoding="utf-8", newline="") as f:
+        w = _csv2.DictWriter(f, fieldnames=["round", "group_label", "recording_stem", "channel", "fr_full", "fr_pre", "fr_post", "n_spikes"])
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+    # Status CSV
+    status_csv = out_dir / "fr_status.csv"
+    with status_csv.open("w", encoding="utf-8", newline="") as f:
+        w = _csv2.DictWriter(f, fieldnames=["recording_stem", "round", "group_label", "n_channels"])
+        w.writeheader()
+        for stem, st in sorted(status.items()):
+            w.writerow({"recording_stem": stem, **st})
+    print(f"[fr] catalog: rows={len(rows)} -> {csv_path_out} and {jsonl}; status -> {status_csv}")
