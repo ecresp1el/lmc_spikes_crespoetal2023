@@ -99,8 +99,11 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     # Load spike times
     spikes = _load_spike_times(recording)
     if not spikes:
-        print("[fr] no spike_streams found; skipping FR compute")
-        return None
+        print("[fr] no spike_streams found; falling back to analog threshold detection…")
+        spikes = _detect_spikes_from_analog(st, float(sr_hz), chem_time)
+        if not spikes:
+            print("[fr] fallback detection produced no spikes; skipping")
+            return None
 
     # Compute per-channel FR
     pre_T = float(chem_time)
@@ -194,3 +197,65 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         chem_time=pre_T,
         total_time=total_time,
     )
+
+
+def _detect_spikes_from_analog(st: object, sr_hz: float, chem_time: float, thr_k: float = 5.0, refrac_ms: float = 1.0) -> Dict[int, np.ndarray]:
+    """Simple negative threshold detector per channel.
+
+    - Threshold from robust noise in a baseline window (up to 120 s before chem).
+    - Spike at local minimum after crossing threshold; refractory of ~1 ms.
+    - Returns times in seconds per channel.
+    """
+    ds = getattr(st, "channel_data")
+    ci = getattr(st, "channel_infos", {}) or {}
+    sr = float(sr_hz)
+    n_total = int(ds.shape[1])
+    pre_ns = int(max(0, min(chem_time, 120.0)) * sr)  # up to 120 s baseline
+    refrac = max(1, int(round(refrac_ms * 1e-3 * sr)))
+    def robust_sigma(x: np.ndarray) -> float:
+        if x.size == 0:
+            return float(np.std(x))
+        med = np.median(x)
+        mad = np.median(np.abs(x - med))
+        return float(1.4826 * mad) if mad > 0 else float(np.std(x))
+
+    spikes: Dict[int, np.ndarray] = {}
+    for cid, info in ci.items():
+        try:
+            cid_i = int(cid)
+            row = int(getattr(info, "row_index"))
+        except Exception:
+            continue
+        try:
+            x = np.asarray(ds[row, :], dtype=float)
+        except Exception:
+            continue
+        if x.size == 0:
+            continue
+        base = x[:pre_ns] if pre_ns > 0 else x[: min(x.size, int(60 * sr))]
+        sig = robust_sigma(base)
+        thr = -thr_k * sig
+        if not np.isfinite(thr) or thr >= 0:
+            # Fallback to percentile-based threshold
+            thr = float(np.percentile(base, 1.0)) if base.size else -1.0
+        idx = np.flatnonzero((x[1:] < thr) & (x[:-1] >= thr)) + 1
+        if idx.size == 0:
+            spikes[cid_i] = np.empty(0, dtype=float)
+            continue
+        out_idx: List[int] = []
+        i = 0
+        N = idx.size
+        while i < N:
+            p = int(idx[i])
+            # search local min within refractory window
+            j_end = min(p + refrac, x.size)
+            j_rel = int(np.argmin(x[p:j_end]))
+            sp = p + j_rel
+            out_idx.append(sp)
+            # skip crossings within refractory period from detected spike
+            i += 1
+            while i < N and int(idx[i]) < sp + refrac:
+                i += 1
+        spikes[cid_i] = np.asarray(out_idx, dtype=float) / sr
+        print(f"[fr-fallback] ch={cid_i} thr={thr:.3f} sigma={sig:.3f} n={spikes[cid_i].size}")
+    return spikes

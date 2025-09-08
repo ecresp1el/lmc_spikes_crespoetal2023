@@ -1287,10 +1287,10 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             print("[gui] FR not triggered: no chem stamp found for current recording")
             return
         print(f"[gui] FR trigger: {self.recording} chem={chem_ts:.6f}s")
+        import threading
         self._fr_running = True
         self.statusBar().showMessage("Computing FR plots…", 2000)
-        # Run in a basic background thread using Qt (simple wrapper)
-        QtCore.QTimer.singleShot(0, lambda: self._run_fr_worker(chem_ts))
+        threading.Thread(target=self._run_fr_worker, args=(chem_ts,), daemon=True).start()
 
     def _run_fr_worker(self, chem_ts: float) -> None:
         try:
