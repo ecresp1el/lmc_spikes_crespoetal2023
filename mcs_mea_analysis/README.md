@@ -50,6 +50,17 @@ Launching the GUI
   - `python scripts/eventlogger.py [<recording.h5>] [--index <file_index.json>]`
 - Annotations are saved under `_mcs_mea_outputs_local/annotations/` as JSON and CSV.
 
+Annotation details
+- Scope control in toolbar: apply to `single`, `visible`, or `all` channels.
+- Per-click adds vertical markers and records an annotation row per channel.
+- Storage format per recording (`_mcs_mea_outputs_local/annotations/<stem>.{json,csv}`):
+  - Fields: `path, channel, timestamp, label, sample`
+  - `timestamp` in seconds; `sample` is the integer sample index (rounded from `timestamp * sr_hz`).
+- Live annotation list is shown in a dock on the right (per-channel and grouped views).
+- A catalog of all annotations across recordings is rebuilt on save:
+  - Local: `_mcs_mea_outputs_local/annotations/annotations_catalog.{jsonl,csv}`
+  - If available, also mirrored to `/Volumes/Manny2TB/mcs_mea_outputs/annotations/`
+
 Notes
 - This package does not import or execute `spiketurnpike_postanalysis/organize_h5_files.py` to avoid side effects.
 - If Manny2TB is not mounted, discovery will return empty and probe will log an empty set.

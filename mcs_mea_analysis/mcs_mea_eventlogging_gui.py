@@ -14,6 +14,7 @@ import pyqtgraph as pg
 
 from .mcs_reader import probe_mcs_h5
 from .plotting import PlotConfig, RawMEAPlotter
+from .config import CONFIG
 
 
 @dataclass
@@ -23,6 +24,7 @@ class Annotation:
     channel: int
     timestamp: float
     label: str = ""
+    sample: Optional[int] = None
 
     def as_dict(self, recording: Path) -> Dict[str, object]:
         return {
@@ -30,6 +32,7 @@ class Annotation:
             "channel": self.channel,
             "timestamp": self.timestamp,
             "label": self.label,
+            "sample": self.sample,
         }
 
 
@@ -233,6 +236,28 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         tb.addAction(act_undo)
         tb.addAction(act_redo)
 
+        # Annotations dock (live list)
+        self.ann_dock = QtWidgets.QDockWidget("Annotations", self)
+        self.ann_dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        self.ann_tabs = QtWidgets.QTabWidget()
+        # Per-annotation table
+        self.ann_table = QtWidgets.QTableWidget(0, 4)
+        self.ann_table.setHorizontalHeaderLabels(["Channel", "Time (s)", "Sample", "Label"])
+        self.ann_table.horizontalHeader().setStretchLastSection(True)
+        self.ann_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.ann_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        # Grouped view table (by sample+label)
+        self.group_table = QtWidgets.QTableWidget(0, 4)
+        self.group_table.setHorizontalHeaderLabels(["Time (s)", "Sample", "#Channels", "Label"])
+        self.group_table.horizontalHeader().setStretchLastSection(True)
+        self.group_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.group_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.ann_tabs.addTab(self.ann_table, "Per-Channel")
+        self.ann_tabs.addTab(self.group_table, "Grouped")
+        self.ann_dock.setWidget(self.ann_tabs)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.ann_dock)
+        self._refresh_annotation_views()
+
     def _populate_channels(self) -> None:
         self.channel_list.blockSignals(True)
         self.channel_list.clear()
@@ -291,15 +316,14 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.add_annotation(cid, timestamp, label)
         elif scope == "visible":
             targets = sorted(self.plotwidgets.keys())
-            for c in targets:
-                self.add_annotation(c, timestamp, label)
+            self.add_annotations_bulk(targets, timestamp, label)
         else:  # all
-            for c in self.channel_ids:
-                self.add_annotation(c, timestamp, label)
+            self.add_annotations_bulk(self.channel_ids, timestamp, label)
         print(f"[gui] click: scope={scope} ts={timestamp:.3f} label='{label}' base_ch={cid}")
 
     def add_annotation(self, channel: int, timestamp: float, label: str = "") -> None:
-        ann = Annotation(channel=channel, timestamp=timestamp, label=label)
+        sample = int(round(timestamp * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
+        ann = Annotation(channel=channel, timestamp=timestamp, label=label, sample=sample)
         self.annotations.append(ann)
         self.undo_stack.append(("add", ann))
         self.redo_stack.clear()
@@ -307,6 +331,19 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         # Keep status short when many are added
         if len(self.annotations) <= 5 or len(self.annotations) % 10 == 0:
             print(f"[gui] add_annotation: ch={channel} ts={timestamp:.3f} label='{label}' total={len(self.annotations)}")
+
+    def add_annotations_bulk(self, channels: List[int], timestamp: float, label: str = "") -> None:
+        """Add the same annotation across multiple channels as one undoable action."""
+        added: List[Annotation] = []
+        sample = int(round(timestamp * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
+        for ch in channels:
+            ann = Annotation(channel=ch, timestamp=timestamp, label=label, sample=sample)
+            self.annotations.append(ann)
+            added.append(ann)
+        self.undo_stack.append(("bulk_add", added))
+        self.redo_stack.clear()
+        self._update_annotation_lines()
+        print(f"[gui] add_annotations_bulk: n={len(added)} ts={timestamp:.3f} label='{label}'")
 
     def _update_annotation_lines(self) -> None:
         # remove existing lines
@@ -324,6 +361,39 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             line = pg.InfiniteLine(ann.timestamp, angle=90, pen=pg.mkPen('r'))
             pw.addItem(line)
             self.annotation_lines.setdefault(ann.channel, []).append(line)
+        # Update list views
+        self._refresh_annotation_views()
+
+    def _refresh_annotation_views(self) -> None:
+        # Per-channel table
+        rows = len(self.annotations)
+        self.ann_table.setRowCount(rows)
+        for i, ann in enumerate(self.annotations):
+            self.ann_table.setItem(i, 0, QtWidgets.QTableWidgetItem(str(ann.channel)))
+            self.ann_table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{ann.timestamp:.6f}"))
+            self.ann_table.setItem(i, 2, QtWidgets.QTableWidgetItem("" if ann.sample is None else str(ann.sample)))
+            self.ann_table.setItem(i, 3, QtWidgets.QTableWidgetItem(ann.label))
+        self.ann_table.resizeColumnsToContents()
+
+        # Grouped table: by (sample if available else timestamp, label)
+        groups: Dict[tuple, Dict[str, object]] = {}
+        for ann in self.annotations:
+            key = (ann.sample if ann.sample is not None else round(ann.timestamp, 6), ann.label)
+            g = groups.setdefault(key, {"count": 0})
+            g["count"] = int(g["count"]) + 1
+            g["timestamp"] = ann.timestamp
+            g["sample"] = ann.sample
+            g["label"] = ann.label
+        self.group_table.setRowCount(len(groups))
+        for i, ((k0, lbl), info) in enumerate(groups.items()):
+            ts = info.get("timestamp", 0.0) or 0.0
+            smp = info.get("sample", None)
+            cnt = info.get("count", 0)
+            self.group_table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{float(ts):.6f}"))
+            self.group_table.setItem(i, 1, QtWidgets.QTableWidgetItem("" if smp is None else str(int(smp))))
+            self.group_table.setItem(i, 2, QtWidgets.QTableWidgetItem(str(int(cnt))))
+            self.group_table.setItem(i, 3, QtWidgets.QTableWidgetItem(str(lbl)))
+        self.group_table.resizeColumnsToContents()
 
     # ------------------------------------------------------------------
     # Index/file list handling
@@ -461,25 +531,48 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     def undo(self) -> None:
         if not self.undo_stack:
             return
-        action, ann = self.undo_stack.pop()
+        action, payload = self.undo_stack.pop()
         if action == "add":
-            self.annotations.remove(ann)
+            ann = payload
+            try:
+                self.annotations.remove(ann)
+            except ValueError:
+                pass
             self.redo_stack.append(("add", ann))
         elif action == "remove":
+            ann = payload
             self.annotations.append(ann)
             self.redo_stack.append(("remove", ann))
+        elif action == "bulk_add":
+            anns: List[Annotation] = payload
+            for a in anns:
+                try:
+                    self.annotations.remove(a)
+                except ValueError:
+                    pass
+            self.redo_stack.append(("bulk_add", anns))
         self._update_annotation_lines()
 
     def redo(self) -> None:
         if not self.redo_stack:
             return
-        action, ann = self.redo_stack.pop()
+        action, payload = self.redo_stack.pop()
         if action == "add":
+            ann = payload
             self.annotations.append(ann)
             self.undo_stack.append(("add", ann))
         elif action == "remove":
-            self.annotations.remove(ann)
+            ann = payload
+            try:
+                self.annotations.remove(ann)
+            except ValueError:
+                pass
             self.undo_stack.append(("remove", ann))
+        elif action == "bulk_add":
+            anns: List[Annotation] = payload
+            for a in anns:
+                self.annotations.append(a)
+            self.undo_stack.append(("bulk_add", anns))
         self._update_annotation_lines()
 
     # ------------------------------------------------------------------
@@ -496,12 +589,64 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         data = [ann.as_dict(self.recording) for ann in self.annotations]
         json_path.write_text(json.dumps(data, indent=2))
         with csv_path.open("w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["path", "channel", "timestamp", "label"])
+            writer = csv.DictWriter(fh, fieldnames=["path", "channel", "timestamp", "label", "sample"])
             writer.writeheader()
             writer.writerows(data)
         # Refresh status badges in file list (S flag)
         self._refresh_file_list_statuses()
         print(f"[gui] save_annotations: {json_path} ({len(self.annotations)} items)")
+        # Rebuild catalog for downstream analysis
+        try:
+            self._rebuild_annotations_catalog(out_dir)
+        except Exception as e:  # noqa: BLE001
+            print(f"[gui] save_annotations: catalog rebuild failed -> {e}")
+
+    def _rebuild_annotations_catalog(self, local_dir: Path) -> None:
+        """Scan all per-recording JSON files and write a catalog JSONL/CSV.
+
+        Writes to local annotations dir. If external output root exists, also
+        mirrors to /Volumes/Manny2TB/mcs_mea_outputs/annotations.
+        """
+        # Collect
+        items: List[Dict[str, object]] = []
+        for p in sorted(local_dir.glob("*.json")):
+            try:
+                data = json.loads(p.read_text())
+                if isinstance(data, list):
+                    # Enrich with recording stem for convenience
+                    for row in data:
+                        if isinstance(row, dict):
+                            row.setdefault("recording_stem", p.stem)
+                            items.append(row)
+            except Exception:
+                continue
+        # Write local catalog
+        cat_jsonl = local_dir / "annotations_catalog.jsonl"
+        cat_csv = local_dir / "annotations_catalog.csv"
+        with cat_jsonl.open("w", encoding="utf-8") as f:
+            for row in items:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        fieldnames = ["path", "recording_stem", "channel", "timestamp", "label", "sample"]
+        with cat_csv.open("w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in items:
+                w.writerow({k: row.get(k) for k in fieldnames})
+        print(f"[gui] catalog: {len(items)} rows -> {cat_jsonl.name}, {cat_csv.name}")
+        # Mirror to external output if available
+        try:
+            ext_dir = CONFIG.output_root / "annotations"
+            ext_dir.mkdir(parents=True, exist_ok=True)
+            (ext_dir / cat_jsonl.name).write_text(cat_jsonl.read_text())
+            with (ext_dir / cat_csv.name).open("w", encoding="utf-8", newline="") as f:
+                # Rewrite CSV to avoid reading as text then writing text
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w.writeheader()
+                for row in items:
+                    w.writerow({k: row.get(k) for k in fieldnames})
+            print(f"[gui] catalog mirrored -> {ext_dir}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[gui] catalog mirror skipped -> {e}")
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:
@@ -526,7 +671,15 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 ch = int(item["channel"])
                 ts = float(item["timestamp"])
                 label = item.get("label", "")
-                self.annotations.append(Annotation(ch, ts, label))
+                smp = item.get("sample")
+                if smp is None and hasattr(self, 'sr_hz'):
+                    smp = int(round(ts * float(self.sr_hz)))
+                else:
+                    try:
+                        smp = int(smp) if smp is not None else None
+                    except Exception:
+                        smp = None
+                self.annotations.append(Annotation(ch, ts, label, smp))
             except Exception:  # noqa: BLE001
                 continue
         self.undo_stack.clear()
