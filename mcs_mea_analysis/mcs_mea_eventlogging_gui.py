@@ -57,6 +57,16 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self._suppress_sync: bool = False
         self.link_x: bool = True
         self.link_y: bool = True
+        # Train template state
+        self.template_mode: bool = False
+        self.template_anchor: Optional[float] = None
+        self.template_n_trains: int = 45
+        self.template_period_s: float = 7.6
+        self.template_pulse_sep_s: float = 0.2
+        self.template_block_s: float = 0.6
+        self.template_label: str = "train"
+        self.template_step_s: float = 0.001  # s per Shift+Arrow nudge
+        self.template_lines: Dict[int, List[pg.InfiniteLine]] = {}
         # Optional file index context
         self.index_path: Optional[Path] = Path(index_path) if index_path else None
         self.index_items: List[Dict[str, object]] = []
@@ -291,6 +301,66 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         tb.addAction(act_undo)
         tb.addAction(act_redo)
 
+        # ------------------------
+        # Train template controls
+        # ------------------------
+        tb.addSeparator()
+        self.act_template = QtWidgets.QAction("Train Mode", self, checkable=True)
+        self.act_template.setToolTip("Toggle train template placement. Click in plot to set first pulse.")
+        self.act_template.toggled.connect(self._toggle_template_mode)
+        tb.addAction(self.act_template)
+        tb.addWidget(QtWidgets.QLabel("N:"))
+        self.tpl_n_spin = QtWidgets.QSpinBox()
+        self.tpl_n_spin.setRange(1, 500)
+        self.tpl_n_spin.setValue(self.template_n_trains)
+        self.tpl_n_spin.valueChanged.connect(lambda v: setattr(self, "template_n_trains", int(v)))
+        tb.addWidget(self.tpl_n_spin)
+        tb.addWidget(QtWidgets.QLabel("Period (s):"))
+        self.tpl_period = QtWidgets.QDoubleSpinBox()
+        self.tpl_period.setDecimals(3)
+        self.tpl_period.setRange(0.001, 1e4)
+        self.tpl_period.setSingleStep(0.1)
+        self.tpl_period.setValue(self.template_period_s)
+        self.tpl_period.valueChanged.connect(lambda v: setattr(self, "template_period_s", float(v)))
+        tb.addWidget(self.tpl_period)
+        tb.addWidget(QtWidgets.QLabel("Sep (s):"))
+        self.tpl_sep = QtWidgets.QDoubleSpinBox()
+        self.tpl_sep.setDecimals(3)
+        self.tpl_sep.setRange(0.0, 10.0)
+        self.tpl_sep.setSingleStep(0.05)
+        self.tpl_sep.setValue(self.template_pulse_sep_s)
+        self.tpl_sep.valueChanged.connect(lambda v: setattr(self, "template_pulse_sep_s", float(v)))
+        tb.addWidget(self.tpl_sep)
+        tb.addWidget(QtWidgets.QLabel("Block (s):"))
+        self.tpl_block = QtWidgets.QDoubleSpinBox()
+        self.tpl_block.setDecimals(3)
+        self.tpl_block.setRange(0.0, 10.0)
+        self.tpl_block.setSingleStep(0.05)
+        self.tpl_block.setValue(self.template_block_s)
+        self.tpl_block.valueChanged.connect(lambda v: setattr(self, "template_block_s", float(v)))
+        tb.addWidget(self.tpl_block)
+        tb.addWidget(QtWidgets.QLabel("Label:"))
+        self.tpl_label = QtWidgets.QLineEdit(self.template_label)
+        self.tpl_label.setFixedWidth(90)
+        self.tpl_label.textChanged.connect(lambda s: setattr(self, "template_label", s))
+        tb.addWidget(self.tpl_label)
+        tb.addWidget(QtWidgets.QLabel("Step (ms):"))
+        self.tpl_step = QtWidgets.QDoubleSpinBox()
+        self.tpl_step.setDecimals(1)
+        self.tpl_step.setRange(0.1, 1000.0)
+        self.tpl_step.setSingleStep(0.5)
+        self.tpl_step.setValue(self.template_step_s * 1000.0)
+        self.tpl_step.valueChanged.connect(lambda v: setattr(self, "template_step_s", float(v) / 1000.0))
+        tb.addWidget(self.tpl_step)
+        btn_commit_tpl = QtWidgets.QToolButton()
+        btn_commit_tpl.setText("Commit Template")
+        btn_commit_tpl.clicked.connect(self._commit_template)
+        tb.addWidget(btn_commit_tpl)
+        btn_clear_tpl = QtWidgets.QToolButton()
+        btn_clear_tpl.setText("Clear Template")
+        btn_clear_tpl.clicked.connect(self._clear_template)
+        tb.addWidget(btn_clear_tpl)
+
         # Annotations dock (live list)
         self.ann_dock = QtWidgets.QDockWidget("Annotations", self)
         self.ann_dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
@@ -351,6 +421,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             pw.plotItem.vb.sigRangeChanged.connect(lambda vb, rng, w=pw: self._on_range_changed(w))  # type: ignore[attr-defined]
         except Exception:
             pass
+        # If a template exists, draw its lines for this channel
+        self._draw_template_for_channel(cid, pw)
         self.trace_layout.insertWidget(self.trace_layout.count() - 1, pw)
         self.plotwidgets[cid] = pw
         self.annotation_lines[cid] = []
@@ -370,6 +442,13 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             return
         mouse_point = pw.plotItem.vb.mapSceneToView(event.scenePos())
         timestamp = float(mouse_point.x())
+        if self.template_mode:
+            # Set or move template anchor
+            self.template_anchor = timestamp
+            print(f"[gui] template anchor set: {self.template_anchor:.6f}s")
+            self._redraw_template()
+            self.statusBar().showMessage("Train template positioned. Use Shift+Left/Right or Step to adjust.", 5000)
+            return
         label, _ = QtWidgets.QInputDialog.getText(self, "Annotation", "Label (optional):")
         scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'single'
         if scope == "single":
@@ -778,6 +857,15 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     # Navigation
     # ------------------------------------------------------------------
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # type: ignore[override]
+        if self.template_mode and (event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right)) and (event.modifiers() & QtCore.Qt.ShiftModifier):
+            step = self.template_step_s
+            if event.key() == QtCore.Qt.Key_Left:
+                step = -step
+            if self.template_anchor is not None:
+                self.template_anchor = max(0.0, self.template_anchor + step)
+                print(f"[gui] template shift: anchor={self.template_anchor:.6f}s")
+                self._redraw_template()
+                return
         if event.key() == QtCore.Qt.Key_Right:
             self._shift_time(1)
         elif event.key() == QtCore.Qt.Key_Left:
@@ -905,6 +993,101 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.ymax_spin.blockSignals(False)
         for pw in self.plotwidgets.values():
             pw.setYRange(ymin_ap, ymax_ap, padding=0)
+
+    # ------------------------
+    # Train template helpers
+    # ------------------------
+    def _toggle_template_mode(self, enabled: bool) -> None:
+        self.template_mode = bool(enabled)
+        if enabled:
+            self.statusBar().showMessage("Train Mode: Click to set first pulse; Shift+Arrows to nudge.", 8000)
+        else:
+            self.statusBar().clearMessage()
+
+    def _build_template_times(self) -> List[float]:
+        if self.template_anchor is None:
+            return []
+        t0 = float(self.template_anchor)
+        n = int(self.template_n_trains)
+        period = float(self.template_period_s)
+        sep = float(self.template_pulse_sep_s)
+        times: List[float] = []
+        for i in range(n):
+            base = t0 + i * period
+            times.append(base)
+            times.append(base + sep)
+        return times
+
+    def _clear_template_lines_for(self, cid: int) -> None:
+        lines = self.template_lines.get(cid) or []
+        pw = self.plotwidgets.get(cid)
+        if pw:
+            for ln in lines:
+                try:
+                    pw.removeItem(ln)
+                except Exception:
+                    pass
+        self.template_lines[cid] = []
+
+    def _draw_template_for_channel(self, cid: int, pw: Optional[pg.PlotWidget] = None) -> None:
+        if self.template_anchor is None:
+            return
+        if pw is None:
+            pw = self.plotwidgets.get(cid)
+        if pw is None:
+            return
+        self._clear_template_lines_for(cid)
+        times = self._build_template_times()
+        blue = pg.mkPen(QtGui.QColor(80, 160, 255), width=1)
+        lines: List[pg.InfiniteLine] = []
+        for t in times:
+            ln = pg.InfiniteLine(t, angle=90, pen=blue)
+            pw.addItem(ln)
+            lines.append(ln)
+        self.template_lines[cid] = lines
+
+    def _redraw_template(self) -> None:
+        if self.template_anchor is None:
+            return
+        for cid, pw in self.plotwidgets.items():
+            self._draw_template_for_channel(cid, pw)
+
+    def _clear_template(self) -> None:
+        for cid in list(self.template_lines.keys()):
+            self._clear_template_lines_for(cid)
+        self.template_anchor = None
+        print("[gui] template cleared")
+
+    def _commit_template(self) -> None:
+        if self.template_anchor is None:
+            self.statusBar().showMessage("No template placed yet.", 3000)
+            return
+        times = self._build_template_times()
+        if not times:
+            return
+        base_label = self.template_label or "train"
+        scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'visible'
+        if scope == 'single':
+            scope = 'visible'
+        if scope == 'visible':
+            channels = sorted(self.plotwidgets.keys())
+        else:
+            channels = list(self.channel_ids)
+        added_all: List[Annotation] = []
+        for idx, t in enumerate(times, start=1):
+            pnum = 1 if (idx % 2) == 1 else 2
+            train_num = (idx + 1) // 2
+            label = f"{base_label}#{train_num:02d}_p{pnum}"
+            for ch in channels:
+                sample = int(round(t * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
+                ann = Annotation(channel=ch, timestamp=t, label=label, sample=sample)
+                self.annotations.append(ann)
+                added_all.append(ann)
+        self.undo_stack.append(("bulk_add", added_all))
+        self.redo_stack.clear()
+        self._update_annotation_lines()
+        print(f"[gui] template committed: n_annotations={len(added_all)} channels={len(channels)} trains={self.template_n_trains}")
+        self.statusBar().showMessage("Template committed as annotations. Save to persist.", 4000)
 
 
 def main() -> None:
