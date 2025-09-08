@@ -105,12 +105,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                         self.open_annotations(ap)
                     except Exception:
                         pass
-        # On launch, if a chemical stamp already exists (on disk or loaded),
-        # trigger FR compute immediately without user action.
+        # Auto-boot: if no recording specified, try loading the latest index and a
+        # recording that already has chem stamps, then trigger FR.
         try:
-            self._maybe_run_fr_update()
-        except Exception:
-            pass
+            self._auto_boot()
+        except Exception as e:
+            print(f"[gui] auto_boot skipped: {e}")
 
     # ------------------------------------------------------------------
     # Data handling
@@ -208,6 +208,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         QtWidgets.QApplication.restoreOverrideCursor()
         self.statusBar().showMessage(f"Loaded {self.recording.name} in {t1-t0:.2f}s", 5000)
         print(f"[gui] _reload_recording: done in {t1-t0:.2f}s")
+        # Trigger FR if applicable
+        try:
+            self._maybe_run_fr_update()
+        except Exception as e:
+            print(f"[gui] FR check after load failed: {e}")
 
     # ------------------------------------------------------------------
     # UI construction
@@ -855,6 +860,63 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             print(f"[gui]  {flags} complete={'Y' if complete else 'N'} {ts_str} -> {p}")
         print(f"[gui]  totals: shown={total} chem={n_chem} opto={n_opto} manual={n_manual} ignored={n_ignored} complete={n_complete}")
 
+    # ------------------------
+    # Auto boot helpers
+    # ------------------------
+    def _find_latest_index_json(self) -> Optional[Path]:
+        try:
+            probe_dir = CONFIG.output_root / 'probe'
+            if not probe_dir.exists():
+                return None
+            cands = sorted(probe_dir.glob('file_index_*.json'))
+            return cands[-1] if cands else None
+        except Exception:
+            return None
+
+    def _auto_select_recording_from_index(self) -> Optional[Path]:
+        # Prefer chem-present, not ignored; else first not ignored; else first
+        best: Optional[Path] = None
+        alt: Optional[Path] = None
+        for it in self.index_items:
+            p = Path(str(it.get('path', '')))
+            if not p.exists():
+                continue
+            if not alt:
+                alt = p
+            if self._is_ignored(p):
+                continue
+            cats = self._annotation_categories_for(p)
+            if 'chemical' in cats:
+                return p
+            if not best:
+                best = p
+        return best or alt
+
+    def _auto_boot(self) -> None:
+        # If we already have a recording, just try FR
+        if self.recording is not None:
+            print(f"[gui] auto_boot: recording already set -> {self.recording}")
+            self._maybe_run_fr_update()
+            return
+        # Load latest index if missing
+        if not self.index_items:
+            idx = self._find_latest_index_json()
+            if idx is not None:
+                print(f"[gui] auto_boot: loading latest index -> {idx}")
+                self.index_path = idx
+                self._load_index(idx)
+                self._populate_file_list()
+            else:
+                print("[gui] auto_boot: no index found; FR cannot run yet")
+                return
+        # Pick a recording to open
+        p = self._auto_select_recording_from_index()
+        if p is None:
+            print("[gui] auto_boot: no recording candidates in index")
+            return
+        print(f"[gui] auto_boot: opening -> {p}")
+        self._reload_recording(p)
+
     def _format_file_item_text(self, item: Dict[str, object]) -> str:
         fname = Path(str(item.get("path", ""))).name
         elig = bool(item.get("eligible_10khz_ge300s", False))
@@ -1214,10 +1276,15 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
 
     def _maybe_run_fr_update(self) -> None:
         # Conditions: have recording, not running, chem timestamp exists
-        if not self.recording or self._fr_running:
+        if not self.recording:
+            print("[gui] FR not triggered: no recording selected")
+            return
+        if self._fr_running:
+            print("[gui] FR not triggered: already running")
             return
         chem_ts = self._chem_time_from_annotations()
         if chem_ts is None:
+            print("[gui] FR not triggered: no chem stamp found for current recording")
             return
         print(f"[gui] FR trigger: {self.recording} chem={chem_ts:.6f}s")
         self._fr_running = True
