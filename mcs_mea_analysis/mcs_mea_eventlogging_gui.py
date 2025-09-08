@@ -74,8 +74,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self._populate_file_list()
             self._select_current_in_file_list()
             if self.recording is not None:
-                ap = self._annotation_json_path(self.recording)
-                if ap.exists():
+                ap = self._find_existing_annotations(self.recording)
+                if ap is not None:
                     try:
                         self.open_annotations(ap)
                     except Exception:
@@ -142,8 +142,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self._populate_channels()
         self._select_current_in_file_list()
         # Try to auto-open annotations for this file if present
-        ap = self._annotation_json_path(self.recording)
-        if ap.exists():
+        ap = self._find_existing_annotations(self.recording)
+        if ap is not None:
             try:
                 self.open_annotations(ap)
             except Exception:
@@ -409,14 +409,36 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.index_by_path = {str(it.get("path")): it for it in self.index_items}
         print(f"[gui] index loaded: {path} items={len(self.index_items)}")
 
+    def _annotation_dir_primary(self) -> Path:
+        return CONFIG.annotations_root
+
+    def _annotation_dir_local(self) -> Path:
+        return Path("_mcs_mea_outputs_local/annotations")
+
     def _annotation_json_path(self, rec_path: Path) -> Path:
-        out_dir = Path("_mcs_mea_outputs_local/annotations")
+        """Preferred save path (external drive)."""
+        out_dir = self._annotation_dir_primary()
         return (out_dir / rec_path.stem).with_suffix(".json")
 
+    def _annotation_candidates(self, rec_path: Path) -> List[Path]:
+        stem = rec_path.stem
+        prim = self._annotation_dir_primary()
+        loc = self._annotation_dir_local()
+        return [
+            (prim / stem).with_suffix(".json"),
+            (prim / stem).with_suffix(".csv"),
+            (loc / stem).with_suffix(".json"),
+            (loc / stem).with_suffix(".csv"),
+        ]
+
+    def _find_existing_annotations(self, rec_path: Path) -> Optional[Path]:
+        for p in self._annotation_candidates(rec_path):
+            if p.exists():
+                return p
+        return None
+
     def _annotation_exists_for(self, rec_path: Path) -> bool:
-        ap = self._annotation_json_path(rec_path)
-        cp = ap.with_suffix(".csv")
-        return ap.exists() or cp.exists()
+        return any(p.exists() for p in self._annotation_candidates(rec_path))
 
     def _format_file_item_text(self, item: Dict[str, object]) -> str:
         fname = Path(str(item.get("path", ""))).name
@@ -581,8 +603,14 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     def save_annotations(self) -> None:
         if not self.annotations:
             return
-        out_dir = Path("_mcs_mea_outputs_local/annotations")
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # Prefer external drive; fallback to local if needed
+        out_dir = self._annotation_dir_primary()
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            print(f"[gui] save_annotations: primary dir unavailable -> {out_dir}, using local fallback")
+            out_dir = self._annotation_dir_local()
+            out_dir.mkdir(parents=True, exist_ok=True)
         base = out_dir / self.recording.stem
         json_path = base.with_suffix(".json")
         csv_path = base.with_suffix(".csv")
@@ -595,21 +623,25 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         # Refresh status badges in file list (S flag)
         self._refresh_file_list_statuses()
         print(f"[gui] save_annotations: {json_path} ({len(self.annotations)} items)")
-        # Rebuild catalog for downstream analysis
+        # Rebuild catalog for downstream analysis (prefers external)
         try:
-            self._rebuild_annotations_catalog(out_dir)
+            self._rebuild_annotations_catalog()
         except Exception as e:  # noqa: BLE001
             print(f"[gui] save_annotations: catalog rebuild failed -> {e}")
 
-    def _rebuild_annotations_catalog(self, local_dir: Path) -> None:
+    def _rebuild_annotations_catalog(self) -> None:
         """Scan all per-recording JSON files and write a catalog JSONL/CSV.
 
-        Writes to local annotations dir. If external output root exists, also
-        mirrors to /Volumes/Manny2TB/mcs_mea_outputs/annotations.
+        Writes primarily to the external annotations dir. If that is not
+        available, falls back to the local `_mcs_mea_outputs_local/annotations`.
         """
+        # Determine roots
+        primary = self._annotation_dir_primary()
+        local = self._annotation_dir_local()
+        scan_dir = primary if primary.exists() else local
         # Collect
         items: List[Dict[str, object]] = []
-        for p in sorted(local_dir.glob("*.json")):
+        for p in sorted(scan_dir.glob("*.json")):
             try:
                 data = json.loads(p.read_text())
                 if isinstance(data, list):
@@ -620,9 +652,16 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                             items.append(row)
             except Exception:
                 continue
-        # Write local catalog
-        cat_jsonl = local_dir / "annotations_catalog.jsonl"
-        cat_csv = local_dir / "annotations_catalog.csv"
+        # Choose write dir (prefer primary)
+        out_dir = primary
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            out_dir = local
+            out_dir.mkdir(parents=True, exist_ok=True)
+        # Write catalog
+        cat_jsonl = out_dir / "annotations_catalog.jsonl"
+        cat_csv = out_dir / "annotations_catalog.csv"
         with cat_jsonl.open("w", encoding="utf-8") as f:
             for row in items:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -632,21 +671,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             w.writeheader()
             for row in items:
                 w.writerow({k: row.get(k) for k in fieldnames})
-        print(f"[gui] catalog: {len(items)} rows -> {cat_jsonl.name}, {cat_csv.name}")
-        # Mirror to external output if available
-        try:
-            ext_dir = CONFIG.output_root / "annotations"
-            ext_dir.mkdir(parents=True, exist_ok=True)
-            (ext_dir / cat_jsonl.name).write_text(cat_jsonl.read_text())
-            with (ext_dir / cat_csv.name).open("w", encoding="utf-8", newline="") as f:
-                # Rewrite CSV to avoid reading as text then writing text
-                w = csv.DictWriter(f, fieldnames=fieldnames)
-                w.writeheader()
-                for row in items:
-                    w.writerow({k: row.get(k) for k in fieldnames})
-            print(f"[gui] catalog mirrored -> {ext_dir}")
-        except Exception as e:  # noqa: BLE001
-            print(f"[gui] catalog mirror skipped -> {e}")
+        print(f"[gui] catalog: {len(items)} rows -> {cat_jsonl} and {cat_csv}")
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:

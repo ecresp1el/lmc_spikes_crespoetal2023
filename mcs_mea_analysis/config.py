@@ -25,7 +25,10 @@ class MCSConfig:
 
     # Where to write outputs/logs on the external drive
     output_root: Path = Path("/Volumes/Manny2TB/mcs_mea_outputs")
+    # Dedicated annotations directory on external drive
+    @property
+    def annotations_root(self) -> Path:
+        return self.output_root / "annotations"
 
 
 CONFIG = MCSConfig()
-
