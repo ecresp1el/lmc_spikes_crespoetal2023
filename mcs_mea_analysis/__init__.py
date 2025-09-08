@@ -13,4 +13,5 @@ __all__ = [
     "discovery",
     "mcs_reader",
     "pipeline",
+    "mcs_mea_eventlogging_gui",
 ]
