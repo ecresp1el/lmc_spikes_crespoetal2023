@@ -25,6 +25,7 @@ class Annotation:
     timestamp: float
     label: str = ""
     sample: Optional[int] = None
+    category: str = "manual"  # 'manual' | 'opto' | 'chemical'
 
     def as_dict(self, recording: Path) -> Dict[str, object]:
         return {
@@ -33,6 +34,7 @@ class Annotation:
             "timestamp": self.timestamp,
             "label": self.label,
             "sample": self.sample,
+            "category": self.category,
         }
 
 
@@ -71,6 +73,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.index_path: Optional[Path] = Path(index_path) if index_path else None
         self.index_items: List[Dict[str, object]] = []
         self.index_by_path: Dict[str, Dict[str, object]] = {}
+        self.categories_by_path: Dict[str, set] = {}
+        # Chemical single-stamp state
+        self.chem_mode: bool = False
+        self.chem_time: Optional[float] = None
+        self.chem_lines: Dict[int, Optional[pg.InfiniteLine]] = {}
 
         # Initialize empty data containers when no recording set yet
         self.channel_ids: List[int] = []
@@ -221,6 +228,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.scope_box.setCurrentText("single")
         tb.addWidget(QtWidgets.QLabel("Apply to:"))
         tb.addWidget(self.scope_box)
+        # Category selector for manual annotations
+        tb.addWidget(QtWidgets.QLabel("Category:"))
+        self.category_box = QtWidgets.QComboBox()
+        self.category_box.addItems(["manual", "opto", "chemical"])  # default manual
+        self.category_box.setCurrentText("manual")
+        tb.addWidget(self.category_box)
 
         # Axis sync and controls
         self.act_link_x = QtWidgets.QAction("Link X", self, checkable=True)
@@ -361,19 +374,40 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         btn_clear_tpl.clicked.connect(self._clear_template)
         tb.addWidget(btn_clear_tpl)
 
+        # ------------------------
+        # Chemical stamp controls
+        # ------------------------
+        tb.addSeparator()
+        self.act_chem = QtWidgets.QAction("Chem Mode", self, checkable=True)
+        self.act_chem.setToolTip("Toggle chemical stamp placement. Click to set time across channels.")
+        self.act_chem.toggled.connect(self._toggle_chem_mode)
+        tb.addAction(self.act_chem)
+        tb.addWidget(QtWidgets.QLabel("Chem Label:"))
+        self.chem_label_edit = QtWidgets.QLineEdit("chem")
+        self.chem_label_edit.setFixedWidth(90)
+        tb.addWidget(self.chem_label_edit)
+        btn_commit_chem = QtWidgets.QToolButton()
+        btn_commit_chem.setText("Commit Chem")
+        btn_commit_chem.clicked.connect(self._commit_chem)
+        tb.addWidget(btn_commit_chem)
+        btn_clear_chem = QtWidgets.QToolButton()
+        btn_clear_chem.setText("Clear Chem")
+        btn_clear_chem.clicked.connect(self._clear_chem)
+        tb.addWidget(btn_clear_chem)
+
         # Annotations dock (live list)
         self.ann_dock = QtWidgets.QDockWidget("Annotations", self)
         self.ann_dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         self.ann_tabs = QtWidgets.QTabWidget()
         # Per-annotation table
-        self.ann_table = QtWidgets.QTableWidget(0, 4)
-        self.ann_table.setHorizontalHeaderLabels(["Channel", "Time (s)", "Sample", "Label"])
+        self.ann_table = QtWidgets.QTableWidget(0, 5)
+        self.ann_table.setHorizontalHeaderLabels(["Channel", "Time (s)", "Sample", "Label", "Category"])
         self.ann_table.horizontalHeader().setStretchLastSection(True)
         self.ann_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.ann_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        # Grouped view table (by sample+label)
-        self.group_table = QtWidgets.QTableWidget(0, 4)
-        self.group_table.setHorizontalHeaderLabels(["Time (s)", "Sample", "#Channels", "Label"])
+        # Grouped view table (by sample+label+category)
+        self.group_table = QtWidgets.QTableWidget(0, 5)
+        self.group_table.setHorizontalHeaderLabels(["Time (s)", "Sample", "#Channels", "Label", "Category"])
         self.group_table.horizontalHeader().setStretchLastSection(True)
         self.group_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.group_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -423,6 +457,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             pass
         # If a template exists, draw its lines for this channel
         self._draw_template_for_channel(cid, pw)
+        # Draw chem line if present
+        self._draw_chem_for_channel(cid, pw)
         self.trace_layout.insertWidget(self.trace_layout.count() - 1, pw)
         self.plotwidgets[cid] = pw
         self.annotation_lines[cid] = []
@@ -442,6 +478,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             return
         mouse_point = pw.plotItem.vb.mapSceneToView(event.scenePos())
         timestamp = float(mouse_point.x())
+        if self.chem_mode:
+            self.chem_time = timestamp
+            print(f"[gui] chem time set: {self.chem_time:.6f}s")
+            self._redraw_chem()
+            self.statusBar().showMessage("Chem time positioned. Use Shift+Left/Right to nudge, then Commit Chem.", 5000)
+            return
         if self.template_mode:
             # Set or move template anchor
             self.template_anchor = timestamp
@@ -451,38 +493,39 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             return
         label, _ = QtWidgets.QInputDialog.getText(self, "Annotation", "Label (optional):")
         scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'single'
+        category = self.category_box.currentText() if hasattr(self, 'category_box') else 'manual'
         if scope == "single":
-            self.add_annotation(cid, timestamp, label)
+            self.add_annotation(cid, timestamp, label, category)
         elif scope == "visible":
             targets = sorted(self.plotwidgets.keys())
-            self.add_annotations_bulk(targets, timestamp, label)
+            self.add_annotations_bulk(targets, timestamp, label, category)
         else:  # all
-            self.add_annotations_bulk(self.channel_ids, timestamp, label)
-        print(f"[gui] click: scope={scope} ts={timestamp:.3f} label='{label}' base_ch={cid}")
+            self.add_annotations_bulk(self.channel_ids, timestamp, label, category)
+        print(f"[gui] click: scope={scope} ts={timestamp:.3f} label='{label}' cat={category} base_ch={cid}")
 
-    def add_annotation(self, channel: int, timestamp: float, label: str = "") -> None:
+    def add_annotation(self, channel: int, timestamp: float, label: str = "", category: str = "manual") -> None:
         sample = int(round(timestamp * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
-        ann = Annotation(channel=channel, timestamp=timestamp, label=label, sample=sample)
+        ann = Annotation(channel=channel, timestamp=timestamp, label=label, sample=sample, category=category)
         self.annotations.append(ann)
         self.undo_stack.append(("add", ann))
         self.redo_stack.clear()
         self._update_annotation_lines()
         # Keep status short when many are added
         if len(self.annotations) <= 5 or len(self.annotations) % 10 == 0:
-            print(f"[gui] add_annotation: ch={channel} ts={timestamp:.3f} label='{label}' total={len(self.annotations)}")
+            print(f"[gui] add_annotation: ch={channel} ts={timestamp:.3f} label='{label}' cat={category} total={len(self.annotations)}")
 
-    def add_annotations_bulk(self, channels: List[int], timestamp: float, label: str = "") -> None:
+    def add_annotations_bulk(self, channels: List[int], timestamp: float, label: str = "", category: str = "manual") -> None:
         """Add the same annotation across multiple channels as one undoable action."""
         added: List[Annotation] = []
         sample = int(round(timestamp * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
         for ch in channels:
-            ann = Annotation(channel=ch, timestamp=timestamp, label=label, sample=sample)
+            ann = Annotation(channel=ch, timestamp=timestamp, label=label, sample=sample, category=category)
             self.annotations.append(ann)
             added.append(ann)
         self.undo_stack.append(("bulk_add", added))
         self.redo_stack.clear()
         self._update_annotation_lines()
-        print(f"[gui] add_annotations_bulk: n={len(added)} ts={timestamp:.3f} label='{label}'")
+        print(f"[gui] add_annotations_bulk: n={len(added)} ts={timestamp:.3f} label='{label}' cat={category}")
 
     def _update_annotation_lines(self) -> None:
         # remove existing lines
@@ -512,19 +555,21 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.ann_table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{ann.timestamp:.6f}"))
             self.ann_table.setItem(i, 2, QtWidgets.QTableWidgetItem("" if ann.sample is None else str(ann.sample)))
             self.ann_table.setItem(i, 3, QtWidgets.QTableWidgetItem(ann.label))
+            self.ann_table.setItem(i, 4, QtWidgets.QTableWidgetItem(ann.category))
         self.ann_table.resizeColumnsToContents()
 
-        # Grouped table: by (sample if available else timestamp, label)
+        # Grouped table: by (sample if available else timestamp, label, category)
         groups: Dict[tuple, Dict[str, object]] = {}
         for ann in self.annotations:
-            key = (ann.sample if ann.sample is not None else round(ann.timestamp, 6), ann.label)
+            key = (ann.sample if ann.sample is not None else round(ann.timestamp, 6), ann.label, ann.category)
             g = groups.setdefault(key, {"count": 0})
             g["count"] = int(g["count"]) + 1
             g["timestamp"] = ann.timestamp
             g["sample"] = ann.sample
             g["label"] = ann.label
+            g["category"] = ann.category
         self.group_table.setRowCount(len(groups))
-        for i, ((k0, lbl), info) in enumerate(groups.items()):
+        for i, ((k0, lbl, cat), info) in enumerate(groups.items()):
             ts = info.get("timestamp", 0.0) or 0.0
             smp = info.get("sample", None)
             cnt = info.get("count", 0)
@@ -532,6 +577,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.group_table.setItem(i, 1, QtWidgets.QTableWidgetItem("" if smp is None else str(int(smp))))
             self.group_table.setItem(i, 2, QtWidgets.QTableWidgetItem(str(int(cnt))))
             self.group_table.setItem(i, 3, QtWidgets.QTableWidgetItem(str(lbl)))
+            self.group_table.setItem(i, 4, QtWidgets.QTableWidgetItem(str(cat)))
         self.group_table.resizeColumnsToContents()
 
     # ------------------------------------------------------------------
@@ -579,13 +625,42 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     def _annotation_exists_for(self, rec_path: Path) -> bool:
         return any(p.exists() for p in self._annotation_candidates(rec_path))
 
+    def _annotation_categories_for(self, rec_path: Path) -> set:
+        key = str(rec_path)
+        if key in self.categories_by_path:
+            return self.categories_by_path[key]
+        p = self._find_existing_annotations(rec_path)
+        cats: set = set()
+        if p is not None and p.exists():
+            try:
+                if p.suffix.lower() == '.json':
+                    data = json.loads(p.read_text())
+                    if isinstance(data, list):
+                        for row in data:
+                            if isinstance(row, dict):
+                                cats.add(str(row.get('category', 'manual')))
+                else:
+                    with p.open('r', newline='') as fh:
+                        reader = csv.DictReader(fh)
+                        for row in reader:
+                            cats.add(str(row.get('category', 'manual')))
+            except Exception:
+                pass
+        self.categories_by_path[key] = cats
+        return cats
+
     def _format_file_item_text(self, item: Dict[str, object]) -> str:
         fname = Path(str(item.get("path", ""))).name
         elig = bool(item.get("eligible_10khz_ge300s", False))
-        saved = self._annotation_exists_for(Path(str(item.get("path", ""))))
+        rec_path = Path(str(item.get("path", "")))
+        saved = self._annotation_exists_for(rec_path)
+        cats = self._annotation_categories_for(rec_path)
         e_flag = "E" if elig else "-"
+        o_flag = "O" if 'opto' in cats else "-"
+        c_flag = "C" if 'chemical' in cats else "-"
+        m_flag = "M" if 'manual' in cats else "-"
         s_flag = "S" if saved else "-"
-        return f"[{e_flag}|{s_flag}] {fname}"
+        return f"[{e_flag}|{o_flag}{c_flag}{m_flag}|{s_flag}] {fname}"
 
     def _populate_file_list(self) -> None:
         if not self.index_items:
@@ -756,10 +831,15 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         data = [ann.as_dict(self.recording) for ann in self.annotations]
         json_path.write_text(json.dumps(data, indent=2))
         with csv_path.open("w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["path", "channel", "timestamp", "label", "sample"])
+            writer = csv.DictWriter(fh, fieldnames=["path", "channel", "timestamp", "label", "sample", "category"])
             writer.writeheader()
             writer.writerows(data)
         # Refresh status badges in file list (S flag)
+        # Update categories cache for current recording
+        try:
+            self.categories_by_path[str(self.recording)] = {str(d.get('category', 'manual')) for d in data}
+        except Exception:
+            self.categories_by_path.pop(str(self.recording), None)
         self._refresh_file_list_statuses()
         print(f"[gui] save_annotations: {json_path} ({len(self.annotations)} items)")
         # Rebuild catalog for downstream analysis (prefers external)
@@ -804,13 +884,38 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         with cat_jsonl.open("w", encoding="utf-8") as f:
             for row in items:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        fieldnames = ["path", "recording_stem", "channel", "timestamp", "label", "sample"]
+        fieldnames = ["path", "recording_stem", "channel", "timestamp", "label", "sample", "category"]
         with cat_csv.open("w", encoding="utf-8", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             for row in items:
                 w.writerow({k: row.get(k) for k in fieldnames})
         print(f"[gui] catalog: {len(items)} rows -> {cat_jsonl} and {cat_csv}")
+        # Write status summary per recording (what categories exist)
+        status: Dict[str, Dict[str, object]] = {}
+        for row in items:
+            stem = str(row.get("recording_stem", ""))
+            if not stem:
+                continue
+            st = status.setdefault(stem, {"path": row.get("path", ""), "has_opto": False, "has_chemical": False, "has_manual": False, "count": 0})
+            cat = str(row.get("category", "manual"))
+            st["count"] = int(st.get("count", 0)) + 1
+            if cat == "opto":
+                st["has_opto"] = True
+            elif cat == "chemical":
+                st["has_chemical"] = True
+            else:
+                st["has_manual"] = True
+        status_csv = out_dir / "annotations_status.csv"
+        status_json = out_dir / "annotations_status.json"
+        with status_csv.open("w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["recording_stem", "path", "has_opto", "has_chemical", "has_manual", "count"])
+            w.writeheader()
+            for stem, st in sorted(status.items()):
+                w.writerow({"recording_stem": stem, **st})
+        with status_json.open("w", encoding="utf-8") as f:
+            json.dump(status, f, indent=2)
+        print(f"[gui] status: {len(status)} recordings -> {status_csv} and {status_json}")
 
     def open_annotations(self, path: Optional[Path] = None) -> None:
         if path is None:
@@ -836,6 +941,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 ts = float(item["timestamp"])
                 label = item.get("label", "")
                 smp = item.get("sample")
+                cat = item.get("category") or "manual"
                 if smp is None and hasattr(self, 'sr_hz'):
                     smp = int(round(ts * float(self.sr_hz)))
                 else:
@@ -843,7 +949,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                         smp = int(smp) if smp is not None else None
                     except Exception:
                         smp = None
-                self.annotations.append(Annotation(ch, ts, label, smp))
+                self.annotations.append(Annotation(ch, ts, label, smp, cat))
             except Exception:  # noqa: BLE001
                 continue
         self.undo_stack.clear()
@@ -857,14 +963,19 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     # Navigation
     # ------------------------------------------------------------------
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # type: ignore[override]
-        if self.template_mode and (event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right)) and (event.modifiers() & QtCore.Qt.ShiftModifier):
+        if (self.template_mode or self.chem_mode) and (event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right)) and (event.modifiers() & QtCore.Qt.ShiftModifier):
             step = self.template_step_s
             if event.key() == QtCore.Qt.Key_Left:
                 step = -step
-            if self.template_anchor is not None:
+            if self.template_mode and (self.template_anchor is not None):
                 self.template_anchor = max(0.0, self.template_anchor + step)
                 print(f"[gui] template shift: anchor={self.template_anchor:.6f}s")
                 self._redraw_template()
+                return
+            if self.chem_mode and (self.chem_time is not None):
+                self.chem_time = max(0.0, self.chem_time + step)
+                print(f"[gui] chem shift: time={self.chem_time:.6f}s")
+                self._redraw_chem()
                 return
         if event.key() == QtCore.Qt.Key_Right:
             self._shift_time(1)
@@ -995,6 +1106,63 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             pw.setYRange(ymin_ap, ymax_ap, padding=0)
 
     # ------------------------
+    # Chemical single-stamp helpers
+    # ------------------------
+    def _toggle_chem_mode(self, enabled: bool) -> None:
+        self.chem_mode = bool(enabled)
+        if enabled:
+            self.statusBar().showMessage("Chem Mode: Click to set time; Shift+Arrows to nudge; Commit Chem to annotate.", 8000)
+        else:
+            self.statusBar().clearMessage()
+
+    def _clear_chem_line_for(self, cid: int) -> None:
+        ln = self.chem_lines.get(cid)
+        pw = self.plotwidgets.get(cid)
+        if pw and ln:
+            try:
+                pw.removeItem(ln)
+            except Exception:
+                pass
+        self.chem_lines[cid] = None
+
+    def _draw_chem_for_channel(self, cid: int, pw: Optional[pg.PlotWidget] = None) -> None:
+        if self.chem_time is None:
+            return
+        if pw is None:
+            pw = self.plotwidgets.get(cid)
+        if pw is None:
+            return
+        self._clear_chem_line_for(cid)
+        pen = pg.mkPen(QtGui.QColor(60, 220, 140), width=2)
+        ln = pg.InfiniteLine(self.chem_time, angle=90, pen=pen)
+        pw.addItem(ln)
+        self.chem_lines[cid] = ln
+
+    def _redraw_chem(self) -> None:
+        if self.chem_time is None:
+            return
+        for cid, pw in self.plotwidgets.items():
+            self._draw_chem_for_channel(cid, pw)
+
+    def _clear_chem(self) -> None:
+        for cid in list(self.chem_lines.keys()):
+            self._clear_chem_line_for(cid)
+        self.chem_time = None
+        print("[gui] chem cleared")
+
+    def _commit_chem(self) -> None:
+        if self.chem_time is None:
+            self.statusBar().showMessage("No chem time placed yet.", 3000)
+            return
+        label = self.chem_label_edit.text().strip() or "chem"
+        scope = self.scope_box.currentText() if hasattr(self, 'scope_box') else 'visible'
+        if scope == 'single':
+            scope = 'visible'
+        channels = sorted(self.plotwidgets.keys()) if scope == 'visible' else list(self.channel_ids)
+        self.add_annotations_bulk(channels, float(self.chem_time), label, category="chemical")
+        self.statusBar().showMessage("Chem stamp committed. Save to persist.", 4000)
+
+    # ------------------------
     # Train template helpers
     # ------------------------
     def _toggle_template_mode(self, enabled: bool) -> None:
@@ -1080,7 +1248,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             label = f"{base_label}#{train_num:02d}_p{pnum}"
             for ch in channels:
                 sample = int(round(t * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
-                ann = Annotation(channel=ch, timestamp=t, label=label, sample=sample)
+                ann = Annotation(channel=ch, timestamp=t, label=label, sample=sample, category="opto")
                 self.annotations.append(ann)
                 added_all.append(ann)
         self.undo_stack.append(("bulk_add", added_all))
