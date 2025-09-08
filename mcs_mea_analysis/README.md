@@ -36,6 +36,15 @@ for r in results:
 Command-line Runner
 - See `scripts/run_mcs_scan.py` for a simple script that only performs discovery + probe.
 
+Environment Setup
+- `conda env create -f ../environment_mcs.yml`
+- `conda activate mcs_mea_env`
+- Requires `PyQt5` and `pyqtgraph` for the GUI.
+
+Launching the GUI
+- `python -m mcs_mea_analysis.mcs_mea_eventlogging_gui /path/to/recording.h5`
+- Annotations are saved under `_mcs_mea_outputs_local/annotations/` as JSON and CSV.
+
 Notes
 - This package does not import or execute `spiketurnpike_postanalysis/organize_h5_files.py` to avoid side effects.
 - If Manny2TB is not mounted, discovery will return empty and probe will log an empty set.
