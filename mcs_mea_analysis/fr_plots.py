@@ -72,16 +72,18 @@ def _load_spike_times(path: Path) -> Dict[int, np.ndarray]:
                 if t_arr.size and t_arr.max() > 1e6:
                     t_arr = t_arr / 1e6
                 spikes[int(cid)] = t_arr
-    except Exception:
-        # No spikes available or API mismatch
+    except Exception as e:
+        print(f"[fr] spike stream load failed: {e}")
         return {}
     return spikes
 
 
 def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) -> Optional[FRResults]:
+    print(f"[fr] start: {recording} chem={chem_time:.6f}s")
     # Open analog to derive total time and channel list
     raw, rec, st, sr_hz = _open_analog(recording)
     if st is None or sr_hz is None:
+        print("[fr] no analog stream or sampling rate; abort")
         return None
     ci = getattr(st, "channel_infos", {}) or {}
     ch_ids: List[int] = []
@@ -97,7 +99,7 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     # Load spike times
     spikes = _load_spike_times(recording)
     if not spikes:
-        # No spikes; skip silently
+        print("[fr] no spike_streams found; skipping FR compute")
         return None
 
     # Compute per-channel FR
@@ -155,6 +157,7 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         w.writeheader()
         for r in rows:
             w.writerow(r)
+    print(f"[fr] wrote CSV: {summary_csv}")
 
     # Overview PDF
     overview_pdf = out_dir / f"{recording.stem}_fr_overview.pdf"
@@ -181,6 +184,7 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     fig.tight_layout()
     fig.savefig(overview_pdf)
     plt.close(fig)
+    print(f"[fr] wrote PDF: {overview_pdf}")
 
     return FRResults(
         out_dir=out_dir,
@@ -190,4 +194,3 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         chem_time=pre_T,
         total_time=total_time,
     )
-

@@ -1144,6 +1144,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         chem_ts = self._chem_time_from_annotations()
         if chem_ts is None:
             return
+        print(f"[gui] FR trigger: {self.recording} chem={chem_ts:.6f}s")
         self._fr_running = True
         self.statusBar().showMessage("Computing FR plots…", 2000)
         # Run in a basic background thread using Qt (simple wrapper)
@@ -1153,8 +1154,10 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         try:
             res = compute_and_save_fr(self.recording, chem_ts, CONFIG.output_root)
             if res is None:
+                print("[gui] FR skipped (no spike streams detected).")
                 self.statusBar().showMessage("FR plots skipped (no spike streams).", 4000)
             else:
+                print(f"[gui] FR saved -> {res.out_dir}")
                 self.statusBar().showMessage(f"FR plots saved: {res.out_dir}", 4000)
         except Exception as e:
             print(f"[gui] FR compute failed: {e}")
