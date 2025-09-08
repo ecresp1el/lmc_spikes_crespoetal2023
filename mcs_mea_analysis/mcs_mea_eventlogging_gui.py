@@ -67,13 +67,16 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.template_pulse_sep_s: float = 0.2
         self.template_block_s: float = 0.6
         self.template_label: str = "train"
-        self.template_step_s: float = 0.001  # s per Shift+Arrow nudge
+        # Nudge step (in samples) and snapping
+        self.template_step_samples: int = 1  # default 1 sample per nudge
+        self.snap_to_sample: bool = True
         self.template_lines: Dict[int, List[pg.InfiniteLine]] = {}
         # Optional file index context
         self.index_path: Optional[Path] = Path(index_path) if index_path else None
         self.index_items: List[Dict[str, object]] = []
         self.index_by_path: Dict[str, Dict[str, object]] = {}
         self.categories_by_path: Dict[str, set] = {}
+        self.overrides: Dict[str, Dict[str, object]] = {}
         # Chemical single-stamp state
         self.chem_mode: bool = False
         self.chem_time: Optional[float] = None
@@ -120,6 +123,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         if st is None:
             raise RuntimeError("No analog stream found in recording")
         self.sr_hz = float(sr_hz or 1.0)
+        self.dt_s = 1.0 / self.sr_hz if self.sr_hz > 0 else 0.001
         ds = getattr(st, "channel_data")  # h5py dataset [rows, samples]
         ci = getattr(st, "channel_infos", {}) or {}
 
@@ -142,6 +146,15 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         print(
             f"[gui] _load_data: channels={len(self.channel_ids)} sr_hz={self.sr_hz:.2f} duration_s={self.total_time:.2f} elapsed={t1-t0:.2f}s"
         )
+        # Update sampling widgets if present
+        try:
+            if hasattr(self, 'dt_label'):
+                self.dt_label.setText(f"dt: {self.dt_s * 1000.0:.3f} ms")
+            if hasattr(self, 'tpl_step_samples') and hasattr(self, 'tpl_step_ms'):
+                # Sync ms field from samples
+                self._on_step_samples_changed(self.tpl_step_samples.value())
+        except Exception:
+            pass
 
     def _reload_recording(self, path: Path) -> None:
         """Tear down current plots and load a new recording."""
@@ -254,6 +267,30 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         tb.addAction(self.act_link_x)
         tb.addAction(self.act_link_y)
 
+        # Sampling info and step controls
+        tb.addSeparator()
+        self.dt_label = QtWidgets.QLabel("dt: - ms")
+        tb.addWidget(self.dt_label)
+        tb.addWidget(QtWidgets.QLabel("Step (samples):"))
+        self.tpl_step_samples = QtWidgets.QSpinBox()
+        self.tpl_step_samples.setRange(1, 1000000)
+        self.tpl_step_samples.setSingleStep(1)
+        self.tpl_step_samples.setValue(1)
+        self.tpl_step_samples.valueChanged.connect(self._on_step_samples_changed)
+        tb.addWidget(self.tpl_step_samples)
+        tb.addWidget(QtWidgets.QLabel("Step (ms):"))
+        self.tpl_step_ms = QtWidgets.QDoubleSpinBox()
+        self.tpl_step_ms.setDecimals(3)
+        self.tpl_step_ms.setRange(0.001, 1000.0)
+        self.tpl_step_ms.setSingleStep(0.1)
+        self.tpl_step_ms.setValue(0.1)
+        self.tpl_step_ms.valueChanged.connect(self._on_step_ms_changed)
+        tb.addWidget(self.tpl_step_ms)
+        self.chk_snap = QtWidgets.QCheckBox("Snap to sample")
+        self.chk_snap.setChecked(True)
+        self.chk_snap.toggled.connect(lambda v: setattr(self, "snap_to_sample", bool(v)))
+        tb.addWidget(self.chk_snap)
+
         tb.addSeparator()
         tb.addWidget(QtWidgets.QLabel("X start (s):"))
         self.x_start_spin = QtWidgets.QDoubleSpinBox()
@@ -323,6 +360,31 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         tb.addAction(act_undo)
         tb.addAction(act_redo)
 
+        # Edit helpers for categories
+        tb.addSeparator()
+        btn_rm_opto = QtWidgets.QToolButton()
+        btn_rm_opto.setText("Remove Opto")
+        btn_rm_opto.clicked.connect(lambda: self._remove_category_annotations('opto'))
+        tb.addWidget(btn_rm_opto)
+        btn_rm_chem = QtWidgets.QToolButton()
+        btn_rm_chem.setText("Remove Chem")
+        btn_rm_chem.clicked.connect(lambda: self._remove_category_annotations('chemical'))
+        tb.addWidget(btn_rm_chem)
+
+        # File status and filters
+        tb.addSeparator()
+        self.btn_toggle_ignore = QtWidgets.QToolButton()
+        self.btn_toggle_ignore.setText("Toggle Ignore")
+        self.btn_toggle_ignore.clicked.connect(self._toggle_ignore_current)
+        tb.addWidget(self.btn_toggle_ignore)
+        self.chk_incomplete_only = QtWidgets.QCheckBox("Incomplete only")
+        self.chk_incomplete_only.toggled.connect(self._populate_file_list)
+        tb.addWidget(self.chk_incomplete_only)
+        self.chk_hide_ignored = QtWidgets.QCheckBox("Hide ignored")
+        self.chk_hide_ignored.setChecked(True)
+        self.chk_hide_ignored.toggled.connect(self._populate_file_list)
+        tb.addWidget(self.chk_hide_ignored)
+
         # ------------------------
         # Train template controls
         # ------------------------
@@ -376,14 +438,17 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.tpl_label.setFixedWidth(90)
         self.tpl_label.textChanged.connect(lambda s: setattr(self, "template_label", s))
         tb.addWidget(self.tpl_label)
-        tb.addWidget(QtWidgets.QLabel("Step (ms):"))
-        self.tpl_step = QtWidgets.QDoubleSpinBox()
-        self.tpl_step.setDecimals(1)
-        self.tpl_step.setRange(0.1, 1000.0)
-        self.tpl_step.setSingleStep(0.5)
-        self.tpl_step.setValue(self.template_step_s * 1000.0)
-        self.tpl_step.valueChanged.connect(lambda v: setattr(self, "template_step_s", float(v) / 1000.0))
-        tb.addWidget(self.tpl_step)
+        tb.addWidget(QtWidgets.QLabel("Step (samples):"))
+        self.tpl_step_samples = QtWidgets.QSpinBox()
+        self.tpl_step_samples.setRange(1, 1000000)
+        self.tpl_step_samples.setSingleStep(1)
+        self.tpl_step_samples.setValue(int(self.template_step_samples))
+        self.tpl_step_samples.valueChanged.connect(lambda v: setattr(self, "template_step_samples", int(v)))
+        tb.addWidget(self.tpl_step_samples)
+        self.chk_snap = QtWidgets.QCheckBox("Snap to sample")
+        self.chk_snap.setChecked(True)
+        self.chk_snap.toggled.connect(lambda v: setattr(self, "snap_to_sample", bool(v)))
+        tb.addWidget(self.chk_snap)
         btn_commit_tpl = QtWidgets.QToolButton()
         btn_commit_tpl.setText("Commit Template")
         btn_commit_tpl.clicked.connect(self._commit_template)
@@ -432,6 +497,9 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.ann_dock.setWidget(self.ann_tabs)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.ann_dock)
         self._refresh_annotation_views()
+
+        # Load overrides for ignore flags
+        self._load_overrides()
 
     def _populate_channels(self) -> None:
         self.channel_list.blockSignals(True)
@@ -495,6 +563,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         mouse_point = pw.plotItem.vb.mapSceneToView(event.scenePos())
         timestamp = float(mouse_point.x())
         if self.chem_mode:
+            if self.snap_to_sample:
+                timestamp = round(timestamp * self.sr_hz) / self.sr_hz
             self.chem_time = timestamp
             print(f"[gui] chem time set: {self.chem_time:.6f}s")
             self._redraw_chem()
@@ -502,6 +572,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             return
         if self.template_mode:
             # Set or move template anchor
+            if self.snap_to_sample:
+                timestamp = round(timestamp * self.sr_hz) / self.sr_hz
             self.template_anchor = timestamp
             print(f"[gui] template anchor set: {self.template_anchor:.6f}s")
             self._redraw_template()
@@ -641,6 +713,52 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     def _annotation_exists_for(self, rec_path: Path) -> bool:
         return any(p.exists() for p in self._annotation_candidates(rec_path))
 
+    def _overrides_path(self) -> Path:
+        # Try primary dir; fall back to local
+        primary = self._annotation_dir_primary()
+        local = self._annotation_dir_local()
+        try:
+            primary.mkdir(parents=True, exist_ok=True)
+            return primary / "annotations_overrides.json"
+        except Exception:
+            local.mkdir(parents=True, exist_ok=True)
+            return local / "annotations_overrides.json"
+
+    def _load_overrides(self) -> None:
+        p = self._overrides_path()
+        try:
+            if p.exists():
+                self.overrides = json.loads(p.read_text()) or {}
+            else:
+                self.overrides = {}
+        except Exception:
+            self.overrides = {}
+
+    def _save_overrides(self) -> None:
+        p = self._overrides_path()
+        try:
+            p.write_text(json.dumps(self.overrides, indent=2))
+        except Exception as e:
+            print(f"[gui] overrides write failed: {e}")
+
+    def _is_ignored(self, rec_path: Path) -> bool:
+        key = str(rec_path)
+        o = self.overrides.get(key) or {}
+        return bool(o.get('ignored', False))
+
+    def _toggle_ignore_current(self) -> None:
+        it = self.file_list.currentItem()
+        if it is None:
+            return
+        p = Path(str(it.data(QtCore.Qt.UserRole)))
+        key = str(p)
+        o = self.overrides.get(key) or {}
+        o['ignored'] = not bool(o.get('ignored', False))
+        self.overrides[key] = o
+        self._save_overrides()
+        self._populate_file_list()
+        self._select_current_in_file_list()
+
     def _annotation_categories_for(self, rec_path: Path) -> set:
         key = str(rec_path)
         if key in self.categories_by_path:
@@ -676,7 +794,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         c_flag = "C" if 'chemical' in cats else "-"
         m_flag = "M" if 'manual' in cats else "-"
         s_flag = "S" if saved else "-"
-        return f"[{e_flag}|{o_flag}{c_flag}{m_flag}|{s_flag}] {fname}"
+        ig_flag = "I" if self._is_ignored(rec_path) else "-"
+        return f"[{e_flag}|{o_flag}{c_flag}{m_flag}|{s_flag}|{ig_flag}] {fname}"
 
     def _populate_file_list(self) -> None:
         if not self.index_items:
@@ -684,12 +803,24 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             return
         self.file_list.blockSignals(True)
         self.file_list.clear()
+        show_incomplete_only = getattr(self, 'chk_incomplete_only', None)
+        hide_ignored = getattr(self, 'chk_hide_ignored', None)
         for it in self.index_items:
+            p = Path(str(it.get("path", "")))
+            cats = self._annotation_categories_for(p)
+            ignored = self._is_ignored(p)
+            complete = ('opto' in cats) and ('chemical' in cats)
+            if show_incomplete_only and show_incomplete_only.isChecked() and complete:
+                continue
+            if hide_ignored and hide_ignored.isChecked() and ignored:
+                continue
             txt = self._format_file_item_text(it)
             item = QtWidgets.QListWidgetItem(txt)
-            item.setData(QtCore.Qt.UserRole, str(it.get("path")))
-            # Color hint for eligibility
-            if it.get("eligible_10khz_ge300s"):
+            item.setData(QtCore.Qt.UserRole, str(p))
+            # Color hint for eligibility and ignored
+            if ignored:
+                item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+            elif it.get("eligible_10khz_ge300s"):
                 item.setForeground(QtGui.QBrush(QtGui.QColor("green")))
             else:
                 item.setForeground(QtGui.QBrush(QtGui.QColor("gray")))
@@ -704,6 +835,10 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             idx_item = self.index_by_path.get(str(path_str))
             if idx_item:
                 it.setText(self._format_file_item_text(idx_item))
+                # Update color for ignored
+                p = Path(str(path_str))
+                if self._is_ignored(p):
+                    it.setForeground(QtGui.QBrush(QtGui.QColor("red")))
 
     def _select_current_in_file_list(self) -> None:
         if not self.index_items:
@@ -803,6 +938,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 except ValueError:
                     pass
             self.redo_stack.append(("bulk_add", anns))
+        elif action == "bulk_remove":
+            anns: List[Annotation] = payload
+            for a in anns:
+                self.annotations.append(a)
+            self.redo_stack.append(("bulk_remove", anns))
         self._update_annotation_lines()
 
     def redo(self) -> None:
@@ -825,7 +965,30 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             for a in anns:
                 self.annotations.append(a)
             self.undo_stack.append(("bulk_add", anns))
+        elif action == "bulk_remove":
+            anns: List[Annotation] = payload
+            for a in anns:
+                try:
+                    self.annotations.remove(a)
+                except ValueError:
+                    pass
+            self.undo_stack.append(("bulk_remove", anns))
         self._update_annotation_lines()
+
+    def _remove_category_annotations(self, category: str) -> None:
+        to_remove = [a for a in self.annotations if a.category == category]
+        if not to_remove:
+            self.statusBar().showMessage(f"No {category} annotations to remove.", 3000)
+            return
+        for a in to_remove:
+            try:
+                self.annotations.remove(a)
+            except ValueError:
+                pass
+        self.undo_stack.append(("bulk_remove", to_remove))
+        self.redo_stack.clear()
+        self._update_annotation_lines()
+        self.statusBar().showMessage(f"Removed {len(to_remove)} {category} annotations.", 3000)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -922,10 +1085,21 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 st["has_chemical"] = True
             else:
                 st["has_manual"] = True
+        # Merge overrides (ignored flags)
+        try:
+            self._load_overrides()
+            for stem, st in status.items():
+                path = str(st.get("path", ""))
+                ignored = bool((self.overrides.get(path) or {}).get('ignored', False))
+                st["ignored"] = ignored
+                st["is_complete"] = bool(st.get("has_opto") and st.get("has_chemical"))
+                st["ready_for_processing"] = bool(st["is_complete"] and not ignored)
+        except Exception:
+            pass
         status_csv = out_dir / "annotations_status.csv"
         status_json = out_dir / "annotations_status.json"
         with status_csv.open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["recording_stem", "path", "has_opto", "has_chemical", "has_manual", "count"])
+            w = csv.DictWriter(f, fieldnames=["recording_stem", "path", "has_opto", "has_chemical", "has_manual", "ignored", "is_complete", "ready_for_processing", "count"])
             w.writeheader()
             for stem, st in sorted(status.items()):
                 w.writerow({"recording_stem": stem, **st})
@@ -980,16 +1154,20 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # type: ignore[override]
         if (self.template_mode or self.chem_mode) and (event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right)) and (event.modifiers() & QtCore.Qt.ShiftModifier):
-            step = self.template_step_s
+            step = float(self.template_step_samples) * getattr(self, 'dt_s', 0.001)
             if event.key() == QtCore.Qt.Key_Left:
                 step = -step
             if self.template_mode and (self.template_anchor is not None):
                 self.template_anchor = max(0.0, self.template_anchor + step)
+                if self.snap_to_sample:
+                    self.template_anchor = round(self.template_anchor * self.sr_hz) / self.sr_hz
                 print(f"[gui] template shift: anchor={self.template_anchor:.6f}s")
                 self._redraw_template()
                 return
             if self.chem_mode and (self.chem_time is not None):
                 self.chem_time = max(0.0, self.chem_time + step)
+                if self.snap_to_sample:
+                    self.chem_time = round(self.chem_time * self.sr_hz) / self.sr_hz
                 print(f"[gui] chem shift: time={self.chem_time:.6f}s")
                 self._redraw_chem()
                 return
@@ -1069,6 +1247,22 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.window_seconds = win
         for pw in self.plotwidgets.values():
             pw.setXRange(start, start + win, padding=0)
+
+    def _on_step_samples_changed(self, v: int) -> None:
+        self.template_step_samples = int(max(1, v))
+        # update ms field
+        dt_ms = getattr(self, 'dt_s', 0.001) * 1000.0
+        self.tpl_step_ms.blockSignals(True)
+        self.tpl_step_ms.setValue(self.template_step_samples * dt_ms)
+        self.tpl_step_ms.blockSignals(False)
+
+    def _on_step_ms_changed(self, v: float) -> None:
+        dt_ms = getattr(self, 'dt_s', 0.001) * 1000.0
+        samples = max(1, int(round(v / dt_ms)))
+        self.tpl_step_samples.blockSignals(True)
+        self.tpl_step_samples.setValue(samples)
+        self.tpl_step_samples.blockSignals(False)
+        self.template_step_samples = samples
 
     def _apply_y_controls(self) -> None:
         if not self.plotwidgets:
@@ -1170,7 +1364,18 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         label = self.chem_label_edit.text().strip() or "chem"
         # For chemical stamp, always apply to ALL channels in the recording
         channels = list(self.channel_ids)
-        self.add_annotations_bulk(channels, float(self.chem_time), label, category="chemical")
+        # Quantize time and include sample index
+        t = float(self.chem_time)
+        sample = int(round(t * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
+        t_aligned = (sample / float(self.sr_hz)) if (sample is not None and self.sr_hz) else t
+        added: List[Annotation] = []
+        for ch in channels:
+            ann = Annotation(channel=ch, timestamp=t_aligned, label=label, sample=sample, category="chemical")
+            self.annotations.append(ann)
+            added.append(ann)
+        self.undo_stack.append(("bulk_add", added))
+        self.redo_stack.clear()
+        self._update_annotation_lines()
         self.statusBar().showMessage("Chem stamp committed. Save to persist.", 4000)
 
     # ------------------------
@@ -1231,6 +1436,9 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             base = t0 + i * period
             times.append(base)
             times.append(base + sep)
+        if self.snap_to_sample:
+            sr = float(self.sr_hz)
+            times = [round(t * sr) / sr for t in times]
         return times
 
     def _clear_template_lines_for(self, cid: int) -> None:
@@ -1290,7 +1498,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             label = f"{base_label}#{train_num:02d}_p{pnum}"
             for ch in channels:
                 sample = int(round(t * float(self.sr_hz))) if hasattr(self, 'sr_hz') else None
-                ann = Annotation(channel=ch, timestamp=t, label=label, sample=sample, category="opto")
+                t_aligned = (sample / float(self.sr_hz)) if (sample is not None and self.sr_hz) else t
+                ann = Annotation(channel=ch, timestamp=t_aligned, label=label, sample=sample, category="opto")
                 self.annotations.append(ann)
                 added_all.append(ann)
         self.undo_stack.append(("bulk_add", added_all))
