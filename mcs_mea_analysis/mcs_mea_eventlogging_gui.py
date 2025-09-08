@@ -105,6 +105,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                         self.open_annotations(ap)
                     except Exception:
                         pass
+        # On launch, if a chemical stamp already exists (on disk or loaded),
+        # trigger FR compute immediately without user action.
+        try:
+            self._maybe_run_fr_update()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Data handling
