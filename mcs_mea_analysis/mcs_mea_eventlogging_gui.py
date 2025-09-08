@@ -54,6 +54,9 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.annotation_lines: Dict[int, List[pg.InfiniteLine]] = {}
         self.current_start: float = 0.0
         self.window_seconds: float = 10.0
+        self._suppress_sync: bool = False
+        self.link_x: bool = True
+        self.link_y: bool = True
         # Optional file index context
         self.index_path: Optional[Path] = Path(index_path) if index_path else None
         self.index_items: List[Dict[str, object]] = []
@@ -208,6 +211,58 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.scope_box.setCurrentText("single")
         tb.addWidget(QtWidgets.QLabel("Apply to:"))
         tb.addWidget(self.scope_box)
+
+        # Axis sync and controls
+        self.act_link_x = QtWidgets.QAction("Link X", self, checkable=True)
+        self.act_link_x.setChecked(True)
+        self.act_link_x.toggled.connect(lambda v: setattr(self, "link_x", bool(v)))
+        self.act_link_y = QtWidgets.QAction("Link Y", self, checkable=True)
+        self.act_link_y.setChecked(True)
+        self.act_link_y.toggled.connect(lambda v: setattr(self, "link_y", bool(v)))
+        tb.addAction(self.act_link_x)
+        tb.addAction(self.act_link_y)
+
+        tb.addSeparator()
+        tb.addWidget(QtWidgets.QLabel("X start (s):"))
+        self.x_start_spin = QtWidgets.QDoubleSpinBox()
+        self.x_start_spin.setDecimals(3)
+        self.x_start_spin.setRange(0.0, 1e9)
+        self.x_start_spin.setSingleStep(0.1)
+        self.x_start_spin.setValue(self.current_start)
+        tb.addWidget(self.x_start_spin)
+        tb.addWidget(QtWidgets.QLabel("Window (s):"))
+        self.win_spin = QtWidgets.QDoubleSpinBox()
+        self.win_spin.setDecimals(3)
+        self.win_spin.setRange(0.1, 1e9)
+        self.win_spin.setSingleStep(0.5)
+        self.win_spin.setValue(self.window_seconds)
+        tb.addWidget(self.win_spin)
+        btn_apply_x = QtWidgets.QToolButton()
+        btn_apply_x.setText("Apply X")
+        btn_apply_x.clicked.connect(self._apply_x_controls)
+        tb.addWidget(btn_apply_x)
+
+        tb.addSeparator()
+        tb.addWidget(QtWidgets.QLabel("Y min:"))
+        self.ymin_spin = QtWidgets.QDoubleSpinBox()
+        self.ymin_spin.setDecimals(3)
+        self.ymin_spin.setRange(-1e9, 1e9)
+        self.ymin_spin.setSingleStep(10.0)
+        tb.addWidget(self.ymin_spin)
+        tb.addWidget(QtWidgets.QLabel("Y max:"))
+        self.ymax_spin = QtWidgets.QDoubleSpinBox()
+        self.ymax_spin.setDecimals(3)
+        self.ymax_spin.setRange(-1e9, 1e9)
+        self.ymax_spin.setSingleStep(10.0)
+        tb.addWidget(self.ymax_spin)
+        btn_apply_y = QtWidgets.QToolButton()
+        btn_apply_y.setText("Apply Y")
+        btn_apply_y.clicked.connect(self._apply_y_controls)
+        tb.addWidget(btn_apply_y)
+        btn_auto_y = QtWidgets.QToolButton()
+        btn_auto_y.setText("Auto Y")
+        btn_auto_y.clicked.connect(self._autoscale_y)
+        tb.addWidget(btn_auto_y)
         act_open_rec = QtWidgets.QAction("Open Recording…", self)
         act_open_rec.triggered.connect(self._open_recording_dialog)
         act_load_index = QtWidgets.QAction("Load Index…", self)
@@ -291,6 +346,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         pw.setTitle(f"Channel {cid}")
         pw.setXRange(self.current_start, self.current_start + self.window_seconds, padding=0)
         pw.scene().sigMouseClicked.connect(lambda e, c=cid, w=pw: self._handle_click(e, c, w))
+        # Sync ranges when user pans/zooms
+        try:
+            pw.plotItem.vb.sigRangeChanged.connect(lambda vb, rng, w=pw: self._on_range_changed(w))  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self.trace_layout.insertWidget(self.trace_layout.count() - 1, pw)
         self.plotwidgets[cid] = pw
         self.annotation_lines[cid] = []
@@ -736,6 +796,115 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.current_start = new_start
         for pw in self.plotwidgets.values():
             pw.setXRange(self.current_start, self.current_start + self.window_seconds, padding=0)
+        # reflect in controls
+        if hasattr(self, 'x_start_spin'):
+            self.x_start_spin.blockSignals(True)
+            self.x_start_spin.setValue(self.current_start)
+            self.x_start_spin.blockSignals(False)
+
+    # ------------------------
+    # Axis syncing and controls
+    # ------------------------
+    def _on_range_changed(self, source_pw: pg.PlotWidget) -> None:
+        if self._suppress_sync:
+            return
+        try:
+            xr, yr = source_pw.viewRange()
+        except Exception:
+            return
+        # Update internal state from X
+        if xr and len(xr) == 2:
+            self.current_start = float(xr[0])
+            self.window_seconds = float(xr[1] - xr[0])
+            if hasattr(self, 'x_start_spin') and hasattr(self, 'win_spin'):
+                self.x_start_spin.blockSignals(True)
+                self.win_spin.blockSignals(True)
+                self.x_start_spin.setValue(self.current_start)
+                self.win_spin.setValue(max(self.window_seconds, 0.001))
+                self.x_start_spin.blockSignals(False)
+                self.win_spin.blockSignals(False)
+        # Update Y controls
+        if yr and len(yr) == 2 and hasattr(self, 'ymin_spin'):
+            self.ymin_spin.blockSignals(True)
+            self.ymax_spin.blockSignals(True)
+            self.ymin_spin.setValue(float(yr[0]))
+            self.ymax_spin.setValue(float(yr[1]))
+            self.ymin_spin.blockSignals(False)
+            self.ymax_spin.blockSignals(False)
+        # Propagate
+        self._suppress_sync = True
+        try:
+            for pw in self.plotwidgets.values():
+                if pw is source_pw:
+                    continue
+                if self.link_x and xr and len(xr) == 2:
+                    pw.setXRange(xr[0], xr[1], padding=0)
+                if self.link_y and yr and len(yr) == 2:
+                    pw.setYRange(yr[0], yr[1], padding=0)
+        finally:
+            self._suppress_sync = False
+
+    def _apply_x_controls(self) -> None:
+        if self.total_time <= 0:
+            return
+        start = float(self.x_start_spin.value()) if hasattr(self, 'x_start_spin') else self.current_start
+        win = float(self.win_spin.value()) if hasattr(self, 'win_spin') else self.window_seconds
+        start = max(0.0, min(max(0.0, self.total_time - win), start))
+        self.current_start = start
+        self.window_seconds = win
+        for pw in self.plotwidgets.values():
+            pw.setXRange(start, start + win, padding=0)
+
+    def _apply_y_controls(self) -> None:
+        if not self.plotwidgets:
+            return
+        ymin = float(self.ymin_spin.value())
+        ymax = float(self.ymax_spin.value())
+        if ymin >= ymax:
+            return
+        for pw in self.plotwidgets.values():
+            pw.setYRange(ymin, ymax, padding=0)
+
+    def _autoscale_y(self) -> None:
+        if not self.plotwidgets:
+            return
+        # Derive current window indices
+        try:
+            sr = float(self.sr_hz)
+        except Exception:
+            sr = 1.0
+        i0 = max(0, int(self.current_start * sr))
+        i1 = max(i0 + 1, int((self.current_start + self.window_seconds) * sr))
+        ymin = None
+        ymax = None
+        for cid, pw in self.plotwidgets.items():
+            arr = self.traces.get(cid)
+            if arr is None or arr.size == 0:
+                continue
+            sl = arr[i0:i1]
+            if sl.size == 0:
+                continue
+            mn = float(np.nanmin(sl))
+            mx = float(np.nanmax(sl))
+            ymin = mn if ymin is None else min(ymin, mn)
+            ymax = mx if ymax is None else max(ymax, mx)
+        if ymin is None or ymax is None or not np.isfinite([ymin, ymax]).all():
+            return
+        # Apply a small margin
+        span = ymax - ymin
+        if span <= 0:
+            span = 1.0
+        ymin_ap = ymin - 0.05 * span
+        ymax_ap = ymax + 0.05 * span
+        if hasattr(self, 'ymin_spin'):
+            self.ymin_spin.blockSignals(True)
+            self.ymax_spin.blockSignals(True)
+            self.ymin_spin.setValue(ymin_ap)
+            self.ymax_spin.setValue(ymax_ap)
+            self.ymin_spin.blockSignals(False)
+            self.ymax_spin.blockSignals(False)
+        for pw in self.plotwidgets.values():
+            pw.setYRange(ymin_ap, ymax_ap, padding=0)
 
 
 def main() -> None:
