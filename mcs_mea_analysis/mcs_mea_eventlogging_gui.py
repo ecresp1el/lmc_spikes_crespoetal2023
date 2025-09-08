@@ -689,6 +689,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.index_items = [it for it in files if isinstance(it, dict)]
         self.index_by_path = {str(it.get("path")): it for it in self.index_items}
         print(f"[gui] index loaded: {path} items={len(self.index_items)}")
+        # Log a quick status summary of annotations across index
+        try:
+            self._log_index_status_summary()
+        except Exception as e:
+            print(f"[gui] index summary failed: {e}")
 
     def _annotation_dir_primary(self) -> Path:
         return CONFIG.annotations_root
@@ -791,6 +796,65 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.categories_by_path[key] = cats
         return cats
 
+    def _chem_time_for_path(self, rec_path: Path) -> Optional[float]:
+        p = self._find_existing_annotations(rec_path)
+        if p is None or not p.exists():
+            return None
+        try:
+            if p.suffix.lower() == '.json':
+                data = json.loads(p.read_text())
+            else:
+                with p.open('r', newline='') as fh:
+                    data = list(csv.DictReader(fh))
+            for row in data:
+                if str(row.get('category', 'manual')) == 'chemical':
+                    return float(row.get('timestamp', 0.0))
+        except Exception:
+            return None
+        return None
+
+    def _log_index_status_summary(self, filtered: bool = False) -> None:
+        items = self.index_items
+        if not items:
+            print("[gui] index summary: no items")
+            return
+        print("[gui] index status summary:")
+        total = 0
+        n_chem = 0
+        n_opto = 0
+        n_manual = 0
+        n_ignored = 0
+        n_complete = 0
+        for it in items:
+            p = Path(str(it.get('path', '')))
+            cats = self._annotation_categories_for(p)
+            ig = self._is_ignored(p)
+            complete = ('chemical' in cats) and ('opto' in cats)
+            if filtered:
+                # apply current filters to match visible list
+                show_incomplete_only = getattr(self, 'chk_incomplete_only', None)
+                hide_ignored = getattr(self, 'chk_hide_ignored', None)
+                if show_incomplete_only and show_incomplete_only.isChecked() and complete:
+                    continue
+                if hide_ignored and hide_ignored.isChecked() and ig:
+                    continue
+            total += 1
+            if 'chemical' in cats:
+                n_chem += 1
+            if 'opto' in cats:
+                n_opto += 1
+            if 'manual' in cats:
+                n_manual += 1
+            if ig:
+                n_ignored += 1
+            if complete:
+                n_complete += 1
+            chem_ts = self._chem_time_for_path(p)
+            flags = f"O={'Y' if 'opto' in cats else 'N'} C={'Y' if 'chemical' in cats else 'N'} M={'Y' if 'manual' in cats else 'N'} I={'Y' if ig else 'N'}"
+            ts_str = f"chem_ts={chem_ts:.3f}s" if chem_ts is not None else "chem_ts=-"
+            print(f"[gui]  {flags} complete={'Y' if complete else 'N'} {ts_str} -> {p}")
+        print(f"[gui]  totals: shown={total} chem={n_chem} opto={n_opto} manual={n_manual} ignored={n_ignored} complete={n_complete}")
+
     def _format_file_item_text(self, item: Dict[str, object]) -> str:
         fname = Path(str(item.get("path", ""))).name
         elig = bool(item.get("eligible_10khz_ge300s", False))
@@ -835,6 +899,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self.file_list.addItem(item)
         self.file_list.blockSignals(False)
         print(f"[gui] file list populated: rows={self.file_list.count()}")
+        # Log per-file status lines for visibility (filtered)
+        try:
+            self._log_index_status_summary(filtered=True)
+        except Exception as e:
+            print(f"[gui] status log failed: {e}")
 
     def _refresh_file_list_statuses(self) -> None:
         for i in range(self.file_list.count()):
