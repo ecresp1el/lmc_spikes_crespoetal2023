@@ -37,12 +37,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
 
     def __init__(
         self,
-        recording: Path,
+        recording: Optional[Path] = None,
         index_path: Optional[Path] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         super().__init__(parent)
-        self.recording = Path(recording)
+        self.recording = Path(recording) if recording else None
         self.annotations: List[Annotation] = []
         self.undo_stack: List[Tuple[str, Annotation]] = []
         self.redo_stack: List[Tuple[str, Annotation]] = []
@@ -55,18 +55,27 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.index_items: List[Dict[str, object]] = []
         self.index_by_path: Dict[str, Dict[str, object]] = {}
 
-        self._load_data()
+        # Initialize empty data containers when no recording set yet
+        self.channel_ids: List[int] = []
+        self.traces: Dict[int, np.ndarray] = {}
+        self.x = np.array([], dtype=float)
+        self.total_time = 0.0
+        self.sr_hz = 1.0
+
+        if self.recording is not None:
+            self._load_data()
         self._init_ui()
         if self.index_path:
             self._load_index(self.index_path)
             self._populate_file_list()
             self._select_current_in_file_list()
-            ap = self._annotation_json_path(self.recording)
-            if ap.exists():
-                try:
-                    self.open_annotations(ap)
-                except Exception:
-                    pass
+            if self.recording is not None:
+                ap = self._annotation_json_path(self.recording)
+                if ap.exists():
+                    try:
+                        self.open_annotations(ap)
+                    except Exception:
+                        pass
 
     # ------------------------------------------------------------------
     # Data handling
@@ -74,6 +83,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
     def _load_data(self) -> None:
         """Load channel traces from the .h5 recording."""
         # Check recording path and availability
+        if self.recording is None:
+            raise RuntimeError("No recording selected")
         probe = probe_mcs_h5(self.recording)
         if not (probe.exists and probe.mcs_available and probe.mcs_loaded):
             raise RuntimeError(f"Unable to open recording: {probe.error}")
@@ -166,11 +177,15 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         self.trace_scroll.setWidget(self.trace_container)
         splitter.addWidget(self.trace_scroll)
 
-        # Populate current recording's channel list
+        # Populate current recording's channel list (no-op if none loaded)
         self._populate_channels()
 
         # Toolbar actions
         tb = self.addToolBar("Main")
+        act_open_rec = QtWidgets.QAction("Open Recording…", self)
+        act_open_rec.triggered.connect(self._open_recording_dialog)
+        act_load_index = QtWidgets.QAction("Load Index…", self)
+        act_load_index.triggered.connect(self._load_index_dialog)
         act_save = QtWidgets.QAction("Save", self)
         act_save.triggered.connect(self.save_annotations)
         act_load = QtWidgets.QAction("Load", self)
@@ -185,6 +200,8 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         act_undo.triggered.connect(self.undo)
         act_redo = QtWidgets.QAction("Redo", self)
         act_redo.triggered.connect(self.redo)
+        tb.addAction(act_open_rec)
+        tb.addAction(act_load_index)
         tb.addAction(act_save)
         tb.addAction(act_load)
         tb.addAction(act_open_selected)
@@ -348,6 +365,32 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         if p.exists():
             self._reload_recording(p)
 
+    def _open_recording_dialog(self) -> None:
+        file_str, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open recording (.h5)",
+            "",
+            "MCS Recording (*.h5)",
+        )
+        if not file_str:
+            return
+        self._reload_recording(Path(file_str))
+
+    def _load_index_dialog(self) -> None:
+        file_str, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open file index JSON",
+            "",
+            "Index JSON (*.json)",
+        )
+        if not file_str:
+            return
+        p = Path(file_str)
+        self.index_path = p
+        self._load_index(p)
+        self._populate_file_list()
+        self._select_current_in_file_list()
+
     def _jump_eligible(self, direction: int) -> None:
         if not self.index_items or self.file_list.count() == 0:
             return
@@ -472,7 +515,7 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="MCS MEA event logging GUI")
-    parser.add_argument("recording", type=Path, help="Path to .h5 recording")
+    parser.add_argument("recording", nargs="?", type=Path, default=None, help="Optional path to .h5 recording")
     parser.add_argument("--index", type=Path, default=None, help="Optional index JSON with metadata for multiple files")
     args = parser.parse_args()
 

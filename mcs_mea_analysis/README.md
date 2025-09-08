@@ -42,7 +42,12 @@ Environment Setup
 - Requires `PyQt5` and `pyqtgraph` for the GUI.
 
 Launching the GUI
-- `python -m mcs_mea_analysis.mcs_mea_eventlogging_gui /path/to/recording.h5`
+- Open with no args, then pick files/index inside the app:
+  - `python -m mcs_mea_analysis.mcs_mea_eventlogging_gui`
+- Or pass a recording and/or an index JSON:
+  - `python -m mcs_mea_analysis.mcs_mea_eventlogging_gui /path/to/recording.h5 --index /path/to/file_index.json`
+- Convenience launcher:
+  - `python scripts/eventlogger.py [<recording.h5>] [--index <file_index.json>]`
 - Annotations are saved under `_mcs_mea_outputs_local/annotations/` as JSON and CSV.
 
 Notes
