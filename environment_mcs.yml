@@ -12,6 +12,8 @@ dependencies:
   - xarray
   - h5py
   - ipykernel
+  - pyqt
+  - pyqtgraph
   - pip
   - pip:
       - McsPyDataTools
