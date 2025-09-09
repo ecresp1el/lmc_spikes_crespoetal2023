@@ -206,6 +206,59 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     plt.close(fig)
     print(f"[fr] wrote PDF: {overview_pdf}")
 
+    # Instantaneous FR (mean across channels) at per-sample resolution with [1,1,1] smoothing
+    try:
+        n_total = int(ds.shape[1])
+        sr = float(sr_hz)
+        # Build summed impulse train across channels
+        impulse = np.zeros(n_total, dtype=np.float32)
+        for cid in ch_ids:
+            t = spikes.get(cid)
+            if t is None or t.size == 0:
+                continue
+            idx = np.clip(np.round(t * sr).astype(int), 0, n_total - 1)
+            # accumulate spikes
+            np.add.at(impulse, idx, 1.0)
+        # Smooth with [1,1,1]
+        kernel = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0
+        smoothed = np.convolve(impulse, kernel, mode='same')
+        # Convert to mean FR across channels (Hz)
+        n_ch_used = max(1, sum(1 for cid in ch_ids if spikes.get(cid) is not None))
+        ifr_mean_hz = (smoothed * sr) / float(n_ch_used)
+        # Save per-sample CSV (time_s, ifr_hz)
+        ifr_csv = out_dir / f"{recording.stem}_ifr_mean_per_sample.csv"
+        with ifr_csv.open("w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["sample", "time_s", "ifr_mean_hz"])
+            # Stream in chunks to avoid memory spikes
+            chunk = 200000
+            for start in range(0, n_total, chunk):
+                end = min(n_total, start + chunk)
+                s_idx = np.arange(start, end, dtype=np.int64)
+                t_sec = s_idx / sr
+                for i in range(end - start):
+                    w.writerow([int(s_idx[i]), float(t_sec[i]), float(ifr_mean_hz[start + i])])
+        print(f"[fr] wrote IFR CSV: {ifr_csv}")
+        # Plot decimated IFR for visibility
+        plot_pts = 20000
+        step = max(1, n_total // plot_pts)
+        xs = (np.arange(0, n_total, step) / sr).astype(float)
+        ys = ifr_mean_hz[::step]
+        ifr_pdf = out_dir / f"{recording.stem}_ifr_mean.pdf"
+        fig3, ax3 = plt.subplots(1, 1, figsize=(11, 4))
+        ax3.plot(xs, ys, lw=0.6)
+        ax3.axvline(pre_T, color='r', linestyle='--', label='Chem')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Mean IFR (Hz)')
+        ax3.set_title('Mean instantaneous firing rate (per-sample, smoothed [1,1,1])')
+        ax3.legend()
+        fig3.tight_layout()
+        fig3.savefig(ifr_pdf)
+        plt.close(fig3)
+        print(f"[fr] wrote IFR PDF: {ifr_pdf}")
+    except Exception as e:
+        print(f"[fr] IFR compute failed: {e}")
+
     # Modulation 3x1 plots: histograms of pre vs post per category
     try:
         mod_pdf = out_dir / f"{recording.stem}_fr_modulation.pdf"
