@@ -374,6 +374,12 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         tb.addAction(act_load_index)
         tb.addAction(act_save)
         tb.addAction(act_load)
+        # Force recompute FR for current recording
+        btn_recompute_fr = QtWidgets.QToolButton()
+        btn_recompute_fr.setText("Recompute FR")
+        btn_recompute_fr.setToolTip("Force recompute FR for current recording (overwrites outputs)")
+        btn_recompute_fr.clicked.connect(self._force_recompute_current)
+        tb.addWidget(btn_recompute_fr)
         tb.addAction(act_open_selected)
         tb.addAction(act_prev_elig)
         tb.addAction(act_next_elig)
@@ -1286,7 +1292,7 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                 return None
         return None
 
-    def _maybe_run_fr_update(self) -> None:
+    def _maybe_run_fr_update(self, force: bool = False) -> None:
         # Conditions: have recording, not running, chem timestamp exists
         if not self.recording:
             print("[gui] FR not triggered: no recording selected")
@@ -1294,9 +1300,16 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         if self._fr_running:
             print("[gui] FR not triggered: already running")
             return
-        if self._fr_batch_running:
+        if self._fr_batch_running and not force:
             print("[gui] FR not triggered: batch running")
             return
+        # Skip if outputs already exist (unless force)
+        try:
+            if (not force) and self._has_fr_outputs(self.recording):
+                print(f"[gui] FR not triggered: outputs already exist -> {self.recording}")
+                return
+        except Exception:
+            pass
         chem_ts = self._chem_time_from_annotations()
         if chem_ts is None:
             print("[gui] FR not triggered: no chem stamp found for current recording")
@@ -1381,6 +1394,17 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             self._post_status("FR compute failed. See console.", 5000)
         finally:
             self._fr_running = False
+
+    def _force_recompute_current(self) -> None:
+        if not self.recording:
+            self._post_status("No recording selected.", 3000)
+            return
+        chem_ts = self._chem_time_from_annotations()
+        if chem_ts is None:
+            self._post_status("Add a chemical stamp first, then recompute.", 4000)
+            return
+        print(f"[gui] FR force recompute requested -> {self.recording}")
+        self._maybe_run_fr_update(force=True)
 
     def _post_status(self, msg: str, timeout_ms: int = 4000) -> None:
         try:
