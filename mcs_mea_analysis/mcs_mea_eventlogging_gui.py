@@ -1294,6 +1294,9 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         if self._fr_running:
             print("[gui] FR not triggered: already running")
             return
+        if self._fr_batch_running:
+            print("[gui] FR not triggered: batch running")
+            return
         chem_ts = self._chem_time_from_annotations()
         if chem_ts is None:
             print("[gui] FR not triggered: no chem stamp found for current recording")

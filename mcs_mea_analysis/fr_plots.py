@@ -126,7 +126,7 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     spikes = _load_spike_times(recording)
     if not spikes:
         print("[fr] no spike_streams found; falling back to analog threshold detection…")
-        spikes = _detect_spikes_from_analog(st, float(sr_hz), chem_time)
+        spikes = _detect_spikes_from_analog(st, float(sr_hz), chem_time, rec_tag=recording.stem)
         if not spikes:
             print("[fr] fallback detection produced no spikes; skipping")
             return None
@@ -359,7 +359,7 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     )
 
 
-def _detect_spikes_from_analog(st: object, sr_hz: float, chem_time: float, thr_k: float = 5.0, refrac_ms: float = 1.0) -> Dict[int, np.ndarray]:
+def _detect_spikes_from_analog(st: object, sr_hz: float, chem_time: float, thr_k: float = 5.0, refrac_ms: float = 1.0, rec_tag: Optional[str] = None) -> Dict[int, np.ndarray]:
     """Simple negative threshold detector per channel.
 
     - Threshold from robust noise in a baseline window (up to 120 s before chem).
@@ -417,7 +417,8 @@ def _detect_spikes_from_analog(st: object, sr_hz: float, chem_time: float, thr_k
             while i < N and int(idx[i]) < sp + refrac:
                 i += 1
         spikes[cid_i] = np.asarray(out_idx, dtype=float) / sr
-        print(f"[fr-fallback] ch={cid_i} thr={thr:.3f} sigma={sig:.3f} n={spikes[cid_i].size}")
+        tag = f" {rec_tag}" if rec_tag else ""
+        print(f"[fr-fallback{tag}] ch={cid_i} thr={thr:.3f} sigma={sig:.3f} n={spikes[cid_i].size}")
     return spikes
 
 
