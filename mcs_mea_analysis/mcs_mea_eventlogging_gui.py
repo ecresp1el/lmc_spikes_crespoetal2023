@@ -17,6 +17,7 @@ from .plotting import PlotConfig, RawMEAPlotter
 from .config import CONFIG
 from .metadata import GroupLabeler
 from .fr_plots import compute_and_save_fr
+from .manifest import build_manifest
 
 
 @dataclass
@@ -1373,13 +1374,13 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                     res = compute_and_save_fr(p, chem_ts, CONFIG.output_root)
                     if res is None:
                         print(f"[gui] FR batch done (no spikes) -> {p}")
-                else:
-                    print(f"[gui] FR batch done -> {res.out_dir}")
-                    # Update manifest incrementally
-                    try:
-                        build_manifest(CONFIG.output_root)
-                    except Exception as e:
-                        print(f"[gui] manifest rebuild failed -> {e}")
+                    else:
+                        print(f"[gui] FR batch done -> {res.out_dir}")
+                        # Update manifest incrementally
+                        try:
+                            build_manifest(CONFIG.output_root)
+                        except Exception as e:
+                            print(f"[gui] manifest rebuild failed -> {e}")
                 except Exception as e:
                     print(f"[gui] FR batch error: {p} -> {e}")
         finally:
