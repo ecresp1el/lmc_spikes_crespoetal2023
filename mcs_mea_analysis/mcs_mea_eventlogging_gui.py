@@ -1373,8 +1373,13 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
                     res = compute_and_save_fr(p, chem_ts, CONFIG.output_root)
                     if res is None:
                         print(f"[gui] FR batch done (no spikes) -> {p}")
-                    else:
-                        print(f"[gui] FR batch done -> {res.out_dir}")
+                else:
+                    print(f"[gui] FR batch done -> {res.out_dir}")
+                    # Update manifest incrementally
+                    try:
+                        build_manifest(CONFIG.output_root)
+                    except Exception as e:
+                        print(f"[gui] manifest rebuild failed -> {e}")
                 except Exception as e:
                     print(f"[gui] FR batch error: {p} -> {e}")
         finally:
@@ -1389,6 +1394,11 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
             else:
                 print(f"[gui] FR saved -> {res.out_dir}")
                 self._post_status(f"FR plots saved: {res.out_dir}", 4000)
+                # Update manifest after successful FR
+                try:
+                    build_manifest(CONFIG.output_root)
+                except Exception as e:
+                    print(f"[gui] manifest rebuild failed -> {e}")
         except Exception as e:
             print(f"[gui] FR compute failed: {e}")
             self._post_status("FR compute failed. See console.", 5000)
