@@ -67,6 +67,10 @@ Notes
 - This package does not import or execute `spiketurnpike_postanalysis/organize_h5_files.py` to avoid side effects.
 - If Manny2TB is not mounted, discovery will return empty and probe will log an empty set.
 
+See Also
+--------
+- `docs/WORKFLOW.md` — end‑to‑end workflow diagram, contracts, and CLI guides.
+
 Architecture & Data Flow
 ------------------------
 
