@@ -12,13 +12,13 @@ Steps (GUI-independent):
 
 Usage examples:
   # Default output_root and readiness policy (chem+NPZ)
-  python scripts/analyze_ready.py
+  python -m scripts.analyze_ready
 
   # Use explicit output root
-  python scripts/analyze_ready.py /Volumes/Manny2TB/mcs_mea_outputs
+  python -m scripts.analyze_ready /Volumes/Manny2TB/mcs_mea_outputs
 
   # Rebuild readiness with tighter rules and analyze only CTZ in round 5 plates 1 and 6
-  python scripts/analyze_ready.py --require-opto --eligible --group CTZ --round mea_blade_round5 --plate 1 --plate 6
+  python -m scripts.analyze_ready --require-opto --eligible --group CTZ --round mea_blade_round5 --plate 1 --plate 6
 
 Flags:
   --require-opto / --no-require-opto (default: no)
@@ -54,6 +54,9 @@ def _read_ready_csv(csv_path: Path) -> List[dict]:
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if a]
+    if any(a in ("-h", "--help") for a in args):
+        print(__doc__)
+        sys.exit(0)
     out_root: Path | None = None
     # Readiness flags
     require_opto = False
@@ -160,4 +163,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

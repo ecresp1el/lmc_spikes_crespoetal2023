@@ -7,10 +7,15 @@ Uses annotations to find chemical timestamps and the latest index to discover
 recordings. Skips recordings that already have FR outputs, unless --force.
 
 Usage:
-  python scripts/run_fr_batch.py                     # process all chem-stamped
-  python scripts/run_fr_batch.py --force             # force recompute all
-  python scripts/run_fr_batch.py <recording.h5>      # single file
-  python scripts/run_fr_batch.py <out_root> [--force]
+  python -m scripts.run_fr_batch                     # process all chem-stamped
+  python -m scripts.run_fr_batch --force             # force recompute all
+  python -m scripts.run_fr_batch <recording.h5>      # single file
+  python -m scripts.run_fr_batch <out_root> [--force]
+
+Args:
+  <recording.h5>     Absolute path to a single H5 to process
+  <out_root>         Output root (default: CONFIG.output_root)
+  --force            Overwrite existing FR outputs
 """
 
 import sys
@@ -64,6 +69,9 @@ def has_fr_outputs(rec_path: Path, output_root: Path) -> bool:
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if a]
+    if any(a in ("-h", "--help") for a in args):
+        print(__doc__)
+        sys.exit(0)
     force = False
     out_root = CONFIG.output_root
     single: Path | None = None
@@ -148,4 +156,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

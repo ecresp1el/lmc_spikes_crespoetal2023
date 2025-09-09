@@ -4,10 +4,10 @@ from __future__ import annotations
 CLI: Build the standardized readiness index (chem+NPZ by default).
 
 Usage:
-  python scripts/build_ready.py                  # default CONFIG + defaults
-  python scripts/build_ready.py --require-opto   # require opto as well
-  python scripts/build_ready.py --no-eligible    # ignore eligibility filter
-  python scripts/build_ready.py <output_root> [flags]
+  python -m scripts.build_ready                  # default CONFIG + defaults
+  python -m scripts.build_ready --require-opto   # require opto as well
+  python -m scripts.build_ready --no-eligible    # ignore eligibility filter
+  python -m scripts.build_ready <output_root> [flags]
 
 Flags:
   --require-opto / --no-require-opto (default: no)
@@ -23,6 +23,9 @@ from mcs_mea_analysis.ready import ReadinessConfig, build_ready_index
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if a]
+    if any(a in ("-h", "--help") for a in args):
+        print(__doc__)
+        sys.exit(0)
     out_root: Path | None = None
     require_opto = False
     require_eligible = False
@@ -64,4 +67,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

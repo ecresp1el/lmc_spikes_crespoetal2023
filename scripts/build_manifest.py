@@ -4,8 +4,8 @@ from __future__ import annotations
 CLI: Build unified analysis manifest.
 
 Usage:
-  python scripts/build_manifest.py             # uses default CONFIG paths
-  python scripts/build_manifest.py <output_root> [--no-require-opto]
+  python -m scripts.build_manifest             # uses default CONFIG paths
+  python -m scripts.build_manifest <output_root> [--no-require-opto]
 """
 
 import sys
@@ -14,6 +14,9 @@ from mcs_mea_analysis.manifest import build_manifest
 
 
 def main() -> None:
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__)
+        sys.exit(0)
     out_root: Path | None = None
     require_opto = True
     args = [a for a in sys.argv[1:] if a]
@@ -30,4 +33,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

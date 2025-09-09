@@ -10,6 +10,17 @@ Usage examples:
   python -m scripts.analyze_npz_stats
   python -m scripts.analyze_npz_stats --smooth 1,1,1,1,1 --pre 120 --post 120 --alpha 0.01 --effect 0.8
   python -m scripts.analyze_npz_stats --group CTZ --round mea_blade_round5
+
+Args:
+  --smooth a,b,c,...   Smoothing kernel for IFR (1 ms bins)
+  --pre N              Pre-chem window in seconds (default 60)
+  --post N             Post-chem window in seconds (default 60)
+  --decimate-ms N      Decimation for stats in ms (default 100)
+  --alpha P            Significance level (default 0.05)
+  --effect D           Cohen's d threshold (default 0.5)
+  --require-both       Require both p<alpha and |d|>=thr (default)
+  --either             Use either p<alpha or |d|>=thr
+  --force              Overwrite existing *_npz_stats.csv files
 """
 
 import sys
@@ -33,6 +44,9 @@ def _read_ready_csv(csv_path: Path) -> List[dict]:
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if a]
+    if any(a in ("-h", "--help") for a in args):
+        print(__doc__)
+        sys.exit(0)
     out_root: Path | None = None
     # ready policy
     require_opto = False
@@ -129,4 +143,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
