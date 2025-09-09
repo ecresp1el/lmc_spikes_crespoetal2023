@@ -113,6 +113,9 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         return None
     # CSV rows
     rows: List[Dict[str, object]] = []
+    # For modulation split plots
+    cat_pre: Dict[str, List[float]] = {"positive": [], "negative": [], "nochange": []}
+    cat_post: Dict[str, List[float]] = {"positive": [], "negative": [], "nochange": []}
     # Time series binning (1 s)
     edges = np.arange(0.0, total_time + 1.0, 1.0, dtype=float)
     fr_over_time_sum = np.zeros(len(edges) - 1, dtype=float)
@@ -135,13 +138,27 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         fr_full = n_full / total_time if total_time > 0 else 0.0
         fr_pre = n_pre / pre_T if pre_T > 0 else 0.0
         fr_post = n_post / post_T if post_T > 0 else 0.0
+        # Modulation classification
+        delta = fr_post - fr_pre
+        rel = (delta / fr_pre) if fr_pre > 0 else (np.inf if delta > 0 else (-np.inf if delta < 0 else 0.0))
+        # thresholds
+        abs_thr = 0.2  # Hz
+        rel_thr = 0.2  # 20%
+        if (abs(delta) >= abs_thr) or (np.isfinite(rel) and abs(rel) >= rel_thr):
+            modulation = "positive" if delta > 0 else "negative"
+        else:
+            modulation = "nochange"
+
         rows.append({
             "channel": cid,
             "fr_full": fr_full,
             "fr_pre": fr_pre,
             "fr_post": fr_post,
             "n_spikes": n_full,
+            "modulation": modulation,
         })
+        cat_pre[modulation].append(fr_pre)
+        cat_post[modulation].append(fr_post)
         # Time series
         hist, _ = np.histogram(t, bins=edges)
         fr_over_time_sum += hist.astype(float)
@@ -159,7 +176,7 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         w = csv.DictWriter(f, fieldnames=["channel", "fr_full", "fr_pre", "fr_post", "n_spikes"])
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+            w.writerow({k: r.get(k) for k in ["channel", "fr_full", "fr_pre", "fr_post", "n_spikes"]})
     print(f"[fr] wrote CSV: {summary_csv}")
 
     # Overview PDF
@@ -188,6 +205,35 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
     fig.savefig(overview_pdf)
     plt.close(fig)
     print(f"[fr] wrote PDF: {overview_pdf}")
+
+    # Modulation 3x1 plots: histograms of pre vs post per category
+    try:
+        mod_pdf = out_dir / f"{recording.stem}_fr_modulation.pdf"
+        fig2, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+        cats = ["positive", "negative", "nochange"]
+        titles = ["Positive modulation", "Negative modulation", "No change"]
+        for ax, c, ttl in zip(axes, cats, titles):
+            pre_vals = np.asarray(cat_pre[c], dtype=float)
+            post_vals = np.asarray(cat_post[c], dtype=float)
+            if pre_vals.size == 0 and post_vals.size == 0:
+                ax.text(0.5, 0.5, "No channels", ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(f"{ttl} (n=0)")
+                continue
+            nbins = 30
+            mx = max(float(pre_vals.max() if pre_vals.size else 0.0), float(post_vals.max() if post_vals.size else 0.0))
+            bins = np.linspace(0.0, mx * 1.05 + 1e-6, nbins)
+            ax.hist(pre_vals, bins=bins, alpha=0.6, label='pre', color='#4e79a7')
+            ax.hist(post_vals, bins=bins, alpha=0.6, label='post', color='#f28e2b')
+            ax.set_ylabel('count')
+            ax.set_title(f"{ttl} (n={pre_vals.size})")
+            ax.legend()
+        axes[-1].set_xlabel('FR (Hz)')
+        fig2.tight_layout()
+        fig2.savefig(mod_pdf)
+        plt.close(fig2)
+        print(f"[fr] wrote modulation PDF: {mod_pdf}")
+    except Exception as e:
+        print(f"[fr] modulation PDF failed: {e}")
 
     # Save mean FR over time to CSV for downstream (avoid re-compute)
     try:
@@ -324,10 +370,12 @@ def rebuild_fr_catalog(output_root: Path) -> None:
                             "fr_pre": float(r.get("fr_pre", 0) or 0),
                             "fr_post": float(r.get("fr_post", 0) or 0),
                             "n_spikes": int(r.get("n_spikes", 0) or 0),
+                            "modulation": r.get("modulation", ""),
                         }
                         rows.append(row)
-                st = status.setdefault(stem, {"round": round_dir.name, "group_label": group_dir.name, "n_channels": 0})
-                st["n_channels"] = max(int(st.get("n_channels", 0)), len([r for r in rows if r.get("recording_stem") == stem]))
+                st = status.setdefault(stem, {"round": round_dir.name, "group_label": group_dir.name, "n_channels": 0, "n_pos": 0, "n_neg": 0, "n_nochange": 0})
+                # update counts from last read chunk; recompute in a second pass below
+                pass
 
     out_dir = output_root / "fr_catalog"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,14 +387,36 @@ def rebuild_fr_catalog(output_root: Path) -> None:
             f.write(__import__('json').dumps(r) + "\n")
     import csv as _csv2
     with csv_path_out.open("w", encoding="utf-8", newline="") as f:
-        w = _csv2.DictWriter(f, fieldnames=["round", "group_label", "recording_stem", "channel", "fr_full", "fr_pre", "fr_post", "n_spikes"])
+        w = _csv2.DictWriter(f, fieldnames=["round", "group_label", "recording_stem", "channel", "fr_full", "fr_pre", "fr_post", "n_spikes", "modulation"])
         w.writeheader()
         for r in rows:
             w.writerow(r)
     # Status CSV
+    # Recompute per-recording counts
+    per_stem: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        stem = str(r.get("recording_stem", ""))
+        if not stem:
+            continue
+        d = per_stem.setdefault(stem, {"n": 0, "n_pos": 0, "n_neg": 0, "n_nochange": 0})
+        d["n"] += 1
+        m = str(r.get("modulation", ""))
+        if m == "positive":
+            d["n_pos"] += 1
+        elif m == "negative":
+            d["n_neg"] += 1
+        else:
+            d["n_nochange"] += 1
+    for stem, d in per_stem.items():
+        st = status.setdefault(stem, {"round": "", "group_label": "", "n_channels": 0, "n_pos": 0, "n_neg": 0, "n_nochange": 0})
+        st["n_channels"] = d["n"]
+        st["n_pos"] = d["n_pos"]
+        st["n_neg"] = d["n_neg"]
+        st["n_nochange"] = d["n_nochange"]
+
     status_csv = out_dir / "fr_status.csv"
     with status_csv.open("w", encoding="utf-8", newline="") as f:
-        w = _csv2.DictWriter(f, fieldnames=["recording_stem", "round", "group_label", "n_channels"])
+        w = _csv2.DictWriter(f, fieldnames=["recording_stem", "round", "group_label", "n_channels", "n_pos", "n_neg", "n_nochange"])
         w.writeheader()
         for stem, st in sorted(status.items()):
             w.writerow({"recording_stem": stem, **st})
