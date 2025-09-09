@@ -1,4 +1,55 @@
 from __future__ import annotations
+"""
+Event Logging GUI (MCS MEA)
+===========================
+
+Purpose
+- Curate chemical and opto timestamps interactively per recording; log manual
+  annotations as needed. Provide fast navigation, scope controls, and a
+  previewable opto-train template.
+
+How it communicates with headless pipeline
+- On Commit Chem (or Save), the GUI triggers the FR engine to compute once per
+  recording (compute_and_save_fr in fr_plots) and writes standardized outputs:
+  FR CSV/PDF, IFR mean CSV/PDF, and 1 ms per‑channel IFR NPZ.
+- After successful FR, the GUI refreshes the unified manifest so the headless
+  world has an up‑to‑date view of what is analyzable.
+- The GUI also has a batch FR mode at startup (auto‑boot) that discovers all
+  chem‑stamped recordings and computes outputs for those missing them.
+
+Skip policy & recompute
+- Single‑file FR will be skipped if outputs already exist. Use the toolbar’s
+  “Recompute FR” to force a refresh for the current recording.
+- Batch FR skips recordings that are missing, ignored, lack chem stamps, or
+  already have outputs. Delete a recording’s `fr/` folder to force a fresh
+  compute in batch mode.
+
+Threading model
+- Long‑running FR tasks run in background threads. Status updates are posted via
+  a Qt signal (`status_signal`) to avoid cross‑thread UI calls.
+
+Standardized outputs (per recording)
+- `/Volumes/Manny2TB/mcs_mea_outputs/plots/<round>/<group>/<stem>/fr/`
+  - `<stem>_fr_summary.csv`, `<stem>_fr_overview.pdf`, `<stem>_fr_modulation.pdf`
+  - `<stem>_fr_timeseries.csv` (mean FR, 1 s bins)
+  - `<stem>_ifr_mean_per_sample.csv`, `<stem>_ifr_mean.pdf`
+  - `<stem>_ifr_per_channel_1ms.npz` (time_s, ifr_hz, ifr_hz_smooth)
+
+Headless modules
+- `fr_plots`: compute FR/IFR and write outputs (no GUI).
+- `ready`: build a standardized readiness list (chem + NPZ by default).
+- `manifest`: build the canonical manifest (eligibility, curation, outputs).
+- `ifr_processing`: compute metrics from IFR NPZ; build catalogs (no plots).
+- `ifr_analysis`: plot from NPZ (no processing).
+
+CLI entry points
+- `python -m scripts.run_fr_batch` — compute FR/IFR (skips when present)
+- `python -m scripts.build_ready` — build chem+NPZ ready list
+- `python -m scripts.analyze_ready` — process+plot the ready set from NPZ
+
+This file focuses strictly on GUI concerns and delegates compute/publishing to
+the headless modules above.
+"""
 
 import csv
 import json
