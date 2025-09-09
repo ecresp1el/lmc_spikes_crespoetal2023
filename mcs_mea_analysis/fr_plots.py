@@ -38,6 +38,32 @@ def _open_analog(path: Path) -> Tuple[Optional[object], Optional[object], Option
     return plotter._open_first_analog_stream(path)
 
 
+def spikes_to_channel_ifr(spikes: Dict[int, np.ndarray], sr_hz: float, n_samples: int, bin_ms: float = 1.0, smooth: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute per-channel instantaneous firing rate in 1 ms bins with optional smoothing.
+
+    Returns (time_s, ifr_hz, ifr_hz_smooth) where ifr arrays are shape (n_channels, n_bins)
+    and time_s is (n_bins,).
+    """
+    sr = float(sr_hz)
+    bin_samples = max(1, int(round((bin_ms * 1e-3) * sr)))
+    n_bins = int(np.ceil(n_samples / bin_samples))
+    time_s = (np.arange(n_bins) * bin_samples / sr).astype(float)
+    ch_ids_sorted = sorted(spikes.keys())
+    ifr = np.zeros((len(ch_ids_sorted), n_bins), dtype=np.float32)
+    for i, cid in enumerate(ch_ids_sorted):
+        t = spikes.get(cid)
+        if t is None or t.size == 0:
+            continue
+        idx = np.clip(np.floor(t * sr / bin_samples).astype(int), 0, n_bins - 1)
+        if idx.size:
+            bincount = np.bincount(idx, minlength=n_bins).astype(np.float32)
+            ifr[i, :] = bincount / (bin_samples / sr)  # Hz
+    if smooth is None:
+        smooth = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0
+    ifr_s = np.apply_along_axis(lambda x: np.convolve(x, smooth, mode='same'), 1, ifr)
+    return time_s, ifr, ifr_s
+
+
 def _load_spike_times(path: Path) -> Dict[int, np.ndarray]:
     """Return dict[channel_id] -> spike times in seconds, if available via McsPy.
     Returns empty dict if not available.
@@ -166,7 +192,9 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
 
     # Build output directory structure using metadata
     gi = GroupLabeler.infer_from_path(recording)
-    out_dir = output_root / "plots" / gi.round_name / gi.label / recording.stem / "fr"
+    round_name = gi.round_name or "unknown_round"
+    group_label = gi.label or "UNKNOWN"
+    out_dir = output_root / "plots" / round_name / group_label / recording.stem / "fr"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Write CSV
@@ -258,6 +286,17 @@ def compute_and_save_fr(recording: Path, chem_time: float, output_root: Path) ->
         print(f"[fr] wrote IFR PDF: {ifr_pdf}")
     except Exception as e:
         print(f"[fr] IFR compute failed: {e}")
+
+    # Per-channel IFR at 1 ms resolution (raw and smoothed), saved once to NPZ
+    try:
+        n_total = int(ds.shape[1])
+        time_ms, ifr_ch, ifr_ch_s = spikes_to_channel_ifr(spikes, float(sr_hz), n_total, bin_ms=1.0)
+        # Save compactly to NPZ
+        ifr_npz = out_dir / f"{recording.stem}_ifr_per_channel_1ms.npz"
+        np.savez_compressed(ifr_npz, time_s=time_ms, ifr_hz=ifr_ch, ifr_hz_smooth=ifr_ch_s)
+        print(f"[fr] wrote IFR per-channel NPZ: {ifr_npz}")
+    except Exception as e:
+        print(f"[fr] IFR per-channel failed: {e}")
 
     # Modulation 3x1 plots: histograms of pre vs post per category
     try:
@@ -408,9 +447,7 @@ def rebuild_fr_catalog(output_root: Path) -> None:
                 csv_path = fr_dir / f"{stem}_fr_summary.csv"
                 if not csv_path.exists():
                     continue
-                # derive recording path via reverse from GroupLabeler (best-effort)
-                # Not having absolute path from here; store stem and inferred metadata
-                gi = GroupLabeler(round_dir.name, '', group_dir.name, False, None) if hasattr(GroupLabeler, '__init__') else None
+                # We store round/group from directory structure; absolute path is not recorded here
                 with csv_path.open("r", encoding="utf-8", newline="") as f:
                     rdr = _csv.DictReader(f)
                     for r in rdr:

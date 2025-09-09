@@ -1323,12 +1323,18 @@ class EventLoggingGUI(QtWidgets.QMainWindow):
         todo: List[Path] = []
         for it in self.index_items:
             p = Path(str(it.get('path', '')))
-            if not p.exists() or self._is_ignored(p):
+            if not p.exists():
+                print(f"[gui] FR batch skip (missing): {p}")
+                continue
+            if self._is_ignored(p):
+                print(f"[gui] FR batch skip (ignored): {p}")
                 continue
             cats = self._annotation_categories_for(p)
             if 'chemical' not in cats:
+                print(f"[gui] FR batch skip (no chem): {p}")
                 continue
             if self._has_fr_outputs(p):
+                print(f"[gui] FR batch skip (already has outputs): {p}")
                 continue
             todo.append(p)
         if not todo:
