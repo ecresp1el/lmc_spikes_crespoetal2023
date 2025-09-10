@@ -129,7 +129,11 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     st_c, sr_c = _try_open_first_stream(args.ctz_h5) if args.ctz_h5 else (None, None)
     st_v, sr_v = _try_open_first_stream(args.veh_h5) if args.veh_h5 else (None, None)
 
-    app = QtWidgets.QApplication([])
+    app = QtWidgets.QApplication.instance()
+    run_exec = False
+    if app is None:
+        app = QtWidgets.QApplication([])
+        run_exec = True
     win = QtWidgets.QMainWindow()
     win.setWindowTitle(
         f"Plate {args.plate or '-'} | Round {args.round or '-'} | CTZ={args.ctz_npz.stem} vs VEH={args.veh_npz.stem}"
@@ -270,4 +274,5 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     update_channel(0)
     win.resize(1280, 800)
     win.show()
-    app.exec_()
+    if run_exec:
+        app.exec_()
