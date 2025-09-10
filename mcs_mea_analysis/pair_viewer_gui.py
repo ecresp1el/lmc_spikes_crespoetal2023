@@ -204,6 +204,9 @@ class PairInputs:
     chem_veh_s: Optional[float]
     output_root: Path = CONFIG.output_root
     initial_channel: int = 0
+    # Persistence
+    resume: bool = True  # load existing selections JSON if present
+    selection_path: Optional[Path] = None  # explicit selections file to load/save
 
 
 def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
@@ -270,12 +273,14 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_reject = QtWidgets.QPushButton("Reject")
     btn_save = QtWidgets.QPushButton("Save Selections")
     full_chk = QtWidgets.QCheckBox("Full analog (no decimation)")
+    btn_reload = QtWidgets.QPushButton("Reload Selections")
     status_lbl = QtWidgets.QLabel("")
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
     h.addWidget(btn_prev); h.addWidget(btn_next)
     h.addWidget(btn_accept); h.addWidget(btn_reject)
     h.addWidget(btn_save)
+    h.addWidget(btn_reload)
     h.addWidget(full_chk)
     h.addStretch(1)
     h.addWidget(status_lbl)
@@ -289,8 +294,46 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             ax.addItem(ln)
             chem_lines.append(ln)
 
-    # Selection state
+    # Selection state + persistence helpers
     selections: Dict[int, str] = {}
+
+    def _default_sel_path() -> Path:
+        sel_dir = args.output_root / "selections"
+        sel_dir.mkdir(parents=True, exist_ok=True)
+        pair_id = f"plate_{args.plate or 'NA'}__{args.ctz_npz.stem}__{args.veh_npz.stem}.json"
+        return sel_dir / pair_id
+
+    sel_path = args.selection_path or _default_sel_path()
+
+    def load_selections() -> None:
+        nonlocal selections
+        try:
+            if sel_path.exists():
+                data = json.loads(sel_path.read_text())
+                sel = data.get("selections") or {}
+                # coerce keys to int
+                selections = {int(k): str(v) for k, v in sel.items()}
+                status_lbl.setText(f"Loaded selections: {sel_path.name}")
+        except Exception:
+            status_lbl.setText("Load failed")
+
+    def save_selections() -> None:
+        try:
+            payload = {
+                "plate": args.plate,
+                "round": args.round,
+                "ctz_npz": str(args.ctz_npz),
+                "veh_npz": str(args.veh_npz),
+                "ctz_h5": str(args.ctz_h5) if args.ctz_h5 else "",
+                "veh_h5": str(args.veh_h5) if args.veh_h5 else "",
+                "chem_ctz_s": args.chem_ctz_s,
+                "chem_veh_s": args.chem_veh_s,
+                "selections": selections,
+            }
+            sel_path.write_text(json.dumps(payload, indent=2))
+            status_lbl.setText(f"Saved ✓ {sel_path.name}")
+        except Exception:
+            status_lbl.setText("Save failed")
 
     # Curve holders
     c_raw = raw_ctz.plot([], [], pen=pg.mkPen('w'))
@@ -365,11 +408,13 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         ch = spin.value()
         selections[ch] = "accept"
         update_channel(ch)
+        save_selections()
 
     def on_reject():
         ch = spin.value()
         selections[ch] = "reject"
         update_channel(ch)
+        save_selections()
 
     def on_next():
         ch = min(n_ch - 1, spin.value() + 1)
@@ -383,29 +428,19 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         update_channel(spin.value())
 
     def on_save():
-        out_dir = args.output_root / "selections"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        pair_id = f"plate_{args.plate or 'NA'}__{args.ctz_npz.stem}__{args.veh_npz.stem}.json"
-        out_path = out_dir / pair_id
-        payload = {
-            "plate": args.plate,
-            "round": args.round,
-            "ctz_npz": str(args.ctz_npz),
-            "veh_npz": str(args.veh_npz),
-            "ctz_h5": str(args.ctz_h5) if args.ctz_h5 else "",
-            "veh_h5": str(args.veh_h5) if args.veh_h5 else "",
-            "chem_ctz_s": args.chem_ctz_s,
-            "chem_veh_s": args.chem_veh_s,
-            "selections": selections,
-        }
-        out_path.write_text(json.dumps(payload, indent=2))
-        QtWidgets.QMessageBox.information(win, "Saved", f"Selections saved to:\n{out_path}")
+        save_selections()
+        QtWidgets.QMessageBox.information(win, "Saved", f"Selections saved to:\n{sel_path}")
+
+    def on_reload():
+        load_selections()
+        update_channel(spin.value())
 
     btn_accept.clicked.connect(on_accept)
     btn_reject.clicked.connect(on_reject)
     btn_next.clicked.connect(on_next)
     btn_prev.clicked.connect(on_prev)
     btn_save.clicked.connect(on_save)
+    btn_reload.clicked.connect(on_reload)
     spin.valueChanged.connect(on_spin)
     # Recompute raw when toggling full mode
     try:
@@ -413,6 +448,9 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     except Exception:
         pass
 
+    # Optional: resume previous selections
+    if args.resume:
+        load_selections()
     update_channel(0)
     win.resize(1280, 800)
     win.show()
