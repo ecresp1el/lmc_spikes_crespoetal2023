@@ -220,13 +220,13 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         ifr_veh.enableAutoRange(True, True)
 
         # Raw (optional)
-        if st_c is not None and sr_c:
+        if st_c is not None:
             xr, yr = _decimated_channel_trace(st_c, sr_c, ch, time_seconds=None, max_points=6000)
             c_raw.setData(xr, yr)
             raw_ctz.enableAutoRange(True, True)
         else:
             c_raw.setData([], [])
-        if st_v is not None and sr_v:
+        if st_v is not None:
             xr, yr = _decimated_channel_trace(st_v, sr_v, ch, time_seconds=None, max_points=6000)
             v_raw.setData(xr, yr)
             raw_veh.enableAutoRange(True, True)
