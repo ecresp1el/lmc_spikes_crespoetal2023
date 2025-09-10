@@ -274,5 +274,10 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     update_channel(0)
     win.resize(1280, 800)
     win.show()
+    try:
+        win.raise_()
+        win.activateWindow()
+    except Exception:
+        pass
     if run_exec:
         app.exec_()
