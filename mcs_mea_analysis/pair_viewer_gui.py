@@ -82,20 +82,36 @@ def _decimated_channel_trace(
       the index used in IFR arrays (typical for our pipeline).
     - If `sr_hz` is None, derives a simple x-axis in samples (seconds become None).
     """
-    ds = getattr(stream, "channel_data", None)
-    if ds is None:
+    try:
+        ds = getattr(stream, "channel_data", None)
+        if ds is None:
+            return np.array([]), np.array([])
+        shape = getattr(ds, "shape", None)
+        if not shape or len(shape) < 2:
+            return np.array([]), np.array([])
+        total_samples = int(shape[1])
+        if sr_hz is None or sr_hz <= 0:
+            sr_hz = 1.0
+        ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
+        if ns <= 0:
+            return np.array([]), np.array([])
+        step = max(1, int(np.ceil(ns / max_points)))
+        x = (np.arange(0, ns, step) / sr_hz).astype(float)
+        # Map channel index to row index by channel_infos.row_index if available
+        r = ch_index
+        ci = getattr(stream, "channel_infos", {}) or {}
+        try:
+            rows = sorted({int(getattr(info, "row_index")) for info in ci.values() if hasattr(info, "row_index")})
+            if 0 <= ch_index < len(rows):
+                r = rows[ch_index]
+        except Exception:
+            r = ch_index
+        y = np.asarray(ds[r, 0:ns:step])
+        m = min(len(x), len(y))
+        return x[:m], y[:m]
+    except Exception:
+        # Any HDF5/shape access error: return empty to avoid crashing the GUI
         return np.array([]), np.array([])
-    total_samples = int(ds.shape[1])
-    if sr_hz is None or sr_hz <= 0:
-        sr_hz = 1.0
-    ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
-    if ns <= 0:
-        return np.array([]), np.array([])
-    step = max(1, int(np.ceil(ns / max_points)))
-    x = (np.arange(0, ns, step) / sr_hz).astype(float)
-    y = np.asarray(ds[ch_index, 0:ns:step])
-    m = min(len(x), len(y))
-    return x[:m], y[:m]
 
 
 @dataclass
