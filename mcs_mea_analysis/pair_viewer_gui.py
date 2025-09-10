@@ -73,7 +73,8 @@ def _decimated_channel_trace(
     stream: object,
     sr_hz: Optional[float],
     ch_index: int,
-    time_seconds: Optional[float] = None,
+    t0_s: Optional[float] = None,
+    t1_s: Optional[float] = None,
     max_points: int = 6000,
     decimate: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -101,11 +102,25 @@ def _decimated_channel_trace(
         return np.array([]), np.array([])
     if sr_hz is None or sr_hz <= 0:
         sr_hz = 1.0
-    ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
+    # Compute start/end indices from window in seconds
+    start_idx = 0
+    end_idx = total_samples
+    if t0_s is not None:
+        try:
+            start_idx = max(0, int(round(t0_s * sr_hz)))
+        except Exception:
+            start_idx = 0
+    if t1_s is not None and t1_s > 0:
+        try:
+            end_idx = min(total_samples, int(round(t1_s * sr_hz)))
+        except Exception:
+            end_idx = total_samples
+    ns = max(0, end_idx - start_idx)
     if ns <= 0:
         return np.array([]), np.array([])
     step = 1 if (not decimate or max_points is None or max_points <= 0) else max(1, int(np.ceil(ns / max_points)))
-    x = (np.arange(0, ns, step) / sr_hz).astype(float)
+    # Build x relative to t0_s for readability
+    x = ((start_idx + np.arange(0, ns, step)) / sr_hz).astype(float)
     # Row index selection
     r = ch_index if 0 <= ch_index < int(shape[0]) else 0
     # If channel_infos -> row_index available, prefer that ordering
@@ -118,7 +133,7 @@ def _decimated_channel_trace(
         pass
     # Read slice defensively
     try:
-        y = np.asarray(ds[r, 0:ns:step])
+        y = np.asarray(ds[r, start_idx:end_idx:step])
     except Exception:
         return np.array([]), np.array([])
     m = min(len(x), len(y))
@@ -129,7 +144,8 @@ def _decimated_channel_trace_h5(
     h5_path: Path,
     sr_hz: Optional[float],
     ch_index: int,
-    time_seconds: Optional[float] = None,
+    t0_s: Optional[float] = None,
+    t1_s: Optional[float] = None,
     max_points: int = 6000,
     decimate: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -177,13 +193,25 @@ def _decimated_channel_trace_h5(
             r = ch_index if 0 <= ch_index < nrows else 0
             if sr_hz is None or sr_hz <= 0:
                 sr_hz = 1.0
-            ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
+            start_idx = 0
+            end_idx = total_samples
+            if t0_s is not None:
+                try:
+                    start_idx = max(0, int(round(t0_s * sr_hz)))
+                except Exception:
+                    start_idx = 0
+            if t1_s is not None and t1_s > 0:
+                try:
+                    end_idx = min(total_samples, int(round(t1_s * sr_hz)))
+                except Exception:
+                    end_idx = total_samples
+            ns = max(0, end_idx - start_idx)
             if ns <= 0:
                 return np.array([]), np.array([])
             step = 1 if (not decimate or max_points is None or max_points <= 0) else max(1, int(np.ceil(ns / max_points)))
-            x = (np.arange(0, ns, step) / sr_hz).astype(float)
+            x = ((start_idx + np.arange(0, ns, step)) / sr_hz).astype(float)
             try:
-                y = np.asarray(ds[r, 0:ns:step])
+                y = np.asarray(ds[r, start_idx:end_idx:step])
             except Exception:
                 return np.array([]), np.array([])
             m = min(len(x), len(y))
@@ -274,6 +302,10 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_save = QtWidgets.QPushButton("Save Selections")
     full_chk = QtWidgets.QCheckBox("Full analog (no decimation)")
     btn_reload = QtWidgets.QPushButton("Reload Selections")
+    chem_chk = QtWidgets.QCheckBox("Chem window")
+    chem_chk.setChecked(True)
+    pre_spin = QtWidgets.QDoubleSpinBox(); pre_spin.setRange(0.0, 1e5); pre_spin.setDecimals(1); pre_spin.setValue(60.0); pre_spin.setSuffix(" s pre")
+    post_spin = QtWidgets.QDoubleSpinBox(); post_spin.setRange(0.0, 1e5); post_spin.setDecimals(1); post_spin.setValue(60.0); post_spin.setSuffix(" s post")
     status_lbl = QtWidgets.QLabel("")
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
@@ -281,6 +313,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     h.addWidget(btn_accept); h.addWidget(btn_reject)
     h.addWidget(btn_save)
     h.addWidget(btn_reload)
+    h.addWidget(chem_chk); h.addWidget(pre_spin); h.addWidget(post_spin)
     h.addWidget(full_chk)
     h.addStretch(1)
     h.addWidget(status_lbl)
@@ -348,9 +381,17 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     def update_channel(ch: int) -> None:
         status_lbl.setText("Loading raw…")
         QtWidgets.QApplication.processEvents()
-        # IFR
-        x_c = t_c; y_c = Yc[ch, :]
-        x_v = t_v; y_v = Yv[ch, :]
+        # IFR with optional chem window per side
+        def _slice_ifr(t: np.ndarray, y: np.ndarray, chem_ts: Optional[float]) -> Tuple[np.ndarray, np.ndarray]:
+            if chem_chk.isChecked() and chem_ts is not None:
+                t0 = max(0.0, float(chem_ts) - float(pre_spin.value()))
+                t1 = float(chem_ts) + float(post_spin.value())
+                m = (t >= t0) & (t <= t1)
+                if np.any(m):
+                    return t[m], y[m]
+            return t, y
+        x_c, y_c = _slice_ifr(t_c, Yc[ch, :], args.chem_ctz_s)
+        x_v, y_v = _slice_ifr(t_v, Yv[ch, :], args.chem_veh_s)
         # Decimate for speed
         def decim(x, y, max_points=6000):
             step = max(1, int(len(x) // max_points))
@@ -365,14 +406,21 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         # Raw (optional)
         raw_msgs = []
         full = bool(full_chk.isChecked())
+        # Compute raw windows in seconds for each side
+        def _raw_window(chem_ts: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+            if chem_chk.isChecked() and chem_ts is not None:
+                return max(0.0, float(chem_ts) - float(pre_spin.value())), float(chem_ts) + float(post_spin.value())
+            return None, None
+        t0_c, t1_c = _raw_window(args.chem_ctz_s)
+        t0_v, t1_v = _raw_window(args.chem_veh_s)
         if st_c is not None:
-            key = (ch, full)
+            key = (ch, full, int((t0_c or -1)*1000), int((t1_c or -1)*1000))
             if key in raw_cache_ctz:
                 xr, yr = raw_cache_ctz[key]
             else:
-                xr, yr = _decimated_channel_trace(st_c, sr_c, ch, time_seconds=None, max_points=6000, decimate=not full)
+                xr, yr = _decimated_channel_trace(st_c, sr_c, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full)
                 if len(xr) == 0:
-                    xr, yr = _decimated_channel_trace_h5(args.ctz_h5, sr_c, ch, time_seconds=None, max_points=6000, decimate=not full) if args.ctz_h5 else (np.array([]), np.array([]))
+                    xr, yr = _decimated_channel_trace_h5(args.ctz_h5, sr_c, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full) if args.ctz_h5 else (np.array([]), np.array([]))
                 raw_cache_ctz[key] = (xr, yr)
             c_raw.setData(xr, yr)
             raw_ctz.enableAutoRange(True, True)
@@ -381,13 +429,13 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             c_raw.setData([], [])
             raw_msgs.append("CTZ:—")
         if st_v is not None:
-            key = (ch, full)
+            key = (ch, full, int((t0_v or -1)*1000), int((t1_v or -1)*1000))
             if key in raw_cache_veh:
                 xr, yr = raw_cache_veh[key]
             else:
-                xr, yr = _decimated_channel_trace(st_v, sr_v, ch, time_seconds=None, max_points=6000, decimate=not full)
+                xr, yr = _decimated_channel_trace(st_v, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
                 if len(xr) == 0:
-                    xr, yr = _decimated_channel_trace_h5(args.veh_h5, sr_v, ch, time_seconds=None, max_points=6000, decimate=not full) if args.veh_h5 else (np.array([]), np.array([]))
+                    xr, yr = _decimated_channel_trace_h5(args.veh_h5, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full) if args.veh_h5 else (np.array([]), np.array([]))
                 raw_cache_veh[key] = (xr, yr)
             v_raw.setData(xr, yr)
             raw_veh.enableAutoRange(True, True)
@@ -443,10 +491,14 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_reload.clicked.connect(on_reload)
     spin.valueChanged.connect(on_spin)
     # Recompute raw when toggling full mode
-    try:
-        full_chk.stateChanged.connect(lambda *_: update_channel(spin.value()))
-    except Exception:
-        pass
+    for w in (full_chk, chem_chk, pre_spin, post_spin):
+        try:
+            if hasattr(w, 'stateChanged'):
+                w.stateChanged.connect(lambda *_: update_channel(spin.value()))
+            else:
+                w.valueChanged.connect(lambda *_: update_channel(spin.value()))
+        except Exception:
+            pass
 
     # Optional: resume previous selections
     if args.resume:
