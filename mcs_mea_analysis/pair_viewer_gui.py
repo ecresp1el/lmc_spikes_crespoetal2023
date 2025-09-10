@@ -12,14 +12,14 @@ Dependencies: PyQt5, pyqtgraph, numpy, (optional) McsPy/McsPyDataTools for raw.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 import json
 import numpy as np
 
 from .config import CONFIG
 
 
-def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float]]:
+def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float], Optional[Any]]:
     """Open the first analog stream and return (stream_like, sampling_rate_hz).
 
     Uses legacy McsPy.McsData if available (preferred for channel_data access),
@@ -53,7 +53,8 @@ def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float
                     sr_hz = float(sf)
             except Exception:
                 sr_hz = None
-        return st, sr_hz
+        # keep 'raw' and 'rec' alive by returning an owner tuple
+        return st, sr_hz, (raw, rec)
     except Exception:
         pass
 
@@ -63,9 +64,9 @@ def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float
 
         rec = McsRecording(path.as_posix())
         st = getattr(rec, "analog_streams", None) or getattr(rec, "AnalogStream", None)
-        return st, None
+        return st, None, rec
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _decimated_channel_trace(
@@ -82,36 +83,45 @@ def _decimated_channel_trace(
       the index used in IFR arrays (typical for our pipeline).
     - If `sr_hz` is None, derives a simple x-axis in samples (seconds become None).
     """
-    try:
-        ds = getattr(stream, "channel_data", None)
-        if ds is None:
-            return np.array([]), np.array([])
-        shape = getattr(ds, "shape", None)
-        if not shape or len(shape) < 2:
-            return np.array([]), np.array([])
-        total_samples = int(shape[1])
-        if sr_hz is None or sr_hz <= 0:
-            sr_hz = 1.0
-        ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
-        if ns <= 0:
-            return np.array([]), np.array([])
-        step = max(1, int(np.ceil(ns / max_points)))
-        x = (np.arange(0, ns, step) / sr_hz).astype(float)
-        # Map channel index to row index by channel_infos.row_index if available
-        r = ch_index
-        ci = getattr(stream, "channel_infos", {}) or {}
-        try:
-            rows = sorted({int(getattr(info, "row_index")) for info in ci.values() if hasattr(info, "row_index")})
-            if 0 <= ch_index < len(rows):
-                r = rows[ch_index]
-        except Exception:
-            r = ch_index
-        y = np.asarray(ds[r, 0:ns:step])
-        m = min(len(x), len(y))
-        return x[:m], y[:m]
-    except Exception:
-        # Any HDF5/shape access error: return empty to avoid crashing the GUI
+    # Attempt direct HDF5 access; keep robust to API quirks
+    ds = getattr(stream, "channel_data", None)
+    if ds is None:
         return np.array([]), np.array([])
+    # Determine shape guardedly
+    try:
+        shape = ds.shape  # may raise
+    except Exception:
+        return np.array([]), np.array([])
+    if not shape or len(shape) < 2:
+        return np.array([]), np.array([])
+    try:
+        total_samples = int(shape[1])
+    except Exception:
+        return np.array([]), np.array([])
+    if sr_hz is None or sr_hz <= 0:
+        sr_hz = 1.0
+    ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
+    if ns <= 0:
+        return np.array([]), np.array([])
+    step = max(1, int(np.ceil(ns / max_points)))
+    x = (np.arange(0, ns, step) / sr_hz).astype(float)
+    # Row index selection
+    r = ch_index if 0 <= ch_index < int(shape[0]) else 0
+    # If channel_infos -> row_index available, prefer that ordering
+    ci = getattr(stream, "channel_infos", {}) or {}
+    try:
+        rows = sorted({int(getattr(info, "row_index")) for info in ci.values() if hasattr(info, "row_index")})
+        if rows and 0 <= ch_index < len(rows):
+            r = rows[ch_index]
+    except Exception:
+        pass
+    # Read slice defensively
+    try:
+        y = np.asarray(ds[r, 0:ns:step])
+    except Exception:
+        return np.array([]), np.array([])
+    m = min(len(x), len(y))
+    return x[:m], y[:m]
 
 
 @dataclass
@@ -142,8 +152,19 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     n_ch = int(min(Yc.shape[0], Yv.shape[0]))
 
     # Raw streams (optional)
-    st_c, sr_c = _try_open_first_stream(args.ctz_h5) if args.ctz_h5 else (None, None)
-    st_v, sr_v = _try_open_first_stream(args.veh_h5) if args.veh_h5 else (None, None)
+    owners: list[Any] = []
+    if args.ctz_h5:
+        st_c, sr_c, owner_c = _try_open_first_stream(args.ctz_h5)
+        if owner_c is not None:
+            owners.append(owner_c)
+    else:
+        st_c, sr_c = None, None
+    if args.veh_h5:
+        st_v, sr_v, owner_v = _try_open_first_stream(args.veh_h5)
+        if owner_v is not None:
+            owners.append(owner_v)
+    else:
+        st_v, sr_v = None, None
 
     app = QtWidgets.QApplication.instance()
     run_exec = False
