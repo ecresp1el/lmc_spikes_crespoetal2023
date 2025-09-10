@@ -201,11 +201,14 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_accept = QtWidgets.QPushButton("Accept")
     btn_reject = QtWidgets.QPushButton("Reject")
     btn_save = QtWidgets.QPushButton("Save Selections")
+    status_lbl = QtWidgets.QLabel("")
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
     h.addWidget(btn_prev); h.addWidget(btn_next)
     h.addWidget(btn_accept); h.addWidget(btn_reject)
     h.addWidget(btn_save)
+    h.addStretch(1)
+    h.addWidget(status_lbl)
     grid.addWidget(ctrl, 2, 0, 1, 2)
 
     # Chem markers
@@ -226,6 +229,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     v_ifr = ifr_veh.plot([], [], pen=pg.mkPen('m'))
 
     def update_channel(ch: int) -> None:
+        status_lbl.setText("Loading raw…")
+        QtWidgets.QApplication.processEvents()
         # IFR
         x_c = t_c; y_c = Yc[ch, :]
         x_v = t_v; y_v = Yv[ch, :]
@@ -241,18 +246,23 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         ifr_veh.enableAutoRange(True, True)
 
         # Raw (optional)
+        raw_msgs = []
         if st_c is not None:
             xr, yr = _decimated_channel_trace(st_c, sr_c, ch, time_seconds=None, max_points=6000)
             c_raw.setData(xr, yr)
             raw_ctz.enableAutoRange(True, True)
+            raw_msgs.append(f"CTZ:{'ok' if len(xr)>0 else '—'}")
         else:
             c_raw.setData([], [])
+            raw_msgs.append("CTZ:—")
         if st_v is not None:
             xr, yr = _decimated_channel_trace(st_v, sr_v, ch, time_seconds=None, max_points=6000)
             v_raw.setData(xr, yr)
             raw_veh.enableAutoRange(True, True)
+            raw_msgs.append(f"VEH:{'ok' if len(xr)>0 else '—'}")
         else:
             v_raw.setData([], [])
+            raw_msgs.append("VEH:—")
 
         # Update title with selection state
         stat = selections.get(ch, "-")
@@ -260,6 +270,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         raw_veh.setTitle(f"Raw VEH — ch {ch} (sel: {stat})")
         ifr_ctz.setTitle(f"IFR CTZ — ch {ch} (Hz)")
         ifr_veh.setTitle(f"IFR VEH — ch {ch} (Hz)")
+        status_lbl.setText("Raw " + " ".join(raw_msgs))
 
     def on_accept():
         ch = spin.value()
