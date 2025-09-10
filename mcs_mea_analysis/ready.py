@@ -154,7 +154,9 @@ def build_ready_index(cfg: ReadinessConfig | None = None) -> Tuple[Path, Path, L
                 "path": str(rec_path),
                 "recording_stem": stem,
                 "round": it.get("round"),
+                "plate": it.get("plate"),
                 "group_label": it.get("group_label"),
+                "timestamp": it.get("timestamp"),
                 "eligible": eligible,
                 "ignored": ignored,
                 "has_chemical": has_chem,
@@ -176,7 +178,9 @@ def build_ready_index(cfg: ReadinessConfig | None = None) -> Tuple[Path, Path, L
         "path",
         "recording_stem",
         "round",
+        "plate",
         "group_label",
+        "timestamp",
         "eligible",
         "ignored",
         "has_chemical",
@@ -198,4 +202,3 @@ def build_ready_index(cfg: ReadinessConfig | None = None) -> Tuple[Path, Path, L
             f.write(json.dumps(r) + "\n")
     print(f"[ready] wrote -> {csv_path} and {jsonl_path}")
     return csv_path, jsonl_path, rows
-
