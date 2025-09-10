@@ -217,3 +217,17 @@ class PairingIndex:
                 )
         return out
 
+    @staticmethod
+    def load_npz_arrays(item: PairItem):
+        """Load (time_s, ifr_hz, ifr_hz_smooth) from a PairItem's NPZ if present.
+
+        Returns a tuple or raises FileNotFoundError/ValueError if not available.
+        """
+        import numpy as np
+        if not item.npz_path or not item.npz_path.exists():
+            raise FileNotFoundError(f"NPZ missing for {item.recording_stem}: {item.npz_path}")
+        d = np.load(item.npz_path)
+        time_s = np.asarray(d["time_s"], dtype=float)
+        ifr = np.asarray(d["ifr_hz"], dtype=float)
+        ifr_s = np.asarray(d.get("ifr_hz_smooth", ifr), dtype=float)
+        return time_s, ifr, ifr_s
