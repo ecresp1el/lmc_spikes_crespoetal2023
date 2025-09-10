@@ -124,6 +124,72 @@ def _decimated_channel_trace(
     return x[:m], y[:m]
 
 
+def _decimated_channel_trace_h5(
+    h5_path: Path,
+    sr_hz: Optional[float],
+    ch_index: int,
+    time_seconds: Optional[float] = None,
+    max_points: int = 6000,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Fallback: open HDF5 directly via h5py and read ChannelData decimated.
+
+    Tries to locate the first AnalogStream/ChannelData dataset under /Data.
+    """
+    try:
+        import h5py  # type: ignore
+    except Exception:
+        return np.array([]), np.array([])
+    try:
+        with h5py.File(h5_path.as_posix(), 'r') as f:
+            # Try standard path first
+            paths = [
+                '/Data/Recording_0/AnalogStream/Stream_0/ChannelData',
+            ]
+            ds = None
+            for p in paths:
+                if p in f:
+                    ds = f[p]
+                    break
+            if ds is None:
+                # Fallback: find any dataset named ChannelData under /Data
+                def _find(obj):
+                    found = None
+                    def _visit(name, o):
+                        nonlocal found
+                        if found is not None:
+                            return
+                        try:
+                            if isinstance(o, h5py.Dataset) and name.endswith('ChannelData'):
+                                found = o
+                        except Exception:
+                            pass
+                    f.visititems(_visit)
+                    return found
+                ds = _find(f)
+            if ds is None:
+                return np.array([]), np.array([])
+            shape = ds.shape
+            if not shape or len(shape) < 2:
+                return np.array([]), np.array([])
+            nrows, total_samples = int(shape[0]), int(shape[1])
+            r = ch_index if 0 <= ch_index < nrows else 0
+            if sr_hz is None or sr_hz <= 0:
+                sr_hz = 1.0
+            ns = total_samples if time_seconds is None else min(int(time_seconds * sr_hz), total_samples)
+            if ns <= 0:
+                return np.array([]), np.array([])
+            step = max(1, int(np.ceil(ns / max_points)))
+            x = (np.arange(0, ns, step) / sr_hz).astype(float)
+            try:
+                y = np.asarray(ds[r, 0:ns:step])
+            except Exception:
+                return np.array([]), np.array([])
+            m = min(len(x), len(y))
+            return x[:m], y[:m]
+    except Exception:
+        return np.array([]), np.array([])
+
+
 @dataclass
 class PairInputs:
     plate: Optional[int]
@@ -228,6 +294,10 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     c_ifr = ifr_ctz.plot([], [], pen=pg.mkPen('c'))
     v_ifr = ifr_veh.plot([], [], pen=pg.mkPen('m'))
 
+    # Simple caches to avoid repeated HDF5 reads per channel
+    raw_cache_ctz: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+    raw_cache_veh: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+
     def update_channel(ch: int) -> None:
         status_lbl.setText("Loading raw…")
         QtWidgets.QApplication.processEvents()
@@ -248,7 +318,13 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         # Raw (optional)
         raw_msgs = []
         if st_c is not None:
-            xr, yr = _decimated_channel_trace(st_c, sr_c, ch, time_seconds=None, max_points=6000)
+            if ch in raw_cache_ctz:
+                xr, yr = raw_cache_ctz[ch]
+            else:
+                xr, yr = _decimated_channel_trace(st_c, sr_c, ch, time_seconds=None, max_points=6000)
+                if len(xr) == 0:
+                    xr, yr = _decimated_channel_trace_h5(args.ctz_h5, sr_c, ch, time_seconds=None, max_points=6000) if args.ctz_h5 else (np.array([]), np.array([]))
+                raw_cache_ctz[ch] = (xr, yr)
             c_raw.setData(xr, yr)
             raw_ctz.enableAutoRange(True, True)
             raw_msgs.append(f"CTZ:{'ok' if len(xr)>0 else '—'}")
@@ -256,7 +332,13 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             c_raw.setData([], [])
             raw_msgs.append("CTZ:—")
         if st_v is not None:
-            xr, yr = _decimated_channel_trace(st_v, sr_v, ch, time_seconds=None, max_points=6000)
+            if ch in raw_cache_veh:
+                xr, yr = raw_cache_veh[ch]
+            else:
+                xr, yr = _decimated_channel_trace(st_v, sr_v, ch, time_seconds=None, max_points=6000)
+                if len(xr) == 0:
+                    xr, yr = _decimated_channel_trace_h5(args.veh_h5, sr_v, ch, time_seconds=None, max_points=6000) if args.veh_h5 else (np.array([]), np.array([]))
+                raw_cache_veh[ch] = (xr, yr)
             v_raw.setData(xr, yr)
             raw_veh.enableAutoRange(True, True)
             raw_msgs.append(f"VEH:{'ok' if len(xr)>0 else '—'}")
