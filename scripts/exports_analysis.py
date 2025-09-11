@@ -20,6 +20,8 @@ Usage
 -----
   python -m scripts.exports_analysis [--output-root PATH] [--exports-dir PATH]
                                      [--example-pair PAIR_ID] [--example-channel CH]
+                                     [--example-match-length]
+                                     [--exemplary-index-x]
                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
                                      [--limit N]
 
@@ -348,6 +350,8 @@ class CLIArgs:
     limit: Optional[int]
     example_pair: Optional[str]
     example_channel: Optional[int]
+    example_match_length: bool
+    exemplary_index_x: bool
     isi_thr_ms: float
     min_burst_ms: float
     min_spikes: int
@@ -361,6 +365,8 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--limit', type=int, default=None, help='Process only first N pairs (for quick iteration)')
     p.add_argument('--example-pair', type=str, default=None, help='Pair ID (H5 stem) to use for exemplary voltage plot')
     p.add_argument('--example-channel', type=int, default=None, help='Channel index for exemplary voltage plot')
+    p.add_argument('--example-match-length', action='store_true', help='For exemplary plot, match CTZ and VEH trace lengths (min length)')
+    p.add_argument('--exemplary-index-x', action='store_true', help='Use sample index on x-axis for exemplary plot (ignore time)')
     p.add_argument('--isi-thr-ms', type=float, default=100.0, help='ISI threshold to link spikes into a burst (ms)')
     p.add_argument('--min-burst-ms', type=float, default=100.0, help='Analyze bursts with duration >= this (ms)')
     p.add_argument('--min-spikes', type=int, default=3, help='Minimum spikes per burst')
@@ -372,10 +378,112 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
         limit=a.limit,
         example_pair=a.example_pair,
         example_channel=a.example_channel,
+        example_match_length=bool(a.example_match_length),
+        exemplary_index_x=bool(a.exemplary_index_x),
         isi_thr_ms=float(a.isi_thr_ms),
         min_burst_ms=float(a.min_burst_ms),
         min_spikes=int(a.min_spikes),
     )
+
+
+# ---------- Statistics helpers ----------
+
+def _mannwhitney_u(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Two-sided Mann–Whitney U test using scipy if available; fallback to numpy approximation.
+
+    Returns (U, pvalue).
+    """
+    try:
+        from scipy.stats import mannwhitneyu  # type: ignore
+
+        res = mannwhitneyu(x, y, alternative='two-sided', method='auto')
+        return float(res.statistic), float(res.pvalue)
+    except Exception:
+        # Very minimal fallback: normal approximation (no ties correction)
+        nx = x.size
+        ny = y.size
+        if nx == 0 or ny == 0:
+            return float('nan'), float('nan')
+        ranks = np.argsort(np.argsort(np.concatenate([x, y]))) + 1
+        rx = np.sum(ranks[:nx])
+        Ux = rx - nx * (nx + 1) / 2.0
+        Uy = nx * ny - Ux
+        U = min(Ux, Uy)
+        # No p-value without scipy reliably; return nan
+        return float(U), float('nan')
+
+
+def _cliffs_delta(x: np.ndarray, y: np.ndarray) -> float:
+    """Compute Cliff's delta effect size (x vs y)."""
+    if x.size == 0 or y.size == 0:
+        return float('nan')
+    # Efficient pairwise compare using broadcasting may be large; chunk if needed
+    # For typical sizes here it's fine to do a simple loop.
+    gt = 0
+    lt = 0
+    for xi in x:
+        gt += int(np.sum(xi > y))
+        lt += int(np.sum(xi < y))
+    n = x.size * y.size
+    return (gt - lt) / float(n) if n else float('nan')
+
+
+def _holm_bonferroni(pvals: list[float]) -> list[float]:
+    """Holm–Bonferroni step-down correction."""
+    m = len(pvals)
+    idx = np.argsort(pvals)
+    adj = [np.nan] * m
+    prev = 0.0
+    for k, i in enumerate(idx):
+        p = pvals[i]
+        c = (m - k) * p
+        c = min(1.0, c)
+        prev = max(prev, c)
+        adj[i] = prev
+    return adj
+
+
+def save_two_group_stats(
+    obs: pd.DataFrame,
+    value_col: str,
+    group_col: str,
+    out_csv: Path,
+    metric_name: str,
+) -> pd.DataFrame:
+    """Run Mann–Whitney U (two-sided) CTZ vs VEH, save detailed stats row.
+
+    Returns a one-row DataFrame with the summary and writes observations CSV next to it.
+    """
+    # Map CTX->CTZ if present
+    obs = obs.copy()
+    obs[group_col] = obs[group_col].replace({'CTX': 'CTZ'})
+    x = obs.loc[obs[group_col] == 'CTZ', value_col].dropna().to_numpy(dtype=float)
+    y = obs.loc[obs[group_col] == 'VEH', value_col].dropna().to_numpy(dtype=float)
+    n1 = int(x.size)
+    n2 = int(y.size)
+    med1 = float(np.median(x)) if n1 else float('nan')
+    med2 = float(np.median(y)) if n2 else float('nan')
+    mean1 = float(np.mean(x)) if n1 else float('nan')
+    mean2 = float(np.mean(y)) if n2 else float('nan')
+    iqr1 = float(np.percentile(x, 75) - np.percentile(x, 25)) if n1 else float('nan')
+    iqr2 = float(np.percentile(y, 75) - np.percentile(y, 25)) if n2 else float('nan')
+    U, p = _mannwhitney_u(x, y)
+    delta = _cliffs_delta(x, y)
+    row = pd.DataFrame([{
+        'metric': metric_name,
+        'group1': 'CTZ', 'group2': 'VEH',
+        'N1': n1, 'N2': n2,
+        'median1': med1, 'median2': med2,
+        'mean1': mean1, 'mean2': mean2,
+        'IQR1': iqr1, 'IQR2': iqr2,
+        'test': 'Mann-Whitney U (two-sided)',
+        'U': float(U), 'p': float(p),
+        'effect': "Cliff's delta", 'effect_size': float(delta),
+    }])
+    # Save observations too (for transparency)
+    obs_out = out_csv.with_name(out_csv.stem + f'__{metric_name}_observations.csv')
+    obs.to_csv(obs_out, index=False)
+    return row
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -420,6 +528,32 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     plot_burst_metric_box(burst_all, 'duration_ms', 'Burst Duration (ms)', 'Post Burst Duration (>= min)', save_dir / 'burst_duration_combined')
     plot_burst_metric_box(burst_all, 'fr_in_burst_hz', 'FR within Burst (Hz)', 'Post Avg FR per Burst', save_dir / 'burst_fr_in_burst_combined')
 
+    # ---------- Nonparametric tests + multiple-comparison correction ----------
+    stats_rows: list[pd.DataFrame] = []
+    # 1) Post FR (channel-level)
+    if not fr_all.empty:
+        stats_rows.append(
+            save_two_group_stats(fr_all.rename(columns={'fr_hz': 'value'}), 'value', 'side', save_dir / 'stats_summary.csv', 'post_fr_hz')
+        )
+    # 2) Burst Duration (ms)
+    if not burst_all.empty and 'duration_ms' in burst_all.columns:
+        stats_rows.append(
+            save_two_group_stats(burst_all.rename(columns={'duration_ms': 'value'}), 'value', 'side', save_dir / 'stats_summary.csv', 'burst_duration_ms')
+        )
+    # 3) FR within Burst (Hz)
+    if not burst_all.empty and 'fr_in_burst_hz' in burst_all.columns:
+        stats_rows.append(
+            save_two_group_stats(burst_all.rename(columns={'fr_in_burst_hz': 'value'}), 'value', 'side', save_dir / 'stats_summary.csv', 'fr_in_burst_hz')
+        )
+    stats_df = pd.concat(stats_rows, ignore_index=True) if stats_rows else pd.DataFrame(columns=['metric','group1','group2','N1','N2','median1','median2','mean1','mean2','IQR1','IQR2','test','U','p','effect','effect_size'])
+    # Multiple-comparison correction across rows
+    if not stats_df.empty and 'p' in stats_df.columns:
+        pvals = [float(p) if np.isfinite(p) else 1.0 for p in stats_df['p'].to_list()]
+        stats_df['p_holm'] = _holm_bonferroni(pvals)
+    stats_csv = save_dir / 'stats_summary.csv'
+    stats_df.to_csv(stats_csv, index=False)
+    print('[analysis] Stats summary ->', stats_csv)
+
     # Example voltage trace
     # If not provided, pick top FR channel
     example_pair = args.example_pair
@@ -440,8 +574,61 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     if sel_h5 is None:
         sel_h5 = pair_h5[0]
     # Plot exemplary raw+filtered for chosen channel
+    # Optionally match lengths and use index-based x-axis
+    def _plot_exemplary_with_opts(h5_path: Path, ch: int, base: Path, match_len: bool, index_x: bool) -> None:
+        with h5py.File(h5_path.as_posix(), 'r') as f:
+            # Load data for both sides
+            traces = {}
+            for side in ('CTZ', 'VEH'):
+                if side not in f:
+                    continue
+                grp = f[side]
+                t = np.asarray(grp.get(f'ch{ch:02d}_time', []), dtype=float)
+                yr = np.asarray(grp.get(f'ch{ch:02d}_raw', []), dtype=float)
+                yf = np.asarray(grp.get(f'ch{ch:02d}_filtered', []), dtype=float)
+                traces[side] = (t, yr, yf)
+            # Match lengths across sides if requested (truncate to min length)
+            if match_len and all(s in traces for s in ('CTZ', 'VEH')):
+                n_ctz = traces['CTZ'][1].size
+                n_veh = traces['VEH'][1].size
+                n = int(min(n_ctz, n_veh))
+                new_traces = {}
+                for side, (t, yr, yf) in traces.items():
+                    if n > 0:
+                        new_traces[side] = (t[:n], yr[:n], yf[:n])
+                    else:
+                        new_traces[side] = (t, yr, yf)
+                traces = new_traces
+            # Plot
+            fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 4), sharex=index_x)
+            for i, side in enumerate(('CTZ', 'VEH')):
+                ax = axes[i]
+                if side not in traces:
+                    ax.set_visible(False)
+                    continue
+                t, yr, yf = traces[side]
+                color = PALETTE.get(side, '#333333')
+                if index_x:
+                    x = np.arange(yr.size, dtype=float)
+                    ax.set_xlabel('Sample index')
+                else:
+                    x = t if t.size == yr.size else np.linspace(0, 1, num=yr.size)
+                    axes[-1].set_xlabel('Time (s)')
+                if yr.size:
+                    ax.plot(x, yr, color='black', lw=0.6, alpha=0.5, label='Raw')
+                if yf.size:
+                    ax.plot(x, yf, color=color, lw=1.0, alpha=0.9, label='Filtered')
+                ax.set_ylabel(f'{side} (a.u.)')
+                ax.grid(True, alpha=0.2)
+                ax.legend(frameon=False, fontsize=8, loc='upper right')
+            fig.suptitle(f'Exemplary Voltage — {h5_path.stem} — ch{ch:02d}')
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            fig.savefig(base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+            fig.savefig(base.with_suffix('.pdf'), bbox_inches='tight')
+            plt.close(fig)
+
     ex_base = save_dir / f"exemplary_voltage__{sel_h5.stem}__ch{int(example_channel):02d}"
-    plot_exemplary_voltage(sel_h5, int(example_channel), ex_base)
+    _plot_exemplary_with_opts(sel_h5, int(example_channel), ex_base, args.example_match_length, args.exemplary_index_x)
 
     print(f"[analysis] Wrote outputs to: {save_dir}")
     return 0
@@ -449,4 +636,3 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
