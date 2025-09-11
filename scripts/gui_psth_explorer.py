@@ -10,11 +10,11 @@ What this GUI does
 - For a selected pair, shows 2×2 plots using PSTH lines derived from those
   matrices (no re‑detection):
   - Top row (CTZ | VEH): per‑channel PSTH lines (smoothed with boxcar)
-  - Bottom row (CTZ | VEH): normalized per‑channel PSTH lines, where each
-    channel's PSTH is divided by its mean amplitude in the side‑specific,
-    user‑defined late post window.
+  - Bottom row (CTZ | VEH): normalized per‑channel PSTH lines (overlaid),
+    where each channel's PSTH is divided by its mean amplitude in the
+    side‑specific EARLY window (relative to stimulation at 0 s).
 - Lets you interactively adjust:
-  - Fixed‑duration early and late windows (duration sliders)
+  - Fixed‑duration early and late windows (text inputs)
   - Independent start positions for CTZ and VEH early/late windows (4 sliders)
   - Smoothing taps (odd integer; default 5)
   - Pair selection (Prev/Next buttons)
@@ -224,7 +224,7 @@ class Explorer:
         self.ax_norm_veh = self.fig.add_subplot(gs[1, 1], sharex=self.ax_raw_ctz)
 
         # Reserve bottom margin for controls to avoid overlap
-        self.fig.subplots_adjust(bottom=0.30)
+        self.fig.subplots_adjust(bottom=0.36)
 
         # Controls: durations (TextBox) + per‑side starts (Slider) and buttons
         # Duration text boxes (left)
@@ -234,24 +234,30 @@ class Explorer:
         self.tb_late_dur  = TextBox(ax_ld, 'late_dur (s):  ', initial=f"{self.late_dur:.3f}")
 
         # Start sliders — CTZ (middle), VEH (right)
-        box_ce = self.fig.add_axes([0.38, 0.18, 0.25, 0.04])
-        box_cl = self.fig.add_axes([0.38, 0.12, 0.25, 0.04])
-        box_ve = self.fig.add_axes([0.68, 0.18, 0.25, 0.04])
-        box_vl = self.fig.add_axes([0.68, 0.12, 0.25, 0.04])
+        box_ce = self.fig.add_axes([0.38, 0.20, 0.25, 0.035])
+        box_cl = self.fig.add_axes([0.38, 0.14, 0.25, 0.035])
+        box_ve = self.fig.add_axes([0.68, 0.20, 0.25, 0.035])
+        box_vl = self.fig.add_axes([0.68, 0.14, 0.25, 0.035])
         self.s_ctz_early = Slider(box_ce, 'CTZ early start', 0.0, max(0.0, self.common_post - self.early_dur), valinit=self.start['CTZ']['early'])
         self.s_ctz_late  = Slider(box_cl, 'CTZ late start',  0.0, max(0.0, self.common_post - self.late_dur),  valinit=self.start['CTZ']['late'])
         self.s_veh_early = Slider(box_ve, 'VEH early start', 0.0, max(0.0, self.common_post - self.early_dur), valinit=self.start['VEH']['early'])
         self.s_veh_late  = Slider(box_vl, 'VEH late start',  0.0, max(0.0, self.common_post - self.late_dur),  valinit=self.start['VEH']['late'])
 
         # Taps slider and buttons (bottom row)
-        box = self.fig.add_axes([0.08, 0.05, 0.20, 0.04])
+        box = self.fig.add_axes([0.08, 0.06, 0.20, 0.04])
         self.s_taps = Slider(box, 'taps', 1, 21, valinit=self.taps, valstep=2)
-        box_prev = self.fig.add_axes([0.35, 0.05, 0.08, 0.045])
-        box_next = self.fig.add_axes([0.45, 0.05, 0.08, 0.045])
-        box_save = self.fig.add_axes([0.55, 0.05, 0.08, 0.045])
+        box_prev = self.fig.add_axes([0.35, 0.06, 0.08, 0.045])
+        box_next = self.fig.add_axes([0.45, 0.06, 0.08, 0.045])
+        box_save = self.fig.add_axes([0.55, 0.06, 0.08, 0.045])
+        box_preset = self.fig.add_axes([0.68, 0.06, 0.12, 0.045])
+        box_snap_c = self.fig.add_axes([0.82, 0.06, 0.12, 0.045])
+        box_snap_v = self.fig.add_axes([0.82, 0.01, 0.12, 0.045])
         self.b_prev = Button(box_prev, 'Prev')
         self.b_next = Button(box_next, 'Next')
         self.b_save = Button(box_save, 'Save')
+        self.b_preset = Button(box_preset, 'Preset 50/200')
+        self.b_snap_ctz = Button(box_snap_c, 'Snap CTZ')
+        self.b_snap_veh = Button(box_snap_v, 'Snap VEH')
 
         # wire events
         self.tb_early_dur.on_submit(lambda txt: self._on_duration('early', txt))
@@ -264,6 +270,13 @@ class Explorer:
         self.b_prev.on_clicked(lambda evt: self._step_pair(-1))
         self.b_next.on_clicked(lambda evt: self._step_pair(+1))
         self.b_save.on_clicked(self._on_save)
+        self.b_preset.on_clicked(lambda evt: self._apply_preset(0.05, 0.20))
+        self.b_snap_ctz.on_clicked(lambda evt: self._snap_side('CTZ'))
+        self.b_snap_veh.on_clicked(lambda evt: self._snap_side('VEH'))
+
+        # Improve widget interactivity by disabling nav on widget axes
+        for axw in (box_ce, box_cl, box_ve, box_vl, box, box_prev, box_next, box_save, box_preset, box_snap_c, box_snap_v, ax_ed, ax_ld):
+            axw.set_navigate(False)
 
     def _compute_smoothed(self, side: str) -> np.ndarray:
         d = self.mats.get(side)
@@ -276,16 +289,7 @@ class Explorer:
             S[i, :] = _smooth_boxcar(B[i, :], self.taps)
         return S
 
-    def _normalize_by_late(self, side: str, S: np.ndarray) -> np.ndarray:
-        if S.size == 0:
-            return S
-        t = self.times[side]
-        # side-specific late window [start, start+dur]
-        start = self.start[side]['late']
-        m = (t >= start) & (t <= (start + self.late_dur))
-        eps = 1e-9
-        denom = np.maximum(eps, np.mean(S[:, m], axis=1))  # per‑channel
-        return (S.T / denom).T
+    # (Normalization now handled inline in _draw_side to use early window)
 
     def _set_axes_common(self) -> None:
         for ax in (self.ax_raw_ctz, self.ax_raw_veh, self.ax_norm_ctz, self.ax_norm_veh):
