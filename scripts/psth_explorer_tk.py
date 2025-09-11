@@ -201,66 +201,79 @@ class TkPSTHApp:
         self.cid_motion = self.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.cid_release = self.canvas.mpl_connect('button_release_event', self._on_release)
 
-        # Controls frame
+        # Controls frame (compact, stacked rows)
         ctrl = ttk.Frame(self.root)
         ctrl.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Early duration
-        ttk.Label(ctrl, text='early_dur (s):').grid(row=0, column=0, padx=6, pady=6, sticky='w')
+        # Toolbar row: early, binning, smoothing, stat
+        toolbar = ttk.Frame(ctrl)
+        toolbar.grid(row=0, column=0, sticky='we')
+        ttk.Label(toolbar, text='early (s):').grid(row=0, column=0, padx=6, pady=6, sticky='w')
         self.var_early = tk.StringVar(value=f"{self.early_dur:.3f}")
-        e = ttk.Entry(ctrl, textvariable=self.var_early, width=8)
+        e = ttk.Entry(toolbar, textvariable=self.var_early, width=8)
         e.grid(row=0, column=1, padx=2, pady=6)
         e.bind('<Return>', lambda evt: self._on_duration())
-        ttk.Button(ctrl, text='Apply', command=self._on_duration).grid(row=0, column=2, padx=4)
+        ttk.Button(toolbar, text='Apply', command=self._on_duration).grid(row=0, column=2, padx=4)
 
-        # Binning (ms)
-        ttk.Label(ctrl, text='bin (ms):').grid(row=0, column=3, padx=10, pady=6, sticky='w')
+        ttk.Label(toolbar, text='bin (ms):').grid(row=0, column=3, padx=10, pady=6, sticky='w')
         eff_ms = self.common_bw * 1000.0
         self.var_bin_ms.set(f"{eff_ms:.3f}")
-        bin_entry = ttk.Entry(ctrl, textvariable=self.var_bin_ms, width=8)
+        bin_entry = ttk.Entry(toolbar, textvariable=self.var_bin_ms, width=8)
         bin_entry.grid(row=0, column=4, padx=2, pady=6)
-        ttk.Button(ctrl, text='Apply Bin', command=self._on_bin_apply).grid(row=0, column=5, padx=4)
+        ttk.Button(toolbar, text='Apply', command=self._on_bin_apply).grid(row=0, column=5, padx=4)
 
-        # Smoothing window (bins)
-        ttk.Label(ctrl, text='smoothing (bins):').grid(row=0, column=6, padx=10, pady=6, sticky='w')
+        ttk.Label(toolbar, text='smooth (bins):').grid(row=0, column=6, padx=10, pady=6, sticky='w')
         self.var_taps = tk.IntVar(value=self.taps)
-        self.taps_scale = ttk.Scale(ctrl, from_=1, to=21, orient=tk.HORIZONTAL, command=self._on_taps_scale)
+        self.taps_scale = ttk.Scale(toolbar, from_=1, to=21, orient=tk.HORIZONTAL, command=self._on_taps_scale)
         self.taps_scale.set(self.taps)
         self.taps_scale.grid(row=0, column=7, padx=4, pady=6, sticky='we')
 
-        # Normalization statistic
-        ttk.Label(ctrl, text='norm stat:').grid(row=0, column=8, padx=10, pady=6, sticky='w')
+        ttk.Label(toolbar, text='stat:').grid(row=0, column=8, padx=10, pady=6, sticky='w')
         self.var_stat = tk.StringVar(value='mean')
-        stat_box = ttk.Combobox(ctrl, textvariable=self.var_stat, values=['mean', 'median'], width=8, state='readonly')
+        stat_box = ttk.Combobox(toolbar, textvariable=self.var_stat, values=['mean', 'median'], width=8, state='readonly')
         stat_box.grid(row=0, column=9, padx=4, pady=6)
         stat_box.bind('<<ComboboxSelected>>', lambda evt: self._draw_all())
+        # Let smoothing slider stretch within toolbar width
+        try:
+            toolbar.grid_columnconfigure(7, weight=1)
+        except Exception:
+            pass
 
-        # Pair nav & actions
-        ttk.Button(ctrl, text='Prev', command=lambda: self._step_pair(-1)).grid(row=0, column=10, padx=6)
-        ttk.Button(ctrl, text='Next', command=lambda: self._step_pair(+1)).grid(row=0, column=11, padx=6)
-        ttk.Button(ctrl, text='Save Figure', command=self._on_save).grid(row=0, column=12, padx=6)
-        ttk.Button(ctrl, text='Save Pair', command=self._save_pair).grid(row=0, column=13, padx=6)
-        ttk.Button(ctrl, text='View Saved', command=self._show_saved_summary).grid(row=0, column=14, padx=6)
-        ttk.Button(ctrl, text='Clear Saved', command=self._clear_saved).grid(row=0, column=15, padx=6)
-        ttk.Button(ctrl, text='Run Group Comparison', command=self._run_group_comparison).grid(row=0, column=16, padx=6)
-        ttk.Button(ctrl, text='Save Session (pairs)', command=self._save_session).grid(row=0, column=17, padx=6)
-        ttk.Button(ctrl, text='Load Session (pairs)', command=self._load_session).grid(row=0, column=18, padx=6)
-        ttk.Checkbutton(ctrl, text='Carry to next', variable=self.var_carry).grid(row=0, column=19, padx=6)
+        # Action buttons (wrapped into two rows)
+        btns = ttk.Frame(ctrl)
+        btns.grid(row=1, column=0, sticky='w', padx=4)
+        bspec = [
+            ('Prev', lambda: self._step_pair(-1)),
+            ('Next', lambda: self._step_pair(+1)),
+            ('Save Fig', self._on_save),
+            ('Save Pair', self._save_pair),
+            ('View Saved', self._show_saved_summary),
+            ('Clear Saved', self._clear_saved),
+            ('Group', self._run_group_comparison),
+            ('Save Sess', self._save_session),
+            ('Load Sess', self._load_session),
+        ]
+        cols_per_row = 5
+        for i, (label, cmd) in enumerate(bspec):
+            r = i // cols_per_row
+            c = i % cols_per_row
+            ttk.Button(btns, text=label, command=cmd).grid(row=r, column=c, padx=4, pady=4, sticky='w')
+        ttk.Checkbutton(btns, text='Carry to next', variable=self.var_carry).grid(row=0, column=cols_per_row, padx=8, pady=4)
 
         # Early starts (CTZ/VEH)
-        ttk.Label(ctrl, text='CTZ start').grid(row=1, column=0, padx=6, pady=6, sticky='w')
+        ttk.Label(ctrl, text='CTZ start').grid(row=2, column=0, padx=6, pady=6, sticky='w')
         self.ctz_scale = ttk.Scale(ctrl, from_=0.0, to=max(0.0, self.common_post - self.early_dur), orient=tk.HORIZONTAL, command=lambda v: self._on_start('CTZ', float(v)))
         self.ctz_scale.set(self.start['CTZ']['early'])
-        self.ctz_scale.grid(row=1, column=1, columnspan=4, sticky='we', padx=6)
+        self.ctz_scale.grid(row=2, column=1, columnspan=4, sticky='we', padx=6)
 
-        ttk.Label(ctrl, text='VEH start').grid(row=2, column=0, padx=6, pady=6, sticky='w')
+        ttk.Label(ctrl, text='VEH start').grid(row=3, column=0, padx=6, pady=6, sticky='w')
         self.veh_scale = ttk.Scale(ctrl, from_=0.0, to=max(0.0, self.common_post - self.early_dur), orient=tk.HORIZONTAL, command=lambda v: self._on_start('VEH', float(v)))
         self.veh_scale.set(self.start['VEH']['early'])
-        self.veh_scale.grid(row=2, column=1, columnspan=4, sticky='we', padx=6)
+        self.veh_scale.grid(row=3, column=1, columnspan=4, sticky='we', padx=6)
 
-        ttk.Button(ctrl, text='Preset 50 ms', command=lambda: self._apply_preset(0.05)).grid(row=1, column=6, padx=6)
-        ttk.Button(ctrl, text='Snap CTZ', command=lambda: self._snap('CTZ')).grid(row=1, column=7, padx=6)
-        ttk.Button(ctrl, text='Snap VEH', command=lambda: self._snap('VEH')).grid(row=2, column=7, padx=6)
+        ttk.Button(ctrl, text='Preset 50 ms', command=lambda: self._apply_preset(0.05)).grid(row=2, column=6, padx=6)
+        ttk.Button(ctrl, text='Snap CTZ', command=lambda: self._snap('CTZ')).grid(row=2, column=7, padx=6)
+        ttk.Button(ctrl, text='Snap VEH', command=lambda: self._snap('VEH')).grid(row=3, column=7, padx=6)
 
         # Make some columns expand
         ctrl.grid_columnconfigure(4, weight=1)
