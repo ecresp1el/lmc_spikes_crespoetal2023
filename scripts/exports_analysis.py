@@ -233,6 +233,37 @@ def compute_post_isi_and_bursts(
     return pd.DataFrame(isi_rows), pd.DataFrame(burst_rows)
 
 
+def compute_post_onset_latency(h5: Path) -> pd.DataFrame:
+    """Compute first-spike onset latency (ms) in the post window per channel/side.
+
+    Returns DataFrame with columns: [pair_id, side, channel, onset_latency_ms]
+    """
+    rows: list[dict] = []
+    pair_id = _pair_id_from_h5(h5)
+    with h5py.File(h5.as_posix(), 'r') as f:
+        for side in ('CTZ', 'VEH'):
+            if side not in f:
+                continue
+            grp = f[side]
+            # analysis_bounds JSON contains t0 (chem) and t1
+            try:
+                ab = grp.attrs.get('analysis_bounds')
+                abj = json.loads(ab) if isinstance(ab, (bytes, bytearray, str)) else {}
+                t0a = float(abj.get('t0', 0.0))
+            except Exception:
+                t0a = 0.0
+            chans = sorted({int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_timestamps')})
+            for ch in chans:
+                st = np.asarray(grp[f'ch{ch:02d}_timestamps'][:], dtype=float)
+                if st.size == 0:
+                    # no spikes post; record NaN for transparency
+                    rows.append({'pair_id': pair_id, 'side': side, 'channel': ch, 'onset_latency_ms': np.nan})
+                    continue
+                onset_ms = float((st.min() - t0a) * 1e3)
+                rows.append({'pair_id': pair_id, 'side': side, 'channel': ch, 'onset_latency_ms': onset_ms})
+    return pd.DataFrame(rows)
+
+
 def pick_example_pair_channel(fr_df: pd.DataFrame, prefer_side: str | None = None) -> tuple[str, int]:
     """Pick a pair/channel heuristically: max post FR across both sides.
 
@@ -509,6 +540,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     # Compute ISI and burst metrics across all pairs
     isi_frames = []
     burst_frames = []
+    onset_frames = []
     for h5 in pair_h5:
         isi_df, burst_df = compute_post_isi_and_bursts(
             h5,
@@ -520,13 +552,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             isi_frames.append(isi_df)
         if not burst_df.empty:
             burst_frames.append(burst_df)
+        onset_df = compute_post_onset_latency(h5)
+        if not onset_df.empty:
+            onset_frames.append(onset_df)
     isi_all = pd.concat(isi_frames, ignore_index=True) if isi_frames else pd.DataFrame(columns=['pair_id','side','channel','isi_ms'])
     burst_all = pd.concat(burst_frames, ignore_index=True) if burst_frames else pd.DataFrame(columns=['pair_id','side','channel','burst_index','n_spikes','duration_ms','fr_in_burst_hz'])
+    onset_all = pd.concat(onset_frames, ignore_index=True) if onset_frames else pd.DataFrame(columns=['pair_id','side','channel','onset_latency_ms'])
     isi_all.to_csv(save_dir / 'post_isi_ms.csv', index=False)
     burst_all.to_csv(save_dir / 'post_bursts.csv', index=False)
+    onset_all.to_csv(save_dir / 'post_onset_latency_ms.csv', index=False)
     # Combined burst plots
     plot_burst_metric_box(burst_all, 'duration_ms', 'Burst Duration (ms)', 'Post Burst Duration (>= min)', save_dir / 'burst_duration_combined')
     plot_burst_metric_box(burst_all, 'fr_in_burst_hz', 'FR within Burst (Hz)', 'Post Avg FR per Burst', save_dir / 'burst_fr_in_burst_combined')
+    # Onset latency plot
+    plot_burst_metric_box(onset_all, 'onset_latency_ms', 'Onset Latency (ms)', 'Post Onset of Spiking — CTZ vs VEH', save_dir / 'onset_latency_combined')
 
     # ---------- Nonparametric tests + multiple-comparison correction ----------
     stats_rows: list[pd.DataFrame] = []
@@ -544,6 +583,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     if not burst_all.empty and 'fr_in_burst_hz' in burst_all.columns:
         stats_rows.append(
             save_two_group_stats(burst_all.rename(columns={'fr_in_burst_hz': 'value'}), 'value', 'side', save_dir / 'stats_summary.csv', 'fr_in_burst_hz')
+        )
+    # 4) Onset latency (ms)
+    if not onset_all.empty and 'onset_latency_ms' in onset_all.columns:
+        stats_rows.append(
+            save_two_group_stats(onset_all.rename(columns={'onset_latency_ms': 'value'}), 'value', 'side', save_dir / 'stats_summary.csv', 'onset_latency_ms')
         )
     stats_df = pd.concat(stats_rows, ignore_index=True) if stats_rows else pd.DataFrame(columns=['metric','group1','group2','N1','N2','median1','median2','mean1','mean2','IQR1','IQR2','test','U','p','effect','effect_size'])
     # Multiple-comparison correction across rows
