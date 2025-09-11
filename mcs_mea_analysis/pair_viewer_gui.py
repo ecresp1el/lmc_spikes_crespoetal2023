@@ -71,6 +71,9 @@ import numpy as np
 from .config import CONFIG
 from .spike_filtering import FilterConfig, DetectConfig, apply_filter, detect_spikes
 
+# Keep strong references to live windows/handlers to prevent premature GC
+_LIVE_WINDOWS = []
+
 
 def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float], Optional[Any]]:
     """Open the first analog stream from an MCS H5 file.
@@ -820,6 +823,24 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_save.clicked.connect(on_save)
     btn_reload.clicked.connect(on_reload)
     spin.valueChanged.connect(on_spin)
+
+    # Retain references to avoid GC closing the window in inline/Jupyter mode
+    try:
+        _LIVE_WINDOWS.append(win)
+        # attach owners and handlers to the window to extend lifetime
+        setattr(win, "_owners", owners)
+        setattr(win, "_keep_handlers", {
+            "on_prev": on_prev,
+            "on_next": on_next,
+            "on_accept": on_accept,
+            "on_reject": on_reject,
+            "on_save": on_save,
+            "on_reload": on_reload,
+            "update_channel": update_channel,
+        })
+        win.destroyed.connect(lambda *_: (_LIVE_WINDOWS.remove(win) if win in _LIVE_WINDOWS else None))
+    except Exception:
+        pass
     # Recompute raw when toggling full mode
     for w in (full_chk, chem_chk, pre_spin, post_spin, disp_mode, center_chk):
         try:
