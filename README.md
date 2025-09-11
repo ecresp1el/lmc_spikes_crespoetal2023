@@ -34,5 +34,8 @@ Programmatic loading
 - Group NPZ: load with `allow_pickle=True` to access `ctz_norm_all`, `veh_norm_all`, etc. (object arrays of C×T matrices per pair).
 
 CTZ vs VEH plotting (batch)
-- Plot pooled CTZ vs VEH overlays from a group NPZ: `python -m scripts.plot_psth_group_ctz_veh --group-npz PATH`
+- Quick: auto‑use latest pooled NPZ: `python -m scripts.plot_psth_group_ctz_veh`
+  - Looks for `psth_group_latest.npz` or newest `psth_group_data__*.npz` under
+    `.../exports/spikes_waveforms/analysis/spike_matrices/plots`.
+- Or specify explicitly: `python -m scripts.plot_psth_group_ctz_veh --group-npz PATH`
 - Saves a 2×2 summary figure next to the NPZ (SVG/PDF).

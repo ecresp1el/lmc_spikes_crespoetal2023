@@ -30,6 +30,8 @@ from matplotlib.figure import Figure
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import os
+import shutil
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
@@ -671,6 +673,26 @@ class TkPSTHApp:
         if not self.saved_pairs:
             messagebox.showinfo('None saved', 'No saved pairs to summarize.')
             return
+        # Write/update latest pointers for convenience
+        try:
+            latest_npz = out_dir / 'psth_group_latest.npz'
+            latest_svg = out_dir / 'psth_group_latest.svg'
+            if latest_npz.exists():
+                latest_npz.unlink()
+            try:
+                os.link(npz_path.as_posix(), latest_npz.as_posix())
+            except Exception:
+                shutil.copy2(npz_path.as_posix(), latest_npz.as_posix())
+            if latest_svg.exists():
+                latest_svg.unlink()
+            try:
+                os.link(svg_path.as_posix(), latest_svg.as_posix())
+            except Exception:
+                shutil.copy2(svg_path.as_posix(), latest_svg.as_posix())
+            (out_dir / 'psth_group_latest.txt').write_text(str(npz_path), encoding='utf-8')
+        except Exception:
+            pass
+
         top = tk.Toplevel(self.root)
         top.title('Saved Summary — per-pair means')
         fig = Figure(figsize=(10, 6), dpi=100)

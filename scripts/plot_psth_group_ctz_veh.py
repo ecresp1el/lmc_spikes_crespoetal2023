@@ -51,16 +51,62 @@ plt.rcParams.update({
 
 @dataclass(frozen=True)
 class Args:
-    group_npz: Path
+    group_npz: Optional[Path]
     save_dir: Optional[Path]
+    output_root: Optional[Path]
+    spike_dir: Optional[Path]
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p = argparse.ArgumentParser(description='Plot CTZ vs VEH overlays from pooled PSTH NPZ')
-    p.add_argument('--group-npz', type=Path, required=True, help='Path to pooled NPZ from PSTH GUI (Run Group Comparison)')
+    p.add_argument('--group-npz', type=Path, default=None, help='Path to pooled NPZ (defaults to latest in plots dir)')
     p.add_argument('--save-dir', type=Path, default=None, help='Directory to write plots (default: next to NPZ)')
+    p.add_argument('--output-root', type=Path, default=None, help='Override output root (defaults to CONFIG or _mcs_mea_outputs_local)')
+    p.add_argument('--spike-dir', type=Path, default=None, help='Override spike matrices dir (default under output_root)')
     a = p.parse_args(argv)
-    return Args(group_npz=a.group_npz, save_dir=a.save_dir)
+    return Args(group_npz=a.group_npz, save_dir=a.save_dir, output_root=a.output_root, spike_dir=a.spike_dir)
+
+
+def _ensure_repo_on_path() -> Path:
+    from pathlib import Path
+    import sys as _sys
+    here = Path.cwd()
+    for cand in [here, *here.parents]:
+        if (cand / 'mcs_mea_analysis').exists():
+            if str(cand) not in _sys.path:
+                _sys.path.insert(0, str(cand))
+            return cand
+    return here
+
+
+REPO_ROOT = _ensure_repo_on_path()
+from mcs_mea_analysis.config import CONFIG  # noqa: E402
+
+
+def _infer_output_root(cli_root: Optional[Path]) -> Path:
+    if cli_root is not None:
+        return cli_root
+    ext = CONFIG.output_root
+    if ext.exists():
+        return ext
+    return REPO_ROOT / '_mcs_mea_outputs_local'
+
+
+def _spike_dir(output_root: Path, cli_dir: Optional[Path]) -> Path:
+    if cli_dir is not None:
+        return cli_dir
+    return output_root / 'exports' / 'spikes_waveforms' / 'analysis' / 'spike_matrices'
+
+
+def _discover_latest_group_npz(plots_dir: Path) -> Optional[Path]:
+    latest_link = plots_dir / 'psth_group_latest.npz'
+    if latest_link.exists():
+        return latest_link
+    cands = list(plots_dir.glob('psth_group_data__*.npz'))
+    if not cands:
+        return None
+    cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands[0]
 
 
 def _load_group_npz(path: Path) -> dict:
@@ -137,13 +183,22 @@ def _plot_group(fig_path_base: Path, Z: dict) -> None:
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = _parse_args(argv)
-    if not args.group_npz.exists():
-        print('[psth-group] group NPZ not found:', args.group_npz)
+    grp_path = args.group_npz
+    if grp_path is None:
+        out_root = _infer_output_root(args.output_root)
+        plots_dir = _spike_dir(out_root, args.spike_dir) / 'plots'
+        grp_path = _discover_latest_group_npz(plots_dir)
+        if grp_path is None:
+            print('[psth-group] No group NPZ found in:', plots_dir)
+            return 1
+        print('[psth-group] Using latest NPZ:', grp_path)
+    if not grp_path.exists():
+        print('[psth-group] group NPZ not found:', grp_path)
         return 1
-    Z = _load_group_npz(args.group_npz)
-    save_dir = args.save_dir or args.group_npz.parent
+    Z = _load_group_npz(grp_path)
+    save_dir = args.save_dir or grp_path.parent
     save_dir.mkdir(parents=True, exist_ok=True)
-    base = save_dir / (args.group_npz.stem + '__ctz_veh_summary')
+    base = save_dir / (grp_path.stem + '__ctz_veh_summary')
     _plot_group(base, Z)
     print('[psth-group] Wrote:', base.with_suffix('.svg'))
     return 0
@@ -151,4 +206,3 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
