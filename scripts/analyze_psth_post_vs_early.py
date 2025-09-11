@@ -179,8 +179,13 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
             ('CTZ', ctz_all, starts_ctz, post_max_ctz),
             ('VEH', veh_all, starts_veh, post_max_veh),
         ):
-            arr = arr_all[i]  # shape (C,T)
-            if arr is None or not hasattr(arr, 'ndim') or arr.ndim != 2 or arr.size == 0:
+            arr = arr_all[i]
+            # Coerce to numeric 2D array
+            try:
+                A = np.asarray(arr, dtype=float)
+            except Exception:
+                continue
+            if A is None or A.ndim != 2 or A.size == 0:
                 continue
             if args.post_start is not None:
                 ps = float(args.post_start)
@@ -192,8 +197,13 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
             if not np.any(m):
                 continue
             # per-channel max within post window
-            vmax = np.nanmax(arr[:, m], axis=1)
+            try:
+                vmax = np.nanmax(A[:, m], axis=1)
+            except Exception:
+                # shape mismatch or non-numeric; skip
+                continue
             # exclude non-finite
+            vmax = np.asarray(vmax, dtype=float)
             vmax = vmax[np.isfinite(vmax)]
             if vmax.size:
                 out_list.extend(vmax.tolist())
