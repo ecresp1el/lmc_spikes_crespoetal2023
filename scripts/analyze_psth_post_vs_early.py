@@ -148,7 +148,7 @@ def _eff_bin_s_for_pair(Z: dict, i: int, t: np.ndarray) -> float:
     return float(dt)
 
 
-def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict]]:
+def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict], dict]:
     t = Z['t'].astype(float)
     # Normalized per-pair per-channel matrices (object arrays)
     ctz_all = Z.get('ctz_norm_all')
@@ -162,6 +162,10 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
     post_max_ctz: list[float] = []
     post_max_veh: list[float] = []
     per_pair_rows: list[dict] = []
+    used_ps_ctz: list[float] = []
+    used_pe_ctz: list[float] = []
+    used_ps_veh: list[float] = []
+    used_pe_veh: list[float] = []
 
     P = len(Z.get('pairs', []))
     pairs = Z.get('pairs', [])
@@ -209,8 +213,10 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
                 out_list.extend(vmax.tolist())
                 if side == 'CTZ':
                     ctz_vals_i = vmax
+                    used_ps_ctz.append(ps); used_pe_ctz.append(pe)
                 else:
                     veh_vals_i = vmax
+                    used_ps_veh.append(ps); used_pe_veh.append(pe)
         # per-pair stats (nonparametric test), if both sides have data
         if ctz_vals_i is not None and veh_vals_i is not None and ctz_vals_i.size and veh_vals_i.size:
             U, p = sstats.mannwhitneyu(ctz_vals_i, veh_vals_i, alternative='two-sided')
@@ -226,10 +232,16 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
             'mean_veh': float(np.nanmean(veh_vals_i)) if veh_vals_i is not None and veh_vals_i.size else np.nan,
             'U': float(U), 'p': float(p),
         })
-    return np.asarray(post_max_ctz, dtype=float), np.asarray(post_max_veh, dtype=float), per_pair_rows
+    info = {
+        'ps_ctz': np.asarray(used_ps_ctz, dtype=float),
+        'pe_ctz': np.asarray(used_pe_ctz, dtype=float),
+        'ps_veh': np.asarray(used_ps_veh, dtype=float),
+        'pe_veh': np.asarray(used_pe_veh, dtype=float),
+    }
+    return np.asarray(post_max_ctz, dtype=float), np.asarray(post_max_veh, dtype=float), per_pair_rows, info
 
 
-def _save_boxplot(fig_base: Path, ctz: np.ndarray, veh: np.ndarray) -> None:
+def _save_boxplot(fig_base: Path, ctz: np.ndarray, veh: np.ndarray, window_info: Optional[dict] = None, rule_text: Optional[str] = None) -> None:
     fig = plt.figure(figsize=(5, 5), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
     data = [ctz, veh]
@@ -258,6 +270,29 @@ def _save_boxplot(fig_base: Path, ctz: np.ndarray, veh: np.ndarray) -> None:
     ax.set_xticklabels(['CTZ', 'VEH'])
     ax.set_ylabel('Normalized post-phase max (a.u.)')
     ax.set_title('Post-phase maxima per channel (normalized to early)')
+    # Annotate window summary on plot
+    lines = []
+    if rule_text:
+        lines.append(rule_text)
+    if window_info:
+        try:
+            ps_ctz = window_info.get('ps_ctz'); pe_ctz = window_info.get('pe_ctz')
+            ps_veh = window_info.get('ps_veh'); pe_veh = window_info.get('pe_veh')
+            def _summ(a):
+                a = np.asarray(a, dtype=float)
+                return (np.nanmedian(a), np.nanmin(a), np.nanmax(a)) if a.size else (np.nan, np.nan, np.nan)
+            mps_c, minps_c, maxps_c = _summ(ps_ctz)
+            mpe_c, minpe_c, maxpe_c = _summ(pe_ctz)
+            mps_v, minps_v, maxps_v = _summ(ps_veh)
+            mpe_v, minpe_v, maxpe_v = _summ(pe_veh)
+            if np.isfinite(mps_c):
+                lines.append(f'CTZ post start median={mps_c:.3f}s (min={minps_c:.3f}, max={maxps_c:.3f})')
+            if np.isfinite(mps_v):
+                lines.append(f'VEH post start median={mps_v:.3f}s (min={minps_v:.3f}, max={maxps_v:.3f})')
+        except Exception:
+            pass
+    if lines:
+        ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top', ha='left', fontsize=9)
     fig.tight_layout()
     fig.savefig(fig_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
     fig.savefig(fig_base.with_suffix('.pdf'), bbox_inches='tight')
@@ -339,13 +374,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 1
     Z = _load_group_npz(grp_path)
     save_dir = grp_path.parent
-    ctz, veh, pair_rows = _collect_post_max(Z, args)
+    ctz, veh, pair_rows, winfo = _collect_post_max(Z, args)
     if not ctz.size or not veh.size:
         print('[postmax] No data in selected window; nothing to plot.')
         return 1
     # Plot boxplot
     fig_base = save_dir / (grp_path.stem + '__postmax_boxplot')
-    _save_boxplot(fig_base, ctz, veh)
+    rule = 'post window: early_end + 0.100 s + 1 bin' if args.post_start is None else f'post window: start={args.post_start:.3f}s'
+    _save_boxplot(fig_base, ctz, veh, window_info=winfo, rule_text=rule)
     # Export overall stats (and placeholder for per-pair FDR if desired in future)
     _export_stats(save_dir / (grp_path.stem + '__postmax_stats.csv'), ctz, veh, pair_stats=pair_rows)
     print('[postmax] Wrote:', fig_base.with_suffix('.svg'))
