@@ -151,6 +151,10 @@ class TkPSTHApp:
         self.var_ymin = tk.StringVar(value="")
         self.var_ymax = tk.StringVar(value="")
         self.saved_pairs: List[dict] = []
+        # binning control
+        self.bin_ms_desired: Optional[float] = None  # None = use original
+        self.bin_factor: int = 1
+        self.var_bin_ms = tk.StringVar(value="")
 
         self._load_pair(self.pairs[self.i])
         self._init_windows()
@@ -209,28 +213,37 @@ class TkPSTHApp:
         e.bind('<Return>', lambda evt: self._on_duration())
         ttk.Button(ctrl, text='Apply', command=self._on_duration).grid(row=0, column=2, padx=4)
 
+        # Binning (ms)
+        ttk.Label(ctrl, text='bin (ms):').grid(row=0, column=3, padx=10, pady=6, sticky='w')
+        eff_ms = self.common_bw * 1000.0
+        self.var_bin_ms.set(f"{eff_ms:.3f}")
+        bin_entry = ttk.Entry(ctrl, textvariable=self.var_bin_ms, width=8)
+        bin_entry.grid(row=0, column=4, padx=2, pady=6)
+        ttk.Button(ctrl, text='Apply Bin', command=self._on_bin_apply).grid(row=0, column=5, padx=4)
+
         # Smoothing window (bins)
-        ttk.Label(ctrl, text='smoothing (bins):').grid(row=0, column=3, padx=10, pady=6, sticky='w')
+        ttk.Label(ctrl, text='smoothing (bins):').grid(row=0, column=6, padx=10, pady=6, sticky='w')
         self.var_taps = tk.IntVar(value=self.taps)
         self.taps_scale = ttk.Scale(ctrl, from_=1, to=21, orient=tk.HORIZONTAL, command=self._on_taps_scale)
         self.taps_scale.set(self.taps)
-        self.taps_scale.grid(row=0, column=4, padx=4, pady=6, sticky='we')
+        self.taps_scale.grid(row=0, column=7, padx=4, pady=6, sticky='we')
 
         # Normalization statistic
-        ttk.Label(ctrl, text='norm stat:').grid(row=0, column=5, padx=10, pady=6, sticky='w')
+        ttk.Label(ctrl, text='norm stat:').grid(row=0, column=8, padx=10, pady=6, sticky='w')
         self.var_stat = tk.StringVar(value='mean')
         stat_box = ttk.Combobox(ctrl, textvariable=self.var_stat, values=['mean', 'median'], width=8, state='readonly')
-        stat_box.grid(row=0, column=6, padx=4, pady=6)
+        stat_box.grid(row=0, column=9, padx=4, pady=6)
         stat_box.bind('<<ComboboxSelected>>', lambda evt: self._draw_all())
 
         # Pair nav & actions
-        ttk.Button(ctrl, text='Prev', command=lambda: self._step_pair(-1)).grid(row=0, column=7, padx=6)
-        ttk.Button(ctrl, text='Next', command=lambda: self._step_pair(+1)).grid(row=0, column=8, padx=6)
-        ttk.Button(ctrl, text='Save Figure', command=self._on_save).grid(row=0, column=9, padx=6)
-        ttk.Button(ctrl, text='Save Pair', command=self._save_pair).grid(row=0, column=10, padx=6)
-        ttk.Button(ctrl, text='View Saved', command=self._show_saved_summary).grid(row=0, column=11, padx=6)
-        ttk.Button(ctrl, text='Clear Saved', command=self._clear_saved).grid(row=0, column=12, padx=6)
-        ttk.Checkbutton(ctrl, text='Carry to next', variable=self.var_carry).grid(row=0, column=13, padx=6)
+        ttk.Button(ctrl, text='Prev', command=lambda: self._step_pair(-1)).grid(row=0, column=10, padx=6)
+        ttk.Button(ctrl, text='Next', command=lambda: self._step_pair(+1)).grid(row=0, column=11, padx=6)
+        ttk.Button(ctrl, text='Save Figure', command=self._on_save).grid(row=0, column=12, padx=6)
+        ttk.Button(ctrl, text='Save Pair', command=self._save_pair).grid(row=0, column=13, padx=6)
+        ttk.Button(ctrl, text='View Saved', command=self._show_saved_summary).grid(row=0, column=14, padx=6)
+        ttk.Button(ctrl, text='Clear Saved', command=self._clear_saved).grid(row=0, column=15, padx=6)
+        ttk.Button(ctrl, text='Run Group Comparison', command=self._run_group_comparison).grid(row=0, column=16, padx=6)
+        ttk.Checkbutton(ctrl, text='Carry to next', variable=self.var_carry).grid(row=0, column=17, padx=6)
 
         # Early starts (CTZ/VEH)
         ttk.Label(ctrl, text='CTZ start').grid(row=1, column=0, padx=6, pady=6, sticky='w')
@@ -283,12 +296,38 @@ class TkPSTHApp:
         d = self.mats.get(side)
         if not d:
             return np.zeros((0, 0))
-        B = d['binary']
-        C, T = B.shape
-        S = np.zeros_like(B, dtype=float)
+        t_re, B_re = self._get_rebinned(side)
+        if B_re.size == 0:
+            return np.zeros((0, 0))
+        C, T = B_re.shape
+        S = np.zeros_like(B_re, dtype=float)
         for i in range(C):
-            S[i, :] = _smooth_boxcar(B[i, :], self.taps)
+            S[i, :] = _smooth_boxcar(B_re[i, :], self.taps)
         return S
+
+    def _get_rebinned(self, side: str) -> Tuple[np.ndarray, np.ndarray]:
+        d = self.mats.get(side)
+        if not d:
+            return np.array([]), np.array([])
+        B = d['binary']  # (C, T) binary counts per original bin
+        t = self.times[side]
+        if B.size == 0:
+            return t, B.astype(float)
+        # Determine factor (integer multiple of original bin) from desired ms
+        orig_ms = self.common_bw * 1000.0
+        k = max(1, int(round((self.bin_ms_desired / orig_ms))) if self.bin_ms_desired else 1)
+        self.bin_factor = max(1, k)
+        if self.bin_factor == 1:
+            return t, B.astype(float)
+        C, T = B.shape
+        Tprime = (T // self.bin_factor) * self.bin_factor
+        if Tprime <= 0:
+            return t, np.zeros((C, 0))
+        Bt = B[:, :Tprime]
+        tt = t[:Tprime]
+        B_re = Bt.reshape(C, -1, self.bin_factor).sum(axis=2)
+        t_re = tt.reshape(-1, self.bin_factor).mean(axis=1)
+        return t_re, B_re.astype(float)
 
     def _draw_side(self, side: str, ax_raw: plt.Axes, ax_norm: plt.Axes, amp: float = 0.8) -> None:
         d = self.mats.get(side)
@@ -297,8 +336,16 @@ class TkPSTHApp:
             ax_norm.set_visible(False)
             return
         channels = d['channels'].astype(int)
-        t = self.times[side]
-        S = self._compute_smoothed(side)
+        # Rebin and smooth
+        t, B_re = self._get_rebinned(side)
+        if B_re.size == 0:
+            ax_raw.set_visible(False)
+            ax_norm.set_visible(False)
+            return
+        Cn, Tn = B_re.shape
+        S = np.zeros_like(B_re)
+        for i in range(Cn):
+            S[i, :] = _smooth_boxcar(B_re[i, :], self.taps)
         se = self.start[side]['early']
         mask_e = (t >= se) & (t <= (se + self.early_dur))
         eps = 1e-9
@@ -311,12 +358,13 @@ class TkPSTHApp:
         else:
             denom = np.ones(S.shape[0])
         N = (S.T / denom).T
-        for idx, ch in enumerate(channels):
+        for idx, ch in enumerate(channels[:S.shape[0]]):
+            # guard against channels length mismatch (shouldn't happen, but safe)
             y_raw = float(ch) + amp * S[idx, :]
             ax_raw.plot(t, y_raw, color='k', lw=0.6)
-        Cn = len(channels)
+        Cn = min(len(channels), S.shape[0])
         cmap = plt.get_cmap('tab20', max(Cn, 1))
-        for idx, ch in enumerate(channels):
+        for idx, ch in enumerate(channels[:Cn]):
             ax_norm.plot(t, N[idx, :], color=cmap(idx % cmap.N), lw=0.8, alpha=0.9)
         # Shade and line
         ax_raw.axvspan(se, se + self.early_dur, color='green', alpha=0.10, lw=0)
@@ -335,19 +383,22 @@ class TkPSTHApp:
                 pass
             if self.bottom_ylim is not None:
                 ax_norm.set_ylim(self.bottom_ylim)
+                yt0, yt1 = self.bottom_ylim
             else:
                 ymax = float(np.nanmax(N)) if np.isfinite(np.nanmax(N)) else 1.0
                 ymax = min(max(1.05, 1.1 * ymax), 5.0)
                 ax_norm.set_ylim([0.0, ymax])
-            ax_norm.set_yticks([0.0, ymax/2, ymax])
+                yt0, yt1 = 0.0, ymax
+            ax_norm.set_yticks([yt0, (yt0 + yt1) / 2.0, yt1])
             ax_norm.set_ylabel('Normalized firing rate (to early)')
 
     def _draw_all(self) -> None:
         self._set_axes_common()
         ctz_e = f"{self.start['CTZ']['early']:.3f}..{(self.start['CTZ']['early']+self.early_dur):.3f}"
         veh_e = f"{self.start['VEH']['early']:.3f}..{(self.start['VEH']['early']+self.early_dur):.3f}"
+        eff_ms = self.common_bw * 1000.0 * (self.bin_factor if self.bin_factor else 1)
         self.fig.suptitle(
-            f'PSTH Explorer — Pair: {self.pair_id} | smoothing={self.taps} bins | stat={self.var_stat.get()} | ' \
+            f'PSTH Explorer — Pair: {self.pair_id} | bin={eff_ms:.1f} ms | smoothing={self.taps} bins | stat={self.var_stat.get()} | ' \
             f'CTZ early {ctz_e} | VEH early {veh_e} | early_dur={self.early_dur:.3f}s'
         )
         self._draw_side('CTZ', self.ax_raw_ctz, self.ax_norm_ctz)
@@ -390,6 +441,24 @@ class TkPSTHApp:
         if v != self.taps:
             self.taps = v
             self._draw_all()
+
+    def _on_bin_apply(self) -> None:
+        # Parse desired bin size in ms and coerce to nearest integer multiple of original
+        try:
+            desired = float(self.var_bin_ms.get())
+        except Exception:
+            messagebox.showerror('Invalid bin', 'Bin (ms) must be numeric.')
+            return
+        if desired <= 0:
+            messagebox.showerror('Invalid bin', 'Bin (ms) must be > 0.')
+            return
+        orig_ms = self.common_bw * 1000.0
+        k = max(1, int(round(desired / orig_ms)))
+        self.bin_ms_desired = float(k * orig_ms)
+        self.bin_factor = k
+        # reflect the effective applied value back into the entry
+        self.var_bin_ms.set(f"{self.bin_ms_desired:.3f}")
+        self._draw_all()
 
     def _apply_bottom_ylim(self) -> None:
         try:
@@ -463,6 +532,15 @@ class TkPSTHApp:
                 self.taps_scale.set(self.taps)
             except Exception:
                 pass
+            # keep bin setting: recompute effective ms with new original bin
+            orig_ms = self.common_bw * 1000.0
+            if self.bin_ms_desired is None:
+                self.var_bin_ms.set(f"{orig_ms:.3f}")
+                self.bin_factor = 1
+            else:
+                k = max(1, int(round(self.bin_ms_desired / orig_ms)))
+                self.bin_factor = k
+                self.var_bin_ms.set(f"{(k * orig_ms):.3f}")
         else:
             self._init_windows()
             maxpos = max(0.0, self.common_post - self.early_dur)
@@ -470,6 +548,11 @@ class TkPSTHApp:
             self.veh_scale.configure(to=maxpos)
             self.ctz_scale.set(self.start['CTZ']['early'])
             self.veh_scale.set(self.start['VEH']['early'])
+            # reset bin to original per pair
+            orig_ms = self.common_bw * 1000.0
+            self.bin_ms_desired = None
+            self.bin_factor = 1
+            self.var_bin_ms.set(f"{orig_ms:.3f}")
         self._draw_all()
 
     def _apply_preset(self, early_s: float) -> None:
@@ -497,8 +580,13 @@ class TkPSTHApp:
         d = self.mats.get(side)
         if not d:
             return np.array([]), np.array([])
-        t = self.times[side]
-        S = self._compute_smoothed(side)
+        t, B_re = self._get_rebinned(side)
+        if B_re.size == 0:
+            return t, B_re
+        # Smooth rebinned counts
+        S = np.zeros_like(B_re)
+        for i in range(S.shape[0]):
+            S[i, :] = _smooth_boxcar(B_re[i, :], self.taps)
         se = self.start[side]['early']
         mask_e = (t >= se) & (t <= (se + self.early_dur))
         eps = 1e-9
@@ -515,14 +603,34 @@ class TkPSTHApp:
     def _save_pair(self) -> None:
         t_ctz, N_ctz = self._compute_normalized('CTZ')
         t_veh, N_veh = self._compute_normalized('VEH')
+        # Also compute raw (rebinned + smoothed) means
+        t_ctz_raw, B_ctz = self._get_rebinned('CTZ')
+        t_veh_raw, B_veh = self._get_rebinned('VEH')
+        S_ctz = np.zeros_like(B_ctz)
+        S_veh = np.zeros_like(B_veh)
+        for i in range(S_ctz.shape[0]):
+            S_ctz[i, :] = _smooth_boxcar(B_ctz[i, :], self.taps)
+        for i in range(S_veh.shape[0]):
+            S_veh[i, :] = _smooth_boxcar(B_veh[i, :], self.taps)
         item = {
             'pair_id': self.pair_id,
             'early_dur': float(self.early_dur),
             'starts': {'CTZ': float(self.start['CTZ']['early']), 'VEH': float(self.start['VEH']['early'])},
             'taps': int(self.taps),
             'stat': self.var_stat.get(),
-            'CTZ': {'t': t_ctz, 'mean': np.nanmean(N_ctz, axis=0) if N_ctz.size else np.array([])},
-            'VEH': {'t': t_veh, 'mean': np.nanmean(N_veh, axis=0) if N_veh.size else np.array([])},
+            'bin_ms': float(self.common_bw * 1000.0),
+            'eff_bin_ms': float(self.common_bw * 1000.0 * (self.bin_factor if self.bin_factor else 1)),
+            'bin_factor': int(self.bin_factor),
+            'CTZ': {
+                't': t_ctz,
+                'norm_mean': np.nanmean(N_ctz, axis=0) if N_ctz.size else np.array([]),
+                'raw_mean': np.nanmean(S_ctz, axis=0) if S_ctz.size else np.array([]),
+            },
+            'VEH': {
+                't': t_veh,
+                'norm_mean': np.nanmean(N_veh, axis=0) if N_veh.size else np.array([]),
+                'raw_mean': np.nanmean(S_veh, axis=0) if S_veh.size else np.array([]),
+            },
         }
         self.saved_pairs.append(item)
         messagebox.showinfo('Saved', f'Saved pair settings: {self.pair_id}\nTotal saved: {len(self.saved_pairs)}')
@@ -543,10 +651,10 @@ class TkPSTHApp:
         cmap = plt.get_cmap('tab10', max(len(self.saved_pairs), 1))
         for k, item in enumerate(self.saved_pairs):
             c = cmap(k % cmap.N)
-            if item['CTZ']['mean'].size:
-                ax_ctz.plot(item['CTZ']['t'], item['CTZ']['mean'], color=c, lw=1.2, label=item['pair_id'])
-            if item['VEH']['mean'].size:
-                ax_veh.plot(item['VEH']['t'], item['VEH']['mean'], color=c, lw=1.2, label=item['pair_id'])
+            if item['CTZ']['norm_mean'].size:
+                ax_ctz.plot(item['CTZ']['t'], item['CTZ']['norm_mean'], color=c, lw=1.2, label=item['pair_id'])
+            if item['VEH']['norm_mean'].size:
+                ax_veh.plot(item['VEH']['t'], item['VEH']['norm_mean'], color=c, lw=1.2, label=item['pair_id'])
         ax_ctz.set_title('CTZ — saved pairs (mean across channels)')
         ax_veh.set_title('VEH — saved pairs (mean across channels)')
         for ax in (ax_ctz, ax_veh):
@@ -569,6 +677,106 @@ class TkPSTHApp:
             messagebox.showinfo('Saved', f'Saved figure to:\n{out}')
         except Exception as e:
             messagebox.showerror('Save failed', f'Could not save figure:\n{e}')
+
+    def _run_group_comparison(self) -> None:
+        if len(self.saved_pairs) < 2:
+            messagebox.showerror('Need more', 'Save at least 2 pairs before group comparison.')
+            return
+        # Check aligned binning/time across saved pairs (use CTZ t as reference)
+        ref_t = None
+        ref_eff_ms = None
+        for it in self.saved_pairs:
+            t = it['CTZ']['t']
+            eff_ms = it.get('eff_bin_ms')
+            if ref_t is None:
+                ref_t = t
+                ref_eff_ms = eff_ms
+            else:
+                if eff_ms != ref_eff_ms or len(t) != len(ref_t) or np.max(np.abs(t - ref_t)) > 1e-9:
+                    messagebox.showerror('Mismatch', 'Saved pairs have different binning or time grids. Enable "Carry to next" and re-save for consistent comparisons.')
+                    return
+        # Pool: compute group means across pairs for normalized and raw, per side
+        def stack_means(side_key: str, field: str) -> np.ndarray:
+            seq = [it[side_key][field] for it in self.saved_pairs if it[side_key][field].size]
+            if not seq:
+                return np.array([])
+            L = min(len(x) for x in seq)
+            seq = [x[:L] for x in seq]
+            return np.vstack(seq)
+
+        ctz_norm = stack_means('CTZ', 'norm_mean')
+        veh_norm = stack_means('VEH', 'norm_mean')
+        ctz_raw = stack_means('CTZ', 'raw_mean')
+        veh_raw = stack_means('VEH', 'raw_mean')
+
+        t = self.saved_pairs[0]['CTZ']['t']
+        # Save NPZ with pooled data and metadata
+        out_dir = _spike_dir(_infer_output_root(None), None) / 'plots'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        npz_path = out_dir / f'psth_group_data__{len(self.saved_pairs)}.npz'
+        try:
+            np.savez_compressed(
+                npz_path.as_posix(),
+                t=t,
+                ctz_norm=ctz_norm,
+                veh_norm=veh_norm,
+                ctz_raw=ctz_raw,
+                veh_raw=veh_raw,
+                pairs=np.array([it['pair_id'] for it in self.saved_pairs], dtype=object),
+                starts_ctz=np.array([it['starts']['CTZ'] for it in self.saved_pairs], dtype=float),
+                starts_veh=np.array([it['starts']['VEH'] for it in self.saved_pairs], dtype=float),
+                eff_bin_ms=self.saved_pairs[0]['eff_bin_ms'],
+                bin_factor=self.saved_pairs[0]['bin_factor'],
+                early_dur=self.saved_pairs[0]['early_dur'],
+                stat=self.saved_pairs[0]['stat'],
+                taps=self.saved_pairs[0]['taps'],
+            )
+        except Exception as e:
+            messagebox.showerror('Save failed', f'Could not save group data:\n{e}')
+            return
+
+        # Plot summary figure
+        fig = Figure(figsize=(12, 4), dpi=100)
+        ax1 = fig.add_subplot(1, 3, 1)
+        ax2 = fig.add_subplot(1, 3, 2, sharey=ax1)
+        ax3 = fig.add_subplot(1, 3, 3, sharey=ax1)
+        cmap = plt.get_cmap('tab10', max(len(self.saved_pairs), 1))
+        for k, it in enumerate(self.saved_pairs):
+            c = cmap(k % cmap.N)
+            if it['CTZ']['norm_mean'].size:
+                ax1.plot(it['CTZ']['t'], it['CTZ']['norm_mean'], color=c, lw=1.0, alpha=0.9)
+            if it['VEH']['norm_mean'].size:
+                ax2.plot(it['VEH']['t'], it['VEH']['norm_mean'], color=c, lw=1.0, alpha=0.9)
+        if ctz_norm.size:
+            ax1.plot(t, np.nanmean(ctz_norm, axis=0), color='k', lw=2.0, label='CTZ mean')
+        if veh_norm.size:
+            ax2.plot(t, np.nanmean(veh_norm, axis=0), color='k', lw=2.0, label='VEH mean')
+        if ctz_norm.size and veh_norm.size:
+            ax3.plot(t, np.nanmean(ctz_norm, axis=0), color='tab:blue', lw=2.0, label='CTZ mean')
+            ax3.plot(t, np.nanmean(veh_norm, axis=0), color='tab:orange', lw=2.0, label='VEH mean')
+        for ax in (ax1, ax2, ax3):
+            ax.axvline(0.0, color='r', lw=0.8, ls='--', alpha=0.7)
+            ax.grid(True, axis='x', alpha=0.2)
+            ax.set_xlabel('Time (s)')
+        ax1.set_title('CTZ — normalized (pairs + mean)')
+        ax2.set_title('VEH — normalized (pairs + mean)')
+        ax3.set_title('CTZ vs VEH — group means')
+        ax1.set_ylabel('Normalized firing (early)')
+
+        # Save figure to disk
+        svg_path = out_dir / f'psth_group_summary__{len(self.saved_pairs)}.svg'
+        try:
+            fig.savefig(svg_path.as_posix(), bbox_inches='tight', transparent=True)
+        except Exception:
+            pass
+
+        top = tk.Toplevel(self.root)
+        top.title(f'Group Comparison — {len(self.saved_pairs)} pairs')
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        canvas = FigureCanvasTkAgg(fig, master=top)
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        canvas.draw()
+        messagebox.showinfo('Group saved', f'Saved pooled NPZ to:\n{npz_path}\nSaved summary figure to:\n{svg_path}')
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
