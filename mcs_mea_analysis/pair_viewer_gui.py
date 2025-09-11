@@ -634,6 +634,14 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         # draw bottom content
         c_ifr.setData(bc_x, bc_y)
         v_ifr.setData(bv_x, bv_y)
+        # Update overlays / spikes visibility by mode
+        if bottom_mode == "IFR":
+            overlay_ctz.setData([], [])
+            overlay_veh.setData([], [])
+            ctg.setData([], [])
+            vtg.setData([], [])
+            th_pos.setValue(0.0)
+            th_neg.setValue(0.0)
         ifr_ctz.enableAutoRange(True, True)
         ifr_veh.enableAutoRange(True, True)
 
@@ -673,12 +681,19 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             v_raw.setData([], [])
             raw_msgs.append("VEH:—")
 
-        # Update title with selection state
+        # Update titles based on display mode and selection state
         stat = selections.get(ch, "-")
         raw_ctz.setTitle(f"Raw CTZ — ch {ch} (sel: {stat})")
         raw_veh.setTitle(f"Raw VEH — ch {ch} (sel: {stat})")
-        ifr_ctz.setTitle(f"IFR CTZ — ch {ch} (Hz)")
-        ifr_veh.setTitle(f"IFR VEH — ch {ch} (Hz)")
+        if bottom_mode == "IFR":
+            ifr_ctz.setTitle(f"IFR CTZ — ch {ch} (Hz)")
+            ifr_veh.setTitle(f"IFR VEH — ch {ch} (Hz)")
+        elif bottom_mode == "Filtered":
+            ifr_ctz.setTitle(f"Filtered CTZ — ch {ch} (Hz)")
+            ifr_veh.setTitle(f"Filtered VEH — ch {ch} (Hz)")
+        else:  # Spikes
+            ifr_ctz.setTitle(f"Filtered+Spikes CTZ — ch {ch} (Hz)")
+            ifr_veh.setTitle(f"Filtered+Spikes VEH — ch {ch} (Hz)")
         msg = "Raw " + " ".join(raw_msgs)
         if spike_txt:
             msg += " | " + spike_txt
