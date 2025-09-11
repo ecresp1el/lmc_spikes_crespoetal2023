@@ -146,6 +146,11 @@ class TkPSTHApp:
         self.taps = 5
         self.early_dur = 0.05
         self.start = {'CTZ': {'early': 0.0}, 'VEH': {'early': 0.0}}
+        self.var_carry = tk.BooleanVar(value=False)
+        self.bottom_ylim: Optional[Tuple[float, float]] = None
+        self.var_ymin = tk.StringVar(value="")
+        self.var_ymax = tk.StringVar(value="")
+        self.saved_pairs: List[dict] = []
 
         self._load_pair(self.pairs[self.i])
         self._init_windows()
@@ -207,9 +212,9 @@ class TkPSTHApp:
         # Smoothing window (bins)
         ttk.Label(ctrl, text='smoothing (bins):').grid(row=0, column=3, padx=10, pady=6, sticky='w')
         self.var_taps = tk.IntVar(value=self.taps)
-        taps_scale = ttk.Scale(ctrl, from_=1, to=21, orient=tk.HORIZONTAL, command=self._on_taps_scale)
-        taps_scale.set(self.taps)
-        taps_scale.grid(row=0, column=4, padx=4, pady=6, sticky='we')
+        self.taps_scale = ttk.Scale(ctrl, from_=1, to=21, orient=tk.HORIZONTAL, command=self._on_taps_scale)
+        self.taps_scale.set(self.taps)
+        self.taps_scale.grid(row=0, column=4, padx=4, pady=6, sticky='we')
 
         # Normalization statistic
         ttk.Label(ctrl, text='norm stat:').grid(row=0, column=5, padx=10, pady=6, sticky='w')
@@ -218,10 +223,14 @@ class TkPSTHApp:
         stat_box.grid(row=0, column=6, padx=4, pady=6)
         stat_box.bind('<<ComboboxSelected>>', lambda evt: self._draw_all())
 
-        # Pair nav
+        # Pair nav & actions
         ttk.Button(ctrl, text='Prev', command=lambda: self._step_pair(-1)).grid(row=0, column=7, padx=6)
         ttk.Button(ctrl, text='Next', command=lambda: self._step_pair(+1)).grid(row=0, column=8, padx=6)
-        ttk.Button(ctrl, text='Save', command=self._on_save).grid(row=0, column=9, padx=6)
+        ttk.Button(ctrl, text='Save Figure', command=self._on_save).grid(row=0, column=9, padx=6)
+        ttk.Button(ctrl, text='Save Pair', command=self._save_pair).grid(row=0, column=10, padx=6)
+        ttk.Button(ctrl, text='View Saved', command=self._show_saved_summary).grid(row=0, column=11, padx=6)
+        ttk.Button(ctrl, text='Clear Saved', command=self._clear_saved).grid(row=0, column=12, padx=6)
+        ttk.Checkbutton(ctrl, text='Carry to next', variable=self.var_carry).grid(row=0, column=13, padx=6)
 
         # Early starts (CTZ/VEH)
         ttk.Label(ctrl, text='CTZ start').grid(row=1, column=0, padx=6, pady=6, sticky='w')
@@ -241,6 +250,18 @@ class TkPSTHApp:
         # Make some columns expand
         ctrl.grid_columnconfigure(4, weight=1)
         ctrl.grid_columnconfigure(1, weight=1)
+
+        # Bottom y-axis controls
+        yctrl = ttk.Frame(self.root)
+        yctrl.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(yctrl, text='bottom y-min:').grid(row=0, column=0, padx=6, pady=6, sticky='w')
+        ymin_entry = ttk.Entry(yctrl, textvariable=self.var_ymin, width=8)
+        ymin_entry.grid(row=0, column=1, padx=2, pady=6)
+        ttk.Label(yctrl, text='bottom y-max:').grid(row=0, column=2, padx=6, pady=6, sticky='w')
+        ymax_entry = ttk.Entry(yctrl, textvariable=self.var_ymax, width=8)
+        ymax_entry.grid(row=0, column=3, padx=2, pady=6)
+        ttk.Button(yctrl, text='Apply Y', command=self._apply_bottom_ylim).grid(row=0, column=4, padx=6)
+        ttk.Button(yctrl, text='Auto Y', command=self._auto_bottom_ylim).grid(row=0, column=5, padx=6)
 
     def _set_axes_common(self) -> None:
         for ax in (self.ax_raw_ctz, self.ax_raw_veh, self.ax_norm_ctz, self.ax_norm_veh):
@@ -312,9 +333,12 @@ class TkPSTHApp:
                 ax_raw.set_yticks(list(range(int(np.min(channels)), int(np.max(channels)) + 1, step)))
             except Exception:
                 pass
-            ymax = float(np.nanmax(N)) if np.isfinite(np.nanmax(N)) else 1.0
-            ymax = min(max(1.05, 1.1 * ymax), 5.0)
-            ax_norm.set_ylim([0.0, ymax])
+            if self.bottom_ylim is not None:
+                ax_norm.set_ylim(self.bottom_ylim)
+            else:
+                ymax = float(np.nanmax(N)) if np.isfinite(np.nanmax(N)) else 1.0
+                ymax = min(max(1.05, 1.1 * ymax), 5.0)
+                ax_norm.set_ylim([0.0, ymax])
             ax_norm.set_yticks([0.0, ymax/2, ymax])
             ax_norm.set_ylabel('Normalized firing rate (to early)')
 
@@ -367,6 +391,25 @@ class TkPSTHApp:
             self.taps = v
             self._draw_all()
 
+    def _apply_bottom_ylim(self) -> None:
+        try:
+            ymin = float(self.var_ymin.get())
+            ymax = float(self.var_ymax.get())
+        except Exception:
+            messagebox.showerror('Invalid Y', 'Y min/max must be numeric.')
+            return
+        if ymax <= ymin:
+            messagebox.showerror('Invalid Y', 'Y max must be greater than Y min.')
+            return
+        self.bottom_ylim = (ymin, ymax)
+        self._draw_all()
+
+    def _auto_bottom_ylim(self) -> None:
+        self.bottom_ylim = None
+        self.var_ymin.set("")
+        self.var_ymax.set("")
+        self._draw_all()
+
     # ===== Mouse drag handlers to move early start line =====
     def _which_side_from_axes(self, ax: Optional[plt.Axes]) -> Optional[str]:
         if ax in (self.ax_raw_ctz, self.ax_norm_ctz):
@@ -406,13 +449,27 @@ class TkPSTHApp:
     def _step_pair(self, delta: int) -> None:
         self.i = (self.i + delta) % len(self.pairs)
         self._load_pair(self.pairs[self.i])
-        self._init_windows()
-        # update slider ranges
-        maxpos = max(0.0, self.common_post - self.early_dur)
-        self.ctz_scale.configure(to=maxpos)
-        self.veh_scale.configure(to=maxpos)
-        self.ctz_scale.set(self.start['CTZ']['early'])
-        self.veh_scale.set(self.start['VEH']['early'])
+        if self.var_carry.get():
+            # carry over current early_dur/taps/stat and starts (clamped)
+            maxpos = max(0.0, self.common_post - self.early_dur)
+            for side in ('CTZ', 'VEH'):
+                self.start[side]['early'] = min(self.start[side]['early'], maxpos)
+            self.ctz_scale.configure(to=maxpos)
+            self.veh_scale.configure(to=maxpos)
+            self.ctz_scale.set(self.start['CTZ']['early'])
+            self.veh_scale.set(self.start['VEH']['early'])
+            # ensure taps slider reflects current taps
+            try:
+                self.taps_scale.set(self.taps)
+            except Exception:
+                pass
+        else:
+            self._init_windows()
+            maxpos = max(0.0, self.common_post - self.early_dur)
+            self.ctz_scale.configure(to=maxpos)
+            self.veh_scale.configure(to=maxpos)
+            self.ctz_scale.set(self.start['CTZ']['early'])
+            self.veh_scale.set(self.start['VEH']['early'])
         self._draw_all()
 
     def _apply_preset(self, early_s: float) -> None:
@@ -434,6 +491,75 @@ class TkPSTHApp:
         else:
             self.veh_scale.set(0.0)
         self._draw_all()
+
+    # ===== Saving and summary across saved pairs =====
+    def _compute_normalized(self, side: str) -> Tuple[np.ndarray, np.ndarray]:
+        d = self.mats.get(side)
+        if not d:
+            return np.array([]), np.array([])
+        t = self.times[side]
+        S = self._compute_smoothed(side)
+        se = self.start[side]['early']
+        mask_e = (t >= se) & (t <= (se + self.early_dur))
+        eps = 1e-9
+        if np.any(mask_e):
+            if self.var_stat.get() == 'median':
+                denom = np.maximum(eps, np.median(S[:, mask_e], axis=1))
+            else:
+                denom = np.maximum(eps, np.mean(S[:, mask_e], axis=1))
+        else:
+            denom = np.ones(S.shape[0])
+        N = (S.T / denom).T
+        return t, N
+
+    def _save_pair(self) -> None:
+        t_ctz, N_ctz = self._compute_normalized('CTZ')
+        t_veh, N_veh = self._compute_normalized('VEH')
+        item = {
+            'pair_id': self.pair_id,
+            'early_dur': float(self.early_dur),
+            'starts': {'CTZ': float(self.start['CTZ']['early']), 'VEH': float(self.start['VEH']['early'])},
+            'taps': int(self.taps),
+            'stat': self.var_stat.get(),
+            'CTZ': {'t': t_ctz, 'mean': np.nanmean(N_ctz, axis=0) if N_ctz.size else np.array([])},
+            'VEH': {'t': t_veh, 'mean': np.nanmean(N_veh, axis=0) if N_veh.size else np.array([])},
+        }
+        self.saved_pairs.append(item)
+        messagebox.showinfo('Saved', f'Saved pair settings: {self.pair_id}\nTotal saved: {len(self.saved_pairs)}')
+
+    def _clear_saved(self) -> None:
+        self.saved_pairs.clear()
+        messagebox.showinfo('Cleared', 'Cleared all saved pairs.')
+
+    def _show_saved_summary(self) -> None:
+        if not self.saved_pairs:
+            messagebox.showinfo('None saved', 'No saved pairs to summarize.')
+            return
+        top = tk.Toplevel(self.root)
+        top.title('Saved Summary — per-pair means')
+        fig = Figure(figsize=(10, 6), dpi=100)
+        ax_ctz = fig.add_subplot(1, 2, 1)
+        ax_veh = fig.add_subplot(1, 2, 2, sharey=ax_ctz)
+        cmap = plt.get_cmap('tab10', max(len(self.saved_pairs), 1))
+        for k, item in enumerate(self.saved_pairs):
+            c = cmap(k % cmap.N)
+            if item['CTZ']['mean'].size:
+                ax_ctz.plot(item['CTZ']['t'], item['CTZ']['mean'], color=c, lw=1.2, label=item['pair_id'])
+            if item['VEH']['mean'].size:
+                ax_veh.plot(item['VEH']['t'], item['VEH']['mean'], color=c, lw=1.2, label=item['pair_id'])
+        ax_ctz.set_title('CTZ — saved pairs (mean across channels)')
+        ax_veh.set_title('VEH — saved pairs (mean across channels)')
+        for ax in (ax_ctz, ax_veh):
+            ax.axvline(0.0, color='r', lw=0.8, ls='--', alpha=0.7)
+            ax.grid(True, axis='x', alpha=0.2)
+        ax_ctz.set_xlabel('Time (s)')
+        ax_veh.set_xlabel('Time (s)')
+        ax_ctz.set_ylabel('Normalized firing (early)')
+        ax_ctz.legend(loc='upper right', fontsize=8)
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        canvas = FigureCanvasTkAgg(fig, master=top)
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        canvas.draw()
 
     def _on_save(self) -> None:
         out = _spike_dir(_infer_output_root(None), None) / 'plots' / f'psth_explorer__{self.pair_id}.svg'
