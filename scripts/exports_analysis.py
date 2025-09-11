@@ -23,6 +23,7 @@ Usage
                                      [--example-match-length]
                                      [--exemplary-index-x]
                                      [--psth-bin-ms 50] [--psth-pre-s 1.0] [--psth-post-s 1.0]
+                                     [--psth-per-channel] [--psth-channels CH [CH ...]]
                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
                                      [--limit N]
 
@@ -413,6 +414,76 @@ def plot_psth_median_sem(pair_psth: pd.DataFrame, side: str, out_base: Path) -> 
     plt.close(fig)
 
 
+def plot_psth_per_channel_1x2_lines_median(psth_channel_df: pd.DataFrame, channel: int, out_base: Path) -> None:
+    """For a given channel index, plot CTZ vs VEH in a 1x2 figure.
+
+    Left: CTZ traces per pair colored by plate + median overlay.
+    Right: VEH traces per pair colored by plate + median overlay.
+    """
+    sub = psth_channel_df[psth_channel_df['channel'] == int(channel)].copy()
+    if sub.empty:
+        return
+    plates = [int(p) for p in sub['plate'].unique() if pd.notna(p)]
+    cmap = plate_color_map(plates)
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4.2), sharey=True)
+    for ax, side in zip(axes, ('CTZ', 'VEH')):
+        s = sub[sub['side'] == side]
+        if s.empty:
+            ax.set_visible(False)
+            continue
+        for (pair_id, plate), df in s.groupby(['pair_id', 'plate']):
+            df = df.sort_values('time_s')
+            color = cmap.get(int(plate), '#777777')
+            ax.plot(df['time_s'].values, df['fr_hz'].values, color=color, lw=0.8, alpha=0.7)
+        med = s.groupby('time_s')['fr_hz'].median().reset_index()
+        ax.plot(med['time_s'].values, med['fr_hz'].values, color='black', lw=2.0, label='Median')
+        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
+        ax.set_title(f'{side}')
+        ax.grid(True, alpha=0.25)
+    axes[0].set_ylabel('FR (Hz)')
+    axes[0].set_xlabel('Time from chem (s)')
+    axes[1].set_xlabel('Time from chem (s)')
+    fig.suptitle(f'PSTH per channel — ch{int(channel):02d} (lines by plate + median)')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_psth_per_channel_1x2_median_sem(psth_channel_df: pd.DataFrame, channel: int, out_base: Path) -> None:
+    """For a given channel index, 1x2 CTZ vs VEH with median ± SEM across pairs."""
+    sub = psth_channel_df[psth_channel_df['channel'] == int(channel)].copy()
+    if sub.empty:
+        return
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4.2), sharey=True)
+    for ax, side in zip(axes, ('CTZ', 'VEH')):
+        s = sub[sub['side'] == side]
+        if s.empty:
+            ax.set_visible(False)
+            continue
+        pivot = s.pivot_table(index='time_s', columns='pair_id', values='fr_hz', aggfunc='mean').sort_index()
+        t = pivot.index.values.astype(float)
+        vals = pivot.values
+        med = np.nanmedian(vals, axis=1)
+        std = np.nanstd(vals, axis=1, ddof=1)
+        n = np.sum(np.isfinite(vals), axis=1).astype(float)
+        sem = np.divide(std, np.sqrt(np.maximum(1.0, n)), out=np.zeros_like(std), where=n > 0)
+        color = PALETTE.get(side, '#333333')
+        ax.plot(t, med, color=color, lw=2.0, label='Median')
+        ax.fill_between(t, med - sem, med + sem, color=color, alpha=0.25, label='SEM')
+        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
+        ax.set_title(f'{side}')
+        ax.grid(True, alpha=0.25)
+    axes[0].set_ylabel('FR (Hz)')
+    axes[0].set_xlabel('Time from chem (s)')
+    axes[1].set_xlabel('Time from chem (s)')
+    fig.suptitle(f'PSTH per channel — ch{int(channel):02d} (median ± SEM across pairs)')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
 def pick_example_pair_channel(fr_df: pd.DataFrame, prefer_side: str | None = None) -> tuple[str, int]:
     """Pick a pair/channel heuristically: max post FR across both sides.
 
@@ -538,6 +609,8 @@ class CLIArgs:
     psth_bin_ms: float
     psth_pre_s: float
     psth_post_s: float
+    psth_per_channel: bool
+    psth_channels: Optional[list[int]]
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
@@ -557,6 +630,8 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--psth-bin-ms', type=float, default=50.0, help='PSTH bin width (ms)')
     p.add_argument('--psth-pre-s', type=float, default=1.0, help='Pre-chem window for PSTH (s)')
     p.add_argument('--psth-post-s', type=float, default=1.0, help='Post-chem window for PSTH (s)')
+    p.add_argument('--psth-per-channel', action='store_true', help='Generate 1x2 CTZ vs VEH PSTH plots per channel')
+    p.add_argument('--psth-channels', type=int, nargs='+', default=None, help='Specific channel indices to plot PSTH per channel (defaults to example channel)')
     a = p.parse_args(argv)
     return CLIArgs(
         output_root=a.output_root,
@@ -573,6 +648,8 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
         psth_bin_ms=float(a.psth_bin_ms),
         psth_pre_s=float(a.psth_pre_s),
         psth_post_s=float(a.psth_post_s),
+        psth_per_channel=bool(a.psth_per_channel),
+        psth_channels=list(a.psth_channels) if a.psth_channels is not None else None,
     )
 
 
@@ -858,6 +935,23 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     for side in ('CTZ', 'VEH'):
         plot_psth_by_plate_lines_median(psth_pair, side, save_dir / f'psth_{side.lower()}_by_plate_lines_median')
         plot_psth_median_sem(psth_pair, side, save_dir / f'psth_{side.lower()}_median_sem')
+
+    # Optional: per-channel 1x2 CTZ vs VEH PSTH
+    if args.psth_per_channel and not psth_all.empty:
+        if args.psth_channels is not None and len(args.psth_channels) > 0:
+            chans_to_plot = [int(c) for c in args.psth_channels]
+        elif example_channel is not None:
+            chans_to_plot = [int(example_channel)]
+        else:
+            # Fallback to channel 0 if unknown
+            chans_to_plot = [0]
+        for ch in chans_to_plot:
+            base = save_dir / f'psth_per_channel_ch{int(ch):02d}'
+            try:
+                plot_psth_per_channel_1x2_lines_median(psth_all, ch, base.with_name(base.name + '_lines_median'))
+                plot_psth_per_channel_1x2_median_sem(psth_all, ch, base.with_name(base.name + '_median_sem'))
+            except Exception as e:
+                print(f"[analysis] PSTH per-channel plot error (ch {ch}): {e}")
 
     print(f"[analysis] Wrote outputs to: {save_dir}")
     return 0
