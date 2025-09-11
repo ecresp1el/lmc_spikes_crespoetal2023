@@ -234,11 +234,16 @@ def _save_boxplot(fig_base: Path, ctz: np.ndarray, veh: np.ndarray) -> None:
     ax = fig.add_subplot(1, 1, 1)
     data = [ctz, veh]
     # Box colors: CTZ blue, VEH black
-    boxprops = dict(linewidth=1.2, color='k')
-    medianprops = dict(linewidth=1.6, color='k')
-    bp = ax.boxplot(data, positions=[1, 2], widths=0.6, patch_artist=True,
-                    boxprops=boxprops, medianprops=medianprops, whiskerprops=boxprops,
-                    capprops=boxprops, showfliers=False)
+    # Use separate dicts to avoid in-place mutation crossing between patch and line props
+    boxprops_patch = dict(linewidth=1.2, edgecolor='k')
+    whiskerprops_line = dict(linewidth=1.2, color='k')
+    capprops_line = dict(linewidth=1.2, color='k')
+    medianprops_line = dict(linewidth=1.6, color='k')
+    bp = ax.boxplot(
+        data, positions=[1, 2], widths=0.6, patch_artist=True,
+        boxprops=boxprops_patch, medianprops=medianprops_line,
+        whiskerprops=whiskerprops_line, capprops=capprops_line, showfliers=False,
+    )
     face_colors = ['tab:blue', 'k']
     for patch, fc in zip(bp['boxes'], face_colors):
         patch.set_facecolor(fc)
