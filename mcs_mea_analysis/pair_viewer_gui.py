@@ -430,6 +430,9 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
     h.addWidget(QtWidgets.QLabel("Display:")); h.addWidget(disp_mode)
+    center_chk = QtWidgets.QCheckBox("Center at chem (bottom)")
+    center_chk.setChecked(False)
+    h.addWidget(center_chk)
     # Filter controls (visible in Filtered/Spikes; values still read if hidden)
     filt_mode = QtWidgets.QComboBox(); filt_mode.addItems(["High-pass", "Band-pass", "Detrend+HP"]) 
     hp_spin = QtWidgets.QDoubleSpinBox(); hp_spin.setRange(10.0, 10000.0); hp_spin.setDecimals(1); hp_spin.setValue(300.0); hp_spin.setSuffix(" Hz")
@@ -645,19 +648,21 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                 except Exception:
                     pass
                 filt_txt = f"Filt CTZ:{'ok' if fy_c.size else '—'} VEH:{'ok' if fy_v.size else '—'}"
-                # Relative time axes (chem at 0)
-                def rel(x: np.ndarray, chem_ts: Optional[float]) -> np.ndarray:
-                    return (x - float(chem_ts)) if chem_ts is not None else x
+        # Axis transform for bottom panels (optionally center at chem)
+        def axis_x(x: np.ndarray, chem_ts: Optional[float]) -> np.ndarray:
+            if center_chk.isChecked() and (chem_ts is not None):
+                return (x - float(chem_ts))
+            return x
                 if bottom_mode == "Filtered":
                     # Overlay raw (faint) vs filtered (bold)
-                    overlay_ctz.setData(rel(xr_c, args.chem_ctz_s), yr_c)
-                    overlay_veh.setData(rel(xr_v, args.chem_veh_s), yr_v)
+                    overlay_ctz.setData(axis_x(xr_c, args.chem_ctz_s), yr_c)
+                    overlay_veh.setData(axis_x(xr_v, args.chem_veh_s), yr_v)
                     # clear spikes/threshold visuals
                     ctg.setData([], [])
                     vtg.setData([], [])
                     th_pos.setValue(0.0); th_neg.setValue(0.0)
-                    bc_x, bc_y = rel(xr_c, args.chem_ctz_s), fy_c
-                    bv_x, bv_y = rel(xr_v, args.chem_veh_s), fy_v
+                    bc_x, bc_y = axis_x(xr_c, args.chem_ctz_s), fy_c
+                    bv_x, bv_y = axis_x(xr_v, args.chem_veh_s), fy_v
                 else:
                     # Filtered + Spikes
                     # Build masks for baseline (chem-pre .. chem) and analysis (chem .. chem+post)
@@ -675,17 +680,17 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                     mb_v, ma_v = masks(xr_v, args.chem_veh_s)
                     st_c_times, thr_pos_c, thr_neg_c = detect_spikes(xr_c, fy_c, float(sr_c), mb_c, ma_c, dcfg) if (xr_c.size and fy_c.size) else (np.array([]), np.nan, np.nan)
                     st_v_times, thr_pos_v, thr_neg_v = detect_spikes(xr_v, fy_v, float(sr_v), mb_v, ma_v, dcfg) if (xr_v.size and fy_v.size) else (np.array([]), np.nan, np.nan)
-                    bc_x, bc_y = rel(xr_c, args.chem_ctz_s), fy_c
-                    bv_x, bv_y = rel(xr_v, args.chem_veh_s), fy_v
+                    bc_x, bc_y = axis_x(xr_c, args.chem_ctz_s), fy_c
+                    bv_x, bv_y = axis_x(xr_v, args.chem_veh_s), fy_v
                     # thresholds
                     th_pos.setValue(thr_pos_c if np.isfinite(thr_pos_c) else 0.0)
                     th_neg.setValue(thr_neg_c if np.isfinite(thr_neg_c) else 0.0)
                     # spikes
-                    ctg.setData(x=rel(st_c_times, args.chem_ctz_s), y=(np.interp(st_c_times, xr_c, fy_c) if st_c_times.size else []))
-                    vtg.setData(x=rel(st_v_times, args.chem_veh_s), y=(np.interp(st_v_times, xr_v, fy_v) if st_v_times.size else []))
+                    ctg.setData(x=axis_x(st_c_times, args.chem_ctz_s), y=(np.interp(st_c_times, xr_c, fy_c) if st_c_times.size else []))
+                    vtg.setData(x=axis_x(st_v_times, args.chem_veh_s), y=(np.interp(st_v_times, xr_v, fy_v) if st_v_times.size else []))
                     # raw overlays under filtered
-                    overlay_ctz.setData(bc_x, yr_c if yr_c.size else [])
-                    overlay_veh.setData(bv_x, yr_v if yr_v.size else [])
+                    overlay_ctz.setData(axis_x(xr_c, args.chem_ctz_s), yr_c if yr_c.size else [])
+                    overlay_veh.setData(axis_x(xr_v, args.chem_veh_s), yr_v if yr_v.size else [])
                     # counts and FR
                     dur = float(post_spin.value()) if float(post_spin.value()) > 0 else 1.0
                     fr_c = st_c_times.size / dur
@@ -801,7 +806,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_reload.clicked.connect(on_reload)
     spin.valueChanged.connect(on_spin)
     # Recompute raw when toggling full mode
-    for w in (full_chk, chem_chk, pre_spin, post_spin, disp_mode):
+    for w in (full_chk, chem_chk, pre_spin, post_spin, disp_mode, center_chk):
         try:
             if hasattr(w, 'stateChanged'):
                 w.stateChanged.connect(lambda *_: update_channel(spin.value()))
