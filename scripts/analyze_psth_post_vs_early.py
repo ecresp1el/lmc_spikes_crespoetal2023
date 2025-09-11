@@ -382,9 +382,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     fig_base = save_dir / (grp_path.stem + '__postmax_boxplot')
     rule = 'post window: early_end + 0.100 s + 1 bin' if args.post_start is None else f'post window: start={args.post_start:.3f}s'
     _save_boxplot(fig_base, ctz, veh, window_info=winfo, rule_text=rule)
-    # Export overall stats (and placeholder for per-pair FDR if desired in future)
-    _export_stats(save_dir / (grp_path.stem + '__postmax_stats.csv'), ctz, veh, pair_stats=pair_rows)
-    print('[postmax] Wrote:', fig_base.with_suffix('.svg'))
+    # Export stats CSV (overall + per-pair with FDR)
+    csv_path = save_dir / (grp_path.stem + '__postmax_stats.csv')
+    _export_stats(csv_path, ctz, veh, pair_stats=pair_rows)
+    print('[postmax] Wrote figure:', fig_base.with_suffix('.svg'))
+    print('[postmax] Wrote stats: ', csv_path)
     return 0
 
 
