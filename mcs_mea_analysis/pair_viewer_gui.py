@@ -69,6 +69,7 @@ import json
 import numpy as np
 
 from .config import CONFIG
+from .spike_filtering import FilterConfig, DetectConfig, apply_filter, detect_spikes
 
 
 def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float], Optional[Any]]:
@@ -389,6 +390,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     ctrl = QtWidgets.QWidget()
     h = QtWidgets.QHBoxLayout(ctrl)
     lbl_plate = QtWidgets.QLabel(f"Plate: {args.plate or '-'}  Round: {args.round or '-'}")
+    disp_mode = QtWidgets.QComboBox(); disp_mode.addItems(["IFR", "Filtered", "Spikes"])  # bottom content
     spin = QtWidgets.QSpinBox(); spin.setRange(0, max(0, n_ch - 1)); spin.setValue(int(max(0, min(n_ch-1, int(args.initial_channel or 0)))))
     btn_prev = QtWidgets.QPushButton("Prev")
     btn_next = QtWidgets.QPushButton("Next")
@@ -404,6 +406,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     status_lbl = QtWidgets.QLabel("")
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
+    h.addWidget(QtWidgets.QLabel("Display:")); h.addWidget(disp_mode)
     h.addWidget(btn_prev); h.addWidget(btn_next)
     h.addWidget(btn_accept); h.addWidget(btn_reject)
     h.addWidget(btn_save)
@@ -468,6 +471,15 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     v_raw = raw_veh.plot([], [], pen=pg.mkPen('w'))
     c_ifr = ifr_ctz.plot([], [], pen=pg.mkPen('c'))
     v_ifr = ifr_veh.plot([], [], pen=pg.mkPen('m'))
+    # Spike overlays for bottom plots
+    ctg = pg.ScatterPlotItem(size=6, pen=pg.mkPen(None), brush=pg.mkBrush(255, 50, 50, 180))
+    vtg = pg.ScatterPlotItem(size=6, pen=pg.mkPen(None), brush=pg.mkBrush(255, 150, 50, 180))
+    th_pos = pg.InfiniteLine(angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine))
+    th_neg = pg.InfiniteLine(angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine))
+    ifr_ctz.addItem(ctg)
+    ifr_ctz.addItem(th_pos)
+    ifr_ctz.addItem(th_neg)
+    ifr_veh.addItem(vtg)
 
     # Simple caches to avoid repeated HDF5 reads per channel and mode (full/decimated)
     raw_cache_ctz: Dict[Tuple[int, bool], Tuple[np.ndarray, np.ndarray]] = {}
@@ -493,8 +505,89 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             return x[::step], y[::step]
         xc, yc = decim(x_c, y_c)
         xv, yv = decim(x_v, y_v)
-        c_ifr.setData(xc, yc)
-        v_ifr.setData(xv, yv)
+        bottom_mode = str(disp_mode.currentText())
+        # Default to IFR plotting
+        bc_x, bc_y = xc, yc
+        bv_x, bv_y = xv, yv
+        spike_txt = ""
+        # Compute raw window bounds in seconds for each side (used for filtering too)
+        def _raw_window(chem_ts: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+            if chem_chk.isChecked() and chem_ts is not None:
+                return max(0.0, float(chem_ts) - float(pre_spin.value())), float(chem_ts) + float(post_spin.value())
+            return None, None
+        t0_c, t1_c = _raw_window(args.chem_ctz_s)
+        t0_v, t1_v = _raw_window(args.chem_veh_s)
+        if bottom_mode in ("Filtered", "Spikes"):
+            # Require sampling rate to filter reliably
+            if (sr_c is None) or (sr_v is None) or (sr_c <= 0) or (sr_v <= 0):
+                spike_txt = "SR unknown; filtering disabled"
+            else:
+                fcfg = FilterConfig(mode="hp", hp_hz=300.0)
+                dcfg = DetectConfig(noise="mad", K=5.0, polarity="neg", min_width_ms=0.3, refractory_ms=1.0)
+                # Pull raw for current channel & window
+                xr_c, yr_c = (np.array([]), np.array([]))
+                xr_v, yr_v = (np.array([]), np.array([]))
+                if st_c is not None:
+                    xr_c, yr_c = _decimated_channel_trace(st_c, sr_c, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full)
+                elif args.ctz_h5:
+                    xr_c, yr_c = _decimated_channel_trace_h5(args.ctz_h5, sr_c or 1.0, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full)
+                if st_v is not None:
+                    xr_v, yr_v = _decimated_channel_trace(st_v, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                elif args.veh_h5:
+                    xr_v, yr_v = _decimated_channel_trace_h5(args.veh_h5, sr_v or 1.0, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                # Apply filters
+                fy_c = apply_filter(yr_c, float(sr_c), fcfg) if yr_c.size else yr_c
+                fy_v = apply_filter(yr_v, float(sr_v), fcfg) if yr_v.size else yr_v
+                # Relative time axes (chem at 0)
+                def rel(x: np.ndarray, chem_ts: Optional[float]) -> np.ndarray:
+                    return (x - float(chem_ts)) if chem_ts is not None else x
+                if bottom_mode == "Filtered":
+                    # Overlay raw (faint) vs filtered (bold)
+                    ifr_ctz.clear(); ifr_veh.clear()
+                    ifr_ctz.plot(rel(xr_c, args.chem_ctz_s), yr_c, pen=pg.mkPen(150,150,150,120))
+                    ifr_veh.plot(rel(xr_v, args.chem_veh_s), yr_v, pen=pg.mkPen(150,150,150,120))
+                    bc_x, bc_y = rel(xr_c, args.chem_ctz_s), fy_c
+                    bv_x, bv_y = rel(xr_v, args.chem_veh_s), fy_v
+                else:
+                    # Filtered + Spikes
+                    # Build masks for baseline (chem-pre .. chem) and analysis (chem .. chem+post)
+                    def masks(x: np.ndarray, chem_ts: Optional[float]) -> Tuple[np.ndarray, np.ndarray]:
+                        if x.size == 0:
+                            return np.zeros(0, dtype=bool), np.zeros(0, dtype=bool)
+                        t0b = (float(chem_ts) - float(pre_spin.value())) if chem_ts is not None else (x[0])
+                        t1b = float(chem_ts) if chem_ts is not None else (x[0])
+                        t0a = float(chem_ts) if chem_ts is not None else (x[0])
+                        t1a = (float(chem_ts) + float(post_spin.value())) if chem_ts is not None else (x[-1])
+                        mb = (x >= t0b) & (x <= t1b)
+                        ma = (x >= t0a) & (x <= t1a)
+                        return mb, ma
+                    mb_c, ma_c = masks(xr_c, args.chem_ctz_s)
+                    mb_v, ma_v = masks(xr_v, args.chem_veh_s)
+                    st_c_times, thr_pos_c, thr_neg_c = detect_spikes(xr_c, fy_c, float(sr_c), mb_c, ma_c, dcfg) if (xr_c.size and fy_c.size) else (np.array([]), np.nan, np.nan)
+                    st_v_times, thr_pos_v, thr_neg_v = detect_spikes(xr_v, fy_v, float(sr_v), mb_v, ma_v, dcfg) if (xr_v.size and fy_v.size) else (np.array([]), np.nan, np.nan)
+                    bc_x, bc_y = rel(xr_c, args.chem_ctz_s), fy_c
+                    bv_x, bv_y = rel(xr_v, args.chem_veh_s), fy_v
+                    # Clear and re-add scatter/thresholds to ensure they draw on top
+                    ifr_ctz.clear(); ifr_veh.clear()
+                    # thresholds
+                    if np.isfinite(thr_pos_c):
+                        ifr_ctz.addItem(pg.InfiniteLine(pos=thr_pos_c, angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine)))
+                    if np.isfinite(thr_neg_c):
+                        ifr_ctz.addItem(pg.InfiniteLine(pos=thr_neg_c, angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine)))
+                    # spikes
+                    if st_c_times.size:
+                        ifr_ctz.addItem(pg.ScatterPlotItem(x=rel(st_c_times, args.chem_ctz_s), y=np.interp(st_c_times, xr_c, fy_c), size=6, pen=None, brush=pg.mkBrush(255,50,50,180)))
+                    if st_v_times.size:
+                        ifr_veh.addItem(pg.ScatterPlotItem(x=rel(st_v_times, args.chem_veh_s), y=np.interp(st_v_times, xr_v, fy_v), size=6, pen=None, brush=pg.mkBrush(255,150,50,180)))
+                    # counts and FR
+                    dur = float(post_spin.value()) if float(post_spin.value()) > 0 else 1.0
+                    fr_c = st_c_times.size / dur
+                    fr_v = st_v_times.size / dur
+                    spike_txt = f"CTZ spikes={st_c_times.size} FR={fr_c:.2f} Hz | VEH spikes={st_v_times.size} FR={fr_v:.2f} Hz | ΔFR={fr_c-fr_v:.2f} Hz"
+
+        # draw bottom content
+        c_ifr.setData(bc_x, bc_y)
+        v_ifr.setData(bv_x, bv_y)
         ifr_ctz.enableAutoRange(True, True)
         ifr_veh.enableAutoRange(True, True)
 
@@ -502,12 +595,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         raw_msgs = []
         full = bool(full_chk.isChecked())
         # Compute raw windows in seconds for each side
-        def _raw_window(chem_ts: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
-            if chem_chk.isChecked() and chem_ts is not None:
-                return max(0.0, float(chem_ts) - float(pre_spin.value())), float(chem_ts) + float(post_spin.value())
-            return None, None
-        t0_c, t1_c = _raw_window(args.chem_ctz_s)
-        t0_v, t1_v = _raw_window(args.chem_veh_s)
+        # Re-use window bounds computed earlier (t0_c, t1_c, t0_v, t1_v)
         if st_c is not None:
             key = (ch, full, int((t0_c or -1)*1000), int((t1_c or -1)*1000))
             if key in raw_cache_ctz:
@@ -545,7 +633,10 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         raw_veh.setTitle(f"Raw VEH — ch {ch} (sel: {stat})")
         ifr_ctz.setTitle(f"IFR CTZ — ch {ch} (Hz)")
         ifr_veh.setTitle(f"IFR VEH — ch {ch} (Hz)")
-        status_lbl.setText("Raw " + " ".join(raw_msgs))
+        msg = "Raw " + " ".join(raw_msgs)
+        if spike_txt:
+            msg += " | " + spike_txt
+        status_lbl.setText(msg)
 
     def on_accept():
         ch = spin.value()
@@ -586,7 +677,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_reload.clicked.connect(on_reload)
     spin.valueChanged.connect(on_spin)
     # Recompute raw when toggling full mode
-    for w in (full_chk, chem_chk, pre_spin, post_spin):
+    for w in (full_chk, chem_chk, pre_spin, post_spin, disp_mode):
         try:
             if hasattr(w, 'stateChanged'):
                 w.stateChanged.connect(lambda *_: update_channel(spin.value()))
