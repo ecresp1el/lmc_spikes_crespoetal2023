@@ -897,7 +897,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print(f"[psth-gui-tk] Pairs discovered: {len(mapping)}")
 
     root = tk.Tk()
-    app = TkPSTHApp(root, mapping)
+    TkPSTHApp(root, mapping)
     root.mainloop()
     return 0
 
