@@ -22,12 +22,8 @@ Usage
                                      [--example-pair PAIR_ID] [--example-channel CH]
                                      [--example-match-length]
                                      [--exemplary-index-x]
-                                      [--psth-bin-ms 50] [--psth-pre-s 1.0] [--psth-post-s 1.0]
-                                     [--psth-per-channel] [--psth-channels CH [CH ...]] [--psth-mean-tci]
-                                     [--psth-units counts|fr]
-                                     [--plot-aggregate-psth]
-                                     [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
-                                     [--limit N]
+                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
+                                      [--limit N]
 
 Notes
 -----
@@ -83,18 +79,7 @@ PALETTE = {
 }
 
 
-def plate_color_map(plates: list[int]) -> dict[int, str]:
-    """Assign a unique color per plate using a categorical colormap."""
-    uniq = sorted(set([int(p) for p in plates if p is not None]))
-    n = max(1, len(uniq))
-    try:
-        cmap = plt.get_cmap('tab20')
-    except Exception:
-        cmap = plt.get_cmap('viridis')
-    colors = {p: cmap(i / max(1, n - 1)) for i, p in enumerate(uniq)}
-    # Convert RGBA tuples to hex strings for consistency
-    to_hex = lambda c: '#%02x%02x%02x' % tuple(int(255 * x) for x in c[:3])
-    return {p: to_hex(c) for p, c in colors.items()}
+## (plate_color_map removed — no PSTH plots in this script)
 
 
 def _infer_output_root(cli_root: Optional[Path]) -> Path:
@@ -282,490 +267,40 @@ def compute_post_onset_latency(h5: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def compute_psth_for_pair(
-    h5: Path,
-    bin_ms: float = 50.0,
-    pre_s: float | None = None,
-    post_s: float | None = None,
-) -> pd.DataFrame:
-    """Compute channel-level PSTH (Hz) across baseline+post relative to chem.
-
-    Returns DataFrame columns:
-      [pair_id, round, plate, side, channel, time_s, fr_hz]
-    where `time_s` is the bin center (relative to chem, s).
-    """
-    rows: list[dict] = []
-    pair_id = _pair_id_from_h5(h5)
-    with h5py.File(h5.as_posix(), 'r') as f:
-        round_name = str(f.attrs.get('round', ''))
-        plate = int(f.attrs.get('plate', -1))
-        for side in ('CTZ', 'VEH'):
-            if side not in f:
-                continue
-            grp = f[side]
-            sr_hz = float(grp.attrs.get('sr_hz', 10000.0))
-            # Window bounds
-            (t0b, t1b), (t0a, t1a) = read_group_bounds(grp)
-            chem = t0a  # analysis t0 is chem time
-            # Read vectors per channel
-            chans = sorted({int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_filtered')})
-            # Determine analysis range for PSTH
-            psth_start = chem - float(pre_s) if (pre_s is not None) else min(t0b, t0a)
-            psth_end = chem + float(post_s) if (post_s is not None) else max(t1b, t1a)
-            # Bins
-            bw = float(bin_ms) * 1e-3
-            edges = np.arange(psth_start, psth_end + 1e-9, bw)
-            centers = (edges[:-1] + edges[1:]) * 0.5
-            dcfg = DetectConfig()
-            # Masks for detection: baseline for noise; analysis over the full PSTH window
-            for ch in chans:
-                t = np.asarray(grp[f'ch{ch:02d}_time'][:], dtype=float)
-                yf = np.asarray(grp[f'ch{ch:02d}_filtered'][:], dtype=float)
-                if t.size == 0 or yf.size == 0:
-                    # write zeros for this channel
-                    for c in centers:
-                        rows.append({'pair_id': pair_id, 'round': round_name, 'plate': plate, 'side': side, 'channel': ch, 'time_s': float(c - chem), 'fr_hz': 0.0})
-                    continue
-                mb = (t >= t0b) & (t <= t1b)
-                ma = (t >= psth_start) & (t <= psth_end)
-                st, _, _ = detect_spikes(t, yf, sr_hz, baseline_mask=mb, analysis_mask=ma, cfg=dcfg)
-                # Relative times and binning
-                st_rel = st - chem
-                # Shift to absolute window to bin with edges in absolute seconds
-                # but we can bin on absolute then convert to relative in rows
-                counts, _ = np.histogram(st, bins=edges)
-                fr = counts.astype(float) / bw  # Hz
-                for c, v in zip(centers, fr):
-                    rows.append({'pair_id': pair_id, 'round': round_name, 'plate': plate, 'side': side, 'channel': ch, 'time_s': float(c - chem), 'fr_hz': float(v)})
-    return pd.DataFrame(rows)
+## (PSTH functions removed)
 
 
-def compute_psth_from_exported_timestamps(
-    h5: Path,
-    bin_ms: float = 50.0,
-    pre_s: float = 1.0,
-    post_s: float = 1.0,
-) -> pd.DataFrame:
-    """Compute PSTH strictly from exported timestamps (no re-detection).
-
-    Note: Exported timestamps contain post-analysis spikes. Pre-chem bins
-    will be zero if the exporter did not include baseline spikes.
-
-    Returns DataFrame columns:
-      [pair_id, round, plate, side, channel, time_s, count, fr_hz]
-    where `time_s` is the bin center relative to chem (s), and fr_hz = count / bin_width.
-    """
-    rows: list[dict] = []
-    pair_id = _pair_id_from_h5(h5)
-    with h5py.File(h5.as_posix(), 'r') as f:
-        round_name = str(f.attrs.get('round', ''))
-        plate = int(f.attrs.get('plate', -1))
-        for side in ('CTZ', 'VEH'):
-            if side not in f:
-                continue
-            grp = f[side]
-            # Chem time from analysis_bounds t0
-            (_, _), (t0a, t1a) = read_group_bounds(grp)
-            chem = float(t0a)
-            bw = float(bin_ms) * 1e-3
-            edges = np.arange(chem - float(pre_s), chem + float(post_s) + 1e-12, bw)
-            centers = (edges[:-1] + edges[1:]) * 0.5
-            chans = sorted({int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_timestamps')})
-            for ch in chans:
-                st = np.asarray(grp[f'ch{ch:02d}_timestamps'][:], dtype=float)
-                # Bin exported (typically post) spikes into absolute edges
-                counts, _ = np.histogram(st, bins=edges)
-                for c, cnt in zip(centers, counts.astype(int)):
-                    rows.append({
-                        'pair_id': pair_id,
-                        'round': round_name,
-                        'plate': plate,
-                        'side': side,
-                        'channel': ch,
-                        'time_s': float(c - chem),
-                        'count': int(cnt),
-                        'fr_hz': float(cnt) / bw,
-                    })
-    return pd.DataFrame(rows)
+## (PSTH functions removed)
 
 
-def compute_psth_matrix_from_exported(
-    h5: Path,
-    bin_ms: float = 1.0,
-    pre_s: float = 1.0,
-    post_s: float = 1.0,
-    units: str = 'counts',  # 'counts' or 'fr'
-) -> dict:
-    """Build time-locked PSTH matrices per side using exported timestamps.
-
-    Returns a dict with keys:
-      {
-        'pair_id': str,
-        'round': str,
-        'plate': int,
-        'channels': np.ndarray[int],        # shape (C,)
-        'time_s': np.ndarray[float],        # shape (T,) centers relative to chem
-        'bin_ms': float,
-        'CTZ': np.ndarray[float],           # shape (C, T)
-        'VEH': np.ndarray[float],           # shape (C, T)
-        'units': 'counts' | 'fr',
-      }
-    Missing sides are filled with zeros.
-    """
-    with h5py.File(h5.as_posix(), 'r') as f:
-        pair_id = _pair_id_from_h5(h5)
-        round_name = str(f.attrs.get('round', ''))
-        plate = int(f.attrs.get('plate', -1))
-        # Channels: use union of channels present in timestamps across sides
-        chans_set = set()
-        for side in ('CTZ', 'VEH'):
-            if side in f:
-                grp = f[side]
-                chans_set |= {int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_timestamps')}
-        channels = np.asarray(sorted(chans_set), dtype=int)
-        if channels.size == 0:
-            return {
-                'pair_id': pair_id,
-                'round': round_name,
-                'plate': plate,
-                'channels': channels,
-                'time_s': np.asarray([], dtype=float),
-                'bin_ms': float(bin_ms),
-                'CTZ': np.zeros((0, 0), dtype=float),
-                'VEH': np.zeros((0, 0), dtype=float),
-                'units': units,
-            }
-        # Build common time grid based on chem
-        # Prefer CTZ analysis_bounds for chem; fallback to VEH
-        chem = None
-        for side in ('CTZ', 'VEH'):
-            if side in f:
-                try:
-                    ab = f[side].attrs.get('analysis_bounds')
-                    abj = json.loads(ab) if isinstance(ab, (bytes, bytearray, str)) else {}
-                    chem = float(abj.get('t0', 0.0))
-                    break
-                except Exception:
-                    continue
-        chem = float(chem if chem is not None else 0.0)
-        bw = float(bin_ms) * 1e-3
-        edges = np.arange(chem - float(pre_s), chem + float(post_s) + 1e-12, bw)
-        centers = (edges[:-1] + edges[1:]) * 0.5
-        C = channels.size
-        T = centers.size
-        mats = { 'CTZ': np.zeros((C, T), dtype=float), 'VEH': np.zeros((C, T), dtype=float) }
-        for side in ('CTZ', 'VEH'):
-            if side not in f:
-                continue
-            grp = f[side]
-            # For FR conversion, FR = counts / bin_width
-            scale = 1.0 / bw if units == 'fr' else 1.0
-            for i, ch in enumerate(channels):
-                ds_name = f'ch{int(ch):02d}_timestamps'
-                if ds_name not in grp:
-                    mats[side][i, :] = 0.0
-                    continue
-                st = np.asarray(grp[ds_name][:], dtype=float)
-                counts, _ = np.histogram(st, bins=edges)
-                mats[side][i, :] = counts.astype(float) * scale
-        return {
-            'pair_id': pair_id,
-            'round': round_name,
-            'plate': plate,
-            'channels': channels,
-            'time_s': centers - chem,
-            'bin_ms': float(bin_ms),
-            'CTZ': mats['CTZ'],
-            'VEH': mats['VEH'],
-            'units': units,
-        }
+## (PSTH functions removed)
 
 
-def plot_psth_matrix_pair_1x2(data: dict, out_base: Path) -> None:
-    """Plot 1x2 heatmap: channels × time for CTZ (left) and VEH (right)."""
-    channels = data['channels']
-    time_s = data['time_s']
-    mat_ctz = data['CTZ']
-    mat_veh = data['VEH']
-    units = data.get('units', 'counts')
-    if channels.size == 0 or time_s.size == 0:
-        return
-    # Shared color scale
-    vmax = np.nanpercentile(np.concatenate([mat_ctz.flatten(), mat_veh.flatten()]), 99)
-    vmax = max(1e-9, float(vmax))
-    vmin = 0.0
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
-    def _plot(ax, M, title):
-        im = ax.imshow(M, aspect='auto', origin='lower', interpolation='nearest',
-                       extent=[time_s[0], time_s[-1], int(channels[0]) - 0.5, int(channels[-1]) + 0.5],
-                       vmin=vmin, vmax=vmax, cmap='magma')
-        ax.axvline(0.0, color='w', lw=1.0, ls='--', alpha=0.8)
-        ax.set_title(title)
-        ax.set_xlabel('Time from chem (s)')
-        return im
-    im0 = _plot(axes[0], mat_ctz, 'CTZ')
-    im1 = _plot(axes[1], mat_veh, 'VEH')
-    axes[0].set_ylabel('Channel index')
-    cbar = fig.colorbar(im1, ax=axes.ravel().tolist(), shrink=0.9, pad=0.02)
-    cbar.set_label('Counts/bin' if units == 'counts' else 'FR (Hz)')
-    fig.suptitle(f'PSTH Matrix (channels × time) — {data.get("pair_id","")}, bin={data.get("bin_ms",1.0)} ms')
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
-def plot_psth_matrix_pair_1x2_lines(data: dict, out_base: Path, amplitude: float = 0.8) -> None:
-    """Line version of the matrix: each channel plotted as a thin line offset by channel index.
-
-    For each side, draws all channels' PSTHs as lines with per-channel normalization,
-    offset so that the baseline sits at the channel index. Chem is at 0 s.
-    """
-    channels = data['channels']
-    time_s = data['time_s']
-    mat_ctz = data['CTZ']
-    mat_veh = data['VEH']
-    units = data.get('units', 'counts')
-    if channels.size == 0 or time_s.size == 0:
-        return
-    ymin = int(np.min(channels)) - 0.5
-    ymax = int(np.max(channels)) + 0.5
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
-    def _plot(ax, M, title):
-        for i, ch in enumerate(channels):
-            m = M[i, :]
-            if not np.any(np.isfinite(m)):
-                continue
-            vmax = np.nanmax(m)
-            if vmax <= 0:
-                y = np.full_like(m, float(ch))
-            else:
-                y = float(ch) + amplitude * (m / vmax)
-            ax.plot(time_s, y, color='black', lw=0.5, alpha=0.9)
-        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
-        ax.set_title(title)
-        ax.set_xlabel('Time from chem (s)')
-        ax.set_ylim([ymin, ymax])
-        ax.grid(True, axis='x', alpha=0.2)
-    _plot(axes[0], mat_ctz, 'CTZ')
-    _plot(axes[1], mat_veh, 'VEH')
-    axes[0].set_ylabel('Channel index')
-    # Use sparse yticks for readability
-    try:
-        ticks = list(range(int(np.min(channels)), int(np.max(channels)) + 1))
-        # thin ticks to ~every 5
-        step = max(1, int(round(len(ticks) / 12)))
-        axes[0].set_yticks(ticks[::step])
-    except Exception:
-        pass
-    fig.suptitle(f'PSTH Matrix — Line Version (channels as lines) — {data.get("pair_id","")}, bin={data.get("bin_ms",1.0)} ms, units={units}')
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
-def aggregate_psth_pair_mean(psth_df: pd.DataFrame) -> pd.DataFrame:
-    """Average PSTH across channels per (pair, side, time)."""
-    if psth_df.empty:
-        return psth_df
-    grp = psth_df.groupby(['pair_id', 'round', 'plate', 'side', 'time_s'], as_index=False)['fr_hz'].mean()
-    grp = grp.rename(columns={'fr_hz': 'fr_hz_mean_ch'})
-    return grp
+## (PSTH aggregation removed)
 
 
-def plot_psth_by_plate_lines_median(pair_psth: pd.DataFrame, side: str, out_base: Path) -> None:
-    """Plot per-pair PSTH traces colored by plate, with median overlay."""
-    sub = pair_psth[pair_psth['side'] == side].copy()
-    if sub.empty:
-        return
-    plates = [int(p) for p in sub['plate'].unique() if pd.notna(p)]
-    cmap = plate_color_map(plates)
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    # Individual pair traces
-    for (pair_id, plate), df in sub.groupby(['pair_id', 'plate']):
-        df = df.sort_values('time_s')
-        color = cmap.get(int(plate), '#777777')
-        ax.plot(df['time_s'].values, df['fr_hz_mean_ch'].values, color=color, lw=0.8, alpha=0.7)
-    # Median overlay across pairs per time bin
-    med = sub.groupby('time_s')['fr_hz_mean_ch'].median().reset_index()
-    ax.plot(med['time_s'].values, med['fr_hz_mean_ch'].values, color='black', lw=2.0, label='Median')
-    # Chem marker at 0
-    ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
-    ax.set_title(f'PSTH — {side} (per pair, colored by plate)')
-    ax.set_xlabel('Time from chem (s)')
-    ax.set_ylabel('FR (Hz)')
-    ax.grid(True, alpha=0.25)
-    # Simple legend mapping (limit entries)
-    # Build proxy handles for up to 10 plates
-    from matplotlib.lines import Line2D  # type: ignore
-    uniq = sorted(cmap.keys())
-    handles = [Line2D([0], [0], color=cmap[p], lw=2, label=f'Plate {p}') for p in uniq[:10]]
-    if handles:
-        ax.legend(handles=handles + [Line2D([0],[0], color='black', lw=2, label='Median')], frameon=False, fontsize=8)
-    fig.tight_layout()
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
-def plot_psth_median_sem(pair_psth: pd.DataFrame, side: str, out_base: Path) -> None:
-    """Plot median PSTH with shaded SEM across pairs for a given side."""
-    sub = pair_psth[pair_psth['side'] == side].copy()
-    if sub.empty:
-        return
-    # For SEM, we need values per pair per bin
-    # Pivot: index=time_s, columns=pair_id, values=fr_hz_mean_ch
-    pivot = sub.pivot_table(index='time_s', columns='pair_id', values='fr_hz_mean_ch', aggfunc='mean')
-    pivot = pivot.sort_index()
-    time = pivot.index.values.astype(float)
-    vals = pivot.values  # shape (T, Npairs)
-    med = np.nanmedian(vals, axis=1)
-    mean = np.nanmean(vals, axis=1)
-    std = np.nanstd(vals, axis=1, ddof=1)
-    n = np.sum(np.isfinite(vals), axis=1).astype(float)
-    sem = np.divide(std, np.sqrt(np.maximum(1.0, n)), out=np.zeros_like(std), where=n > 0)
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    # Median line and SEM shading
-    ax.plot(time, med, color=PALETTE.get(side, '#333333'), lw=2.0, label='Median')
-    ax.fill_between(time, med - sem, med + sem, color=PALETTE.get(side, '#333333'), alpha=0.25, label='SEM')
-    ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
-    ax.set_title(f'PSTH — {side} (median ± SEM across pairs)')
-    ax.set_xlabel('Time from chem (s)')
-    ax.set_ylabel('FR (Hz)')
-    ax.grid(True, alpha=0.25)
-    ax.legend(frameon=False, fontsize=8)
-    fig.tight_layout()
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
-def plot_psth_per_channel_1x2_lines_median(psth_channel_df: pd.DataFrame, channel: int, out_base: Path, value_col: str = 'fr_hz', ylabel: str = 'FR (Hz)') -> None:
-    """For a given channel index, plot CTZ vs VEH in a 1x2 figure.
-
-    Left: CTZ traces per pair colored by plate + median overlay.
-    Right: VEH traces per pair colored by plate + median overlay.
-    """
-    sub = psth_channel_df[psth_channel_df['channel'] == int(channel)].copy()
-    if sub.empty:
-        return
-    plates = [int(p) for p in sub['plate'].unique() if pd.notna(p)]
-    cmap = plate_color_map(plates)
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4.2), sharey=True)
-    for ax, side in zip(axes, ('CTZ', 'VEH')):
-        s = sub[sub['side'] == side]
-        if s.empty:
-            ax.set_visible(False)
-            continue
-        for (pair_id, plate), df in s.groupby(['pair_id', 'plate']):
-            df = df.sort_values('time_s')
-            color = cmap.get(int(plate), '#777777')
-            ax.plot(df['time_s'].values, df[value_col].values, color=color, lw=0.8, alpha=0.7)
-        med = s.groupby('time_s')[value_col].median().reset_index()
-        ax.plot(med['time_s'].values, med[value_col].values, color='black', lw=2.0, label='Median')
-        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
-        ax.set_title(f'{side}')
-        ax.grid(True, alpha=0.25)
-    axes[0].set_ylabel(ylabel)
-    axes[0].set_xlabel('Time from chem (s)')
-    axes[1].set_xlabel('Time from chem (s)')
-    fig.suptitle(f'PSTH per channel — ch{int(channel):02d} (lines by plate + median)')
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
-def plot_psth_per_channel_1x2_median_sem(psth_channel_df: pd.DataFrame, channel: int, out_base: Path, value_col: str = 'fr_hz', ylabel: str = 'FR (Hz)') -> None:
-    """For a given channel index, 1x2 CTZ vs VEH with median ± SEM across pairs."""
-    sub = psth_channel_df[psth_channel_df['channel'] == int(channel)].copy()
-    if sub.empty:
-        return
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4.2), sharey=True)
-    for ax, side in zip(axes, ('CTZ', 'VEH')):
-        s = sub[sub['side'] == side]
-        if s.empty:
-            ax.set_visible(False)
-            continue
-        pivot = s.pivot_table(index='time_s', columns='pair_id', values=value_col, aggfunc='mean').sort_index()
-        t = pivot.index.values.astype(float)
-        vals = pivot.values
-        med = np.nanmedian(vals, axis=1)
-        std = np.nanstd(vals, axis=1, ddof=1)
-        n = np.sum(np.isfinite(vals), axis=1).astype(float)
-        sem = np.divide(std, np.sqrt(np.maximum(1.0, n)), out=np.zeros_like(std), where=n > 0)
-        color = PALETTE.get(side, '#333333')
-        ax.plot(t, med, color=color, lw=2.0, label='Median')
-        ax.fill_between(t, med - sem, med + sem, color=color, alpha=0.25, label='SEM')
-        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
-        ax.set_title(f'{side}')
-        ax.grid(True, alpha=0.25)
-    axes[0].set_ylabel(ylabel)
-    axes[0].set_xlabel('Time from chem (s)')
-    axes[1].set_xlabel('Time from chem (s)')
-    fig.suptitle(f'PSTH per channel — ch{int(channel):02d} (median ± SEM across pairs)')
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
-def _t_critical(alpha: float, df: np.ndarray) -> np.ndarray:
-    """Return t critical values elementwise for given degrees of freedom.
-
-    Falls back to normal approximation if SciPy is unavailable.
-    """
-    try:
-        from scipy.stats import t as student_t  # type: ignore
-
-        return student_t.ppf(1.0 - alpha / 2.0, df)
-    except Exception:
-        # Normal approx
-        return np.full_like(df, 1.96, dtype=float)
+## (PSTH helpers removed)
 
 
-def plot_psth_per_channel_1x2_mean_tci(
-    psth_channel_df: pd.DataFrame,
-    channel: int,
-    out_base: Path,
-    alpha: float = 0.05,
-) -> None:
-    """1x2 CTZ vs VEH, mean ± t-based CI across pairs for a given channel."""
-    sub = psth_channel_df[psth_channel_df['channel'] == int(channel)].copy()
-    if sub.empty:
-        return
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4.2), sharey=True)
-    for ax, side in zip(axes, ('CTZ', 'VEH')):
-        s = sub[sub['side'] == side]
-        if s.empty:
-            ax.set_visible(False)
-            continue
-        # mean ± t-CI always uses FR to keep units consistent
-        pivot = s.pivot_table(index='time_s', columns='pair_id', values='fr_hz', aggfunc='mean').sort_index()
-        t = pivot.index.values.astype(float)
-        vals = pivot.values
-        mean = np.nanmean(vals, axis=1)
-        std = np.nanstd(vals, axis=1, ddof=1)
-        n = np.sum(np.isfinite(vals), axis=1).astype(float)
-        sem = np.divide(std, np.sqrt(np.maximum(1.0, n)), out=np.zeros_like(std), where=n > 0)
-        df = np.maximum(1.0, n - 1.0)
-        tcrit = _t_critical(alpha, df)
-        half = tcrit * sem
-        color = PALETTE.get(side, '#333333')
-        ax.plot(t, mean, color=color, lw=2.0, label='Mean')
-        ax.fill_between(t, mean - half, mean + half, color=color, alpha=0.25, label=f'{int((1-alpha)*100)}% t-CI')
-        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
-        ax.set_title(f'{side}')
-        ax.grid(True, alpha=0.25)
-    axes[0].set_ylabel('FR (Hz)')
-    axes[0].set_xlabel('Time from chem (s)')
-    axes[1].set_xlabel('Time from chem (s)')
-    fig.suptitle(f'PSTH per channel — ch{int(channel):02d} (mean ± t-CI across pairs)')
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
+## (PSTH plotting removed)
 
 
 def pick_example_pair_channel(fr_df: pd.DataFrame, prefer_side: str | None = None) -> tuple[str, int]:
@@ -857,7 +392,6 @@ def plot_exemplary_voltage(h5: Path, channel: int, out_base: Path) -> None:
                 ax.set_visible(False)
                 continue
             grp = f[side]
-            sr_hz = float(grp.attrs.get('sr_hz', 10000.0))
             t = np.asarray(grp.get(f'ch{channel:02d}_time', []), dtype=float)
             yr = np.asarray(grp.get(f'ch{channel:02d}_raw', []), dtype=float)
             yf = np.asarray(grp.get(f'ch{channel:02d}_filtered', []), dtype=float)
@@ -890,14 +424,7 @@ class CLIArgs:
     isi_thr_ms: float
     min_burst_ms: float
     min_spikes: int
-    psth_bin_ms: float
-    psth_pre_s: float
-    psth_post_s: float
-    psth_per_channel: bool
-    psth_channels: Optional[list[int]]
-    psth_mean_tci: bool
-    psth_units: str
-    plot_aggregate_psth: bool
+    # (PSTH args removed)
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
@@ -913,15 +440,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--isi-thr-ms', type=float, default=100.0, help='ISI threshold to link spikes into a burst (ms)')
     p.add_argument('--min-burst-ms', type=float, default=100.0, help='Analyze bursts with duration >= this (ms)')
     p.add_argument('--min-spikes', type=int, default=3, help='Minimum spikes per burst')
-    # PSTH params
-    p.add_argument('--psth-bin-ms', type=float, default=1.0, help='PSTH bin width (ms); 1 ms for instantaneous PSTH')
-    p.add_argument('--psth-pre-s', type=float, default=1.0, help='Pre-chem window for PSTH (s)')
-    p.add_argument('--psth-post-s', type=float, default=1.0, help='Post-chem window for PSTH (s)')
-    p.add_argument('--psth-per-channel', action='store_true', help='Generate 1x2 CTZ vs VEH PSTH plots per channel')
-    p.add_argument('--psth-channels', type=int, nargs='+', default=None, help='Specific channel indices to plot PSTH per channel (defaults to example channel)')
-    p.add_argument('--psth-mean-tci', action='store_true', help='For per-channel PSTH, also plot mean ± t-based CI (1x2) across pairs')
-    p.add_argument('--psth-units', choices=['counts','fr'], default='counts', help='PSTH units for per-channel plots (counts or FR)')
-    p.add_argument('--plot-aggregate-psth', action='store_true', help='Also plot aggregate per-side PSTH across pairs (lines+median and median±SEM)')
+    # (PSTH params removed)
     a = p.parse_args(argv)
     return CLIArgs(
         output_root=a.output_root,
@@ -935,14 +454,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
         isi_thr_ms=float(a.isi_thr_ms),
         min_burst_ms=float(a.min_burst_ms),
         min_spikes=int(a.min_spikes),
-        psth_bin_ms=float(a.psth_bin_ms),
-        psth_pre_s=float(a.psth_pre_s),
-        psth_post_s=float(a.psth_post_s),
-        psth_per_channel=bool(a.psth_per_channel),
-        psth_channels=list(a.psth_channels) if a.psth_channels is not None else None,
-        psth_mean_tci=bool(a.psth_mean_tci),
-        psth_units=str(a.psth_units),
-        plot_aggregate_psth=bool(a.plot_aggregate_psth),
+        # (PSTH args removed)
     )
 
 
@@ -1203,122 +715,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ex_base = save_dir / f"exemplary_voltage__{sel_h5.stem}__ch{int(example_channel):02d}"
     _plot_exemplary_with_opts(sel_h5, int(example_channel), ex_base, args.example_match_length, args.exemplary_index_x)
 
-    # ---------- PSTH computation and plotting ----------
-    print('[analysis] Computing PSTHs from exported timestamps (per channel, time-locked) ...')
-    psth_exp_frames: list[pd.DataFrame] = []
-    for h5 in pair_h5:
-        try:
-            dfp = compute_psth_from_exported_timestamps(h5, bin_ms=args.psth_bin_ms, pre_s=args.psth_pre_s, post_s=args.psth_post_s)
-            if not dfp.empty:
-                psth_exp_frames.append(dfp)
-        except Exception as e:
-            print(f"[analysis] PSTH(exported) error: {h5.name} -> {e}")
-    psth_exp_all = pd.concat(psth_exp_frames, ignore_index=True) if psth_exp_frames else pd.DataFrame(columns=['pair_id','round','plate','side','channel','time_s','count','fr_hz'])
-    psth_exp_all.to_csv(save_dir / 'psth_from_exported_channel.csv', index=False)
-    # Optional aggregate PSTH across pairs (disabled by default)
-    if args.plot_aggregate_psth:
-        psth_pair = aggregate_psth_pair_mean(psth_exp_all.rename(columns={'fr_hz':'fr_hz'})) if not psth_exp_all.empty else pd.DataFrame(columns=['pair_id','round','plate','side','time_s','fr_hz_mean_ch'])
-        psth_pair.to_csv(save_dir / 'psth_pair_mean.csv', index=False)
-        # Save plate color map for reproducibility
-        if not psth_pair.empty:
-            plates = sorted({int(p) for p in psth_pair['plate'].unique() if pd.notna(p)})
-            cmap = plate_color_map(plates)
-            pd.DataFrame({'plate': list(cmap.keys()), 'color_hex': list(cmap.values())}).to_csv(save_dir / 'psth_plate_colors.csv', index=False)
-        # Plots per side
-        for side in ('CTZ', 'VEH'):
-            plot_psth_by_plate_lines_median(psth_pair, side, save_dir / f'psth_{side.lower()}_by_plate_lines_median')
-            plot_psth_median_sem(psth_pair, side, save_dir / f'psth_{side.lower()}_median_sem')
-
-    # Per-pair (recording-level) PSTH matrices (channels × time), time-locked, using exported timestamps
-    print('[analysis] Building per-pair PSTH matrices (channels × time) ...')
-    for h5 in pair_h5:
-        try:
-            pm = compute_psth_matrix_from_exported(
-                h5,
-                bin_ms=args.psth_bin_ms,
-                pre_s=args.psth_pre_s,
-                post_s=args.psth_post_s,
-                units=args.psth_units,
-            )
-            base = save_dir / f"psth_matrix__{h5.stem}__{args.psth_bin_ms:g}ms"
-            # Save arrays
-            np.savez_compressed(
-                base.with_suffix('.npz').as_posix(),
-                pair_id=pm['pair_id'],
-                round=pm['round'],
-                plate=pm['plate'],
-                channels=pm['channels'],
-                time_s=pm['time_s'],
-                bin_ms=pm['bin_ms'],
-                CTZ=pm['CTZ'],
-                VEH=pm['VEH'],
-                units=pm['units'],
-            )
-            # Plot 1x2 heatmap and 1x2 line version
-            plot_psth_matrix_pair_1x2(pm, base)
-            plot_psth_matrix_pair_1x2_lines(pm, base.with_name(base.name + '_lines'))
-        except Exception as e:
-            print(f"[analysis] PSTH matrix error: {h5.name} -> {e}")
-
-    # Optional: per-channel 1x2 CTZ vs VEH PSTH — using exported timestamps
-    if args.psth_per_channel and not psth_exp_all.empty:
-        if args.psth_channels is not None and len(args.psth_channels) > 0:
-            chans_to_plot = [int(c) for c in args.psth_channels]
-        elif example_channel is not None:
-            chans_to_plot = [int(example_channel)]
-        else:
-            # Fallback to channel 0 if unknown
-            chans_to_plot = [0]
-        for ch in chans_to_plot:
-            base = save_dir / f'psth_per_channel_ch{int(ch):02d}'
-            try:
-                # Save time-locked arrays (pairs x bins) for counts and FR
-                try:
-                    # Use a consistent time grid from any subset
-                    times = sorted(psth_exp_all['time_s'].unique().tolist())
-                    times_arr = np.asarray(times, dtype=float)
-                    # Build aligned matrices per side
-                    pair_ids = sorted(psth_exp_all['pair_id'].unique().tolist())
-                    # Plate per pair (from any side entry)
-                    plate_map = psth_exp_all.drop_duplicates(subset=['pair_id'])[['pair_id','plate']].set_index('pair_id')['plate'].to_dict()
-                    def build_matrix(side: str, value_col: str) -> np.ndarray:
-                        mat = np.full((len(pair_ids), len(times_arr)), np.nan, dtype=float)
-                        subc = psth_exp_all[(psth_exp_all['channel'] == int(ch)) & (psth_exp_all['side'] == side)]
-                        for r, pid in enumerate(pair_ids):
-                            d = subc[subc['pair_id'] == pid]
-                            if d.empty:
-                                continue
-                            # Map time -> value
-                            m = d.set_index('time_s')[value_col].to_dict()
-                            vals = [float(m.get(t, np.nan)) for t in times]
-                            mat[r, :] = np.asarray(vals, dtype=float)
-                        return mat
-                    M_ctz_counts = build_matrix('CTZ', 'count')
-                    M_veh_counts = build_matrix('VEH', 'count')
-                    M_ctz_fr = build_matrix('CTZ', 'fr_hz')
-                    M_veh_fr = build_matrix('VEH', 'fr_hz')
-                    np.savez_compressed(
-                        base.with_name(base.name + '_arrays').as_posix(),
-                        time_s=times_arr,
-                        pair_ids=np.asarray(pair_ids, dtype=object),
-                        plates=np.asarray([plate_map.get(pid, -1) for pid in pair_ids], dtype=int),
-                        CTZ_counts=M_ctz_counts,
-                        VEH_counts=M_veh_counts,
-                        CTZ_fr=M_ctz_fr,
-                        VEH_fr=M_veh_fr,
-                    )
-                except Exception as e_npz:
-                    print(f"[analysis] PSTH arrays save error (ch {ch}): {e_npz}")
-                # New: per-channel mean ± t-CI (requested)
-                if args.psth_mean_tci:
-                    plot_psth_per_channel_1x2_mean_tci(psth_exp_all, ch, base.with_name(base.name + '_mean_tci'))
-                # Existing variants for context/QA
-                val_col = 'count' if args.psth_units == 'counts' else 'fr_hz'
-                ylabel = 'Counts/bin' if args.psth_units == 'counts' else 'FR (Hz)'
-                plot_psth_per_channel_1x2_lines_median(psth_exp_all, ch, base.with_name(base.name + f'_{args.psth_units}_lines_median'), value_col=val_col, ylabel=ylabel)
-                plot_psth_per_channel_1x2_median_sem(psth_exp_all, ch, base.with_name(base.name + f'_{args.psth_units}_median_sem'), value_col=val_col, ylabel=ylabel)
-            except Exception as e:
-                print(f"[analysis] PSTH per-channel plot error (ch {ch}): {e}")
+    # (All PSTH computation/plotting removed per request)
 
     print(f"[analysis] Wrote outputs to: {save_dir}")
     return 0
