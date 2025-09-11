@@ -48,3 +48,12 @@ Per‑Pair Grids (NxN)
   - From pooled NPZ (or auto‑latest): `python -m scripts.plot_psth_per_pair_grid [--group-npz PATH]`
   - Options: `--sides CTZ VEH` (default both), `--data normalized|raw|counts` (default normalized)
   - Writes `psth_grid__<pair>__<side>__<data>.(svg|pdf)` next to the NPZ
+
+Late‑Phase Amplification (Box Plot)
+- Compare normalized post‑phase maxima between CTZ and VEH (nonparametric test):
+  - `python -m scripts.analyze_psth_post_vs_early`
+  - Options:
+    - `--group-npz PATH` (default: latest pooled NPZ)
+    - `--post-start S` (s; default: end of early window per pair/side)
+    - `--post-dur D` (s; default: to end of trace)
+  - Writes: `__postmax_boxplot.(svg|pdf)` and `__postmax_stats.csv`
