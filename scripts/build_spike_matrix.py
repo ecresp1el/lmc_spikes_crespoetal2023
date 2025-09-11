@@ -99,6 +99,33 @@ def _read_group_bounds(grp: h5py.Group) -> tuple[tuple[float, float], tuple[floa
     return b, a
 
 
+def _json_safe(x):
+    """Convert numpy/h5 types to JSON-serializable Python types."""
+    import numpy as _np
+    # numpy scalar types
+    if isinstance(x, (_np.integer,)):
+        return int(x)
+    if isinstance(x, (_np.floating,)):
+        return float(x)
+    if isinstance(x, (_np.bool_, bool)):
+        return bool(x)
+    # bytes to utf-8 string
+    if isinstance(x, (bytes, bytearray)):
+        try:
+            return x.decode('utf-8')
+        except Exception:
+            return str(x)
+    # numpy arrays -> lists
+    if isinstance(x, _np.ndarray):
+        return _json_safe(x.tolist())
+    # containers
+    if isinstance(x, (list, tuple)):
+        return [_json_safe(v) for v in x]
+    if isinstance(x, dict):
+        return {str(k): _json_safe(v) for k, v in x.items()}
+    return x
+
+
 def _chem_time_for_side(f: h5py.File, side: str) -> float:
     # Preferred: group analysis_bounds.t0
     if side in f:
@@ -133,7 +160,7 @@ def build_binary_spike_matrix(
         pair_id = h5_path.stem
         round_name = str(f.attrs.get('round', ''))
         plate = int(f.attrs.get('plate', -1))
-        meta_root = {k: (str(v) if isinstance(v, bytes) else v) for k, v in f.attrs.items()}
+        meta_root = {str(k): _json_safe(v) for k, v in f.attrs.items()}
         for side in sides:
             if side not in f:
                 continue
@@ -158,15 +185,15 @@ def build_binary_spike_matrix(
             try:
                 _, ab = _read_group_bounds(grp)
                 group_meta = {
-                    'sr_hz': float(grp.attrs.get('sr_hz', 0.0)),
+                    'sr_hz': _json_safe(grp.attrs.get('sr_hz', 0.0)),
                     'analysis_bounds': {'t0': float(ab[0]), 't1': float(ab[1])},
                 }
             except Exception:
-                group_meta = {'sr_hz': float(grp.attrs.get('sr_hz', 0.0))}
+                group_meta = {'sr_hz': _json_safe(grp.attrs.get('sr_hz', 0.0))}
             meta = {
                 'pair_id': pair_id,
                 'round': round_name,
-                'plate': plate,
+                'plate': _json_safe(plate),
                 'side': side,
                 'root_attrs': meta_root,
                 'group_meta': group_meta,
@@ -183,7 +210,7 @@ def build_binary_spike_matrix(
                 'channels': np.asarray(chans, dtype=int),
                 'time_s': centers_rel.astype(float),
                 'binary': M,
-                'meta_json': json.dumps(meta),
+                'meta_json': json.dumps(_json_safe(meta)),
             })
     return out
 
@@ -292,4 +319,3 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
