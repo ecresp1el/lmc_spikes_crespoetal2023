@@ -572,6 +572,11 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         bv_x, bv_y = xv, yv
         spike_txt = ""
         filt_txt = ""
+        # Axis transform for bottom panels (optionally center at chem)
+        def axis_x(x: np.ndarray, chem_ts: Optional[float]) -> np.ndarray:
+            if center_chk.isChecked() and (chem_ts is not None):
+                return (x - float(chem_ts))
+            return x
         # Compute raw window bounds in seconds for each side (used for filtering too)
         def _raw_window(chem_ts: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
             if chem_chk.isChecked() and chem_ts is not None:
@@ -648,11 +653,6 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                 except Exception:
                     pass
                 filt_txt = f"Filt CTZ:{'ok' if fy_c.size else '—'} VEH:{'ok' if fy_v.size else '—'}"
-        # Axis transform for bottom panels (optionally center at chem)
-        def axis_x(x: np.ndarray, chem_ts: Optional[float]) -> np.ndarray:
-            if center_chk.isChecked() and (chem_ts is not None):
-                return (x - float(chem_ts))
-            return x
                 if bottom_mode == "Filtered":
                     # Overlay raw (faint) vs filtered (bold)
                     overlay_ctz.setData(axis_x(xr_c, args.chem_ctz_s), yr_c)
