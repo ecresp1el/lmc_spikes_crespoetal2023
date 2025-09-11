@@ -22,6 +22,7 @@ Usage
                                      [--example-pair PAIR_ID] [--example-channel CH]
                                      [--example-match-length]
                                      [--exemplary-index-x]
+                                     [--psth-bin-ms 50] [--psth-pre-s 1.0] [--psth-post-s 1.0]
                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
                                      [--limit N]
 
@@ -77,6 +78,20 @@ PALETTE = {
     'CTX': '#0C7BDC',  # alias
     'VEH': '#E76F51',  # orange-red
 }
+
+
+def plate_color_map(plates: list[int]) -> dict[int, str]:
+    """Assign a unique color per plate using a categorical colormap."""
+    uniq = sorted(set([int(p) for p in plates if p is not None]))
+    n = max(1, len(uniq))
+    try:
+        cmap = plt.get_cmap('tab20')
+    except Exception:
+        cmap = plt.get_cmap('viridis')
+    colors = {p: cmap(i / max(1, n - 1)) for i, p in enumerate(uniq)}
+    # Convert RGBA tuples to hex strings for consistency
+    to_hex = lambda c: '#%02x%02x%02x' % tuple(int(255 * x) for x in c[:3])
+    return {p: to_hex(c) for p, c in colors.items()}
 
 
 def _infer_output_root(cli_root: Optional[Path]) -> Path:
@@ -264,6 +279,140 @@ def compute_post_onset_latency(h5: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def compute_psth_for_pair(
+    h5: Path,
+    bin_ms: float = 50.0,
+    pre_s: float | None = None,
+    post_s: float | None = None,
+) -> pd.DataFrame:
+    """Compute channel-level PSTH (Hz) across baseline+post relative to chem.
+
+    Returns DataFrame columns:
+      [pair_id, round, plate, side, channel, time_s, fr_hz]
+    where `time_s` is the bin center (relative to chem, s).
+    """
+    rows: list[dict] = []
+    pair_id = _pair_id_from_h5(h5)
+    with h5py.File(h5.as_posix(), 'r') as f:
+        round_name = str(f.attrs.get('round', ''))
+        plate = int(f.attrs.get('plate', -1))
+        for side in ('CTZ', 'VEH'):
+            if side not in f:
+                continue
+            grp = f[side]
+            sr_hz = float(grp.attrs.get('sr_hz', 10000.0))
+            # Window bounds
+            (t0b, t1b), (t0a, t1a) = read_group_bounds(grp)
+            chem = t0a  # analysis t0 is chem time
+            # Read vectors per channel
+            chans = sorted({int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_filtered')})
+            # Determine analysis range for PSTH
+            psth_start = chem - float(pre_s) if (pre_s is not None) else min(t0b, t0a)
+            psth_end = chem + float(post_s) if (post_s is not None) else max(t1b, t1a)
+            # Bins
+            bw = float(bin_ms) * 1e-3
+            edges = np.arange(psth_start, psth_end + 1e-9, bw)
+            centers = (edges[:-1] + edges[1:]) * 0.5
+            dcfg = DetectConfig()
+            # Masks for detection: baseline for noise; analysis over the full PSTH window
+            for ch in chans:
+                t = np.asarray(grp[f'ch{ch:02d}_time'][:], dtype=float)
+                yf = np.asarray(grp[f'ch{ch:02d}_filtered'][:], dtype=float)
+                if t.size == 0 or yf.size == 0:
+                    # write zeros for this channel
+                    for c in centers:
+                        rows.append({'pair_id': pair_id, 'round': round_name, 'plate': plate, 'side': side, 'channel': ch, 'time_s': float(c - chem), 'fr_hz': 0.0})
+                    continue
+                mb = (t >= t0b) & (t <= t1b)
+                ma = (t >= psth_start) & (t <= psth_end)
+                st, _, _ = detect_spikes(t, yf, sr_hz, baseline_mask=mb, analysis_mask=ma, cfg=dcfg)
+                # Relative times and binning
+                st_rel = st - chem
+                # Shift to absolute window to bin with edges in absolute seconds
+                # but we can bin on absolute then convert to relative in rows
+                counts, _ = np.histogram(st, bins=edges)
+                fr = counts.astype(float) / bw  # Hz
+                for c, v in zip(centers, fr):
+                    rows.append({'pair_id': pair_id, 'round': round_name, 'plate': plate, 'side': side, 'channel': ch, 'time_s': float(c - chem), 'fr_hz': float(v)})
+    return pd.DataFrame(rows)
+
+
+def aggregate_psth_pair_mean(psth_df: pd.DataFrame) -> pd.DataFrame:
+    """Average PSTH across channels per (pair, side, time)."""
+    if psth_df.empty:
+        return psth_df
+    grp = psth_df.groupby(['pair_id', 'round', 'plate', 'side', 'time_s'], as_index=False)['fr_hz'].mean()
+    grp = grp.rename(columns={'fr_hz': 'fr_hz_mean_ch'})
+    return grp
+
+
+def plot_psth_by_plate_lines_median(pair_psth: pd.DataFrame, side: str, out_base: Path) -> None:
+    """Plot per-pair PSTH traces colored by plate, with median overlay."""
+    sub = pair_psth[pair_psth['side'] == side].copy()
+    if sub.empty:
+        return
+    plates = [int(p) for p in sub['plate'].unique() if pd.notna(p)]
+    cmap = plate_color_map(plates)
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    # Individual pair traces
+    for (pair_id, plate), df in sub.groupby(['pair_id', 'plate']):
+        df = df.sort_values('time_s')
+        color = cmap.get(int(plate), '#777777')
+        ax.plot(df['time_s'].values, df['fr_hz_mean_ch'].values, color=color, lw=0.8, alpha=0.7)
+    # Median overlay across pairs per time bin
+    med = sub.groupby('time_s')['fr_hz_mean_ch'].median().reset_index()
+    ax.plot(med['time_s'].values, med['fr_hz_mean_ch'].values, color='black', lw=2.0, label='Median')
+    # Chem marker at 0
+    ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
+    ax.set_title(f'PSTH — {side} (per pair, colored by plate)')
+    ax.set_xlabel('Time from chem (s)')
+    ax.set_ylabel('FR (Hz)')
+    ax.grid(True, alpha=0.25)
+    # Simple legend mapping (limit entries)
+    # Build proxy handles for up to 10 plates
+    from matplotlib.lines import Line2D  # type: ignore
+    uniq = sorted(cmap.keys())
+    handles = [Line2D([0], [0], color=cmap[p], lw=2, label=f'Plate {p}') for p in uniq[:10]]
+    if handles:
+        ax.legend(handles=handles + [Line2D([0],[0], color='black', lw=2, label='Median')], frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_psth_median_sem(pair_psth: pd.DataFrame, side: str, out_base: Path) -> None:
+    """Plot median PSTH with shaded SEM across pairs for a given side."""
+    sub = pair_psth[pair_psth['side'] == side].copy()
+    if sub.empty:
+        return
+    # For SEM, we need values per pair per bin
+    # Pivot: index=time_s, columns=pair_id, values=fr_hz_mean_ch
+    pivot = sub.pivot_table(index='time_s', columns='pair_id', values='fr_hz_mean_ch', aggfunc='mean')
+    pivot = pivot.sort_index()
+    time = pivot.index.values.astype(float)
+    vals = pivot.values  # shape (T, Npairs)
+    med = np.nanmedian(vals, axis=1)
+    mean = np.nanmean(vals, axis=1)
+    std = np.nanstd(vals, axis=1, ddof=1)
+    n = np.sum(np.isfinite(vals), axis=1).astype(float)
+    sem = np.divide(std, np.sqrt(np.maximum(1.0, n)), out=np.zeros_like(std), where=n > 0)
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    # Median line and SEM shading
+    ax.plot(time, med, color=PALETTE.get(side, '#333333'), lw=2.0, label='Median')
+    ax.fill_between(time, med - sem, med + sem, color=PALETTE.get(side, '#333333'), alpha=0.25, label='SEM')
+    ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
+    ax.set_title(f'PSTH — {side} (median ± SEM across pairs)')
+    ax.set_xlabel('Time from chem (s)')
+    ax.set_ylabel('FR (Hz)')
+    ax.grid(True, alpha=0.25)
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
 def pick_example_pair_channel(fr_df: pd.DataFrame, prefer_side: str | None = None) -> tuple[str, int]:
     """Pick a pair/channel heuristically: max post FR across both sides.
 
@@ -386,6 +535,9 @@ class CLIArgs:
     isi_thr_ms: float
     min_burst_ms: float
     min_spikes: int
+    psth_bin_ms: float
+    psth_pre_s: float
+    psth_post_s: float
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
@@ -401,6 +553,10 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--isi-thr-ms', type=float, default=100.0, help='ISI threshold to link spikes into a burst (ms)')
     p.add_argument('--min-burst-ms', type=float, default=100.0, help='Analyze bursts with duration >= this (ms)')
     p.add_argument('--min-spikes', type=int, default=3, help='Minimum spikes per burst')
+    # PSTH params
+    p.add_argument('--psth-bin-ms', type=float, default=50.0, help='PSTH bin width (ms)')
+    p.add_argument('--psth-pre-s', type=float, default=1.0, help='Pre-chem window for PSTH (s)')
+    p.add_argument('--psth-post-s', type=float, default=1.0, help='Post-chem window for PSTH (s)')
     a = p.parse_args(argv)
     return CLIArgs(
         output_root=a.output_root,
@@ -414,6 +570,9 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
         isi_thr_ms=float(a.isi_thr_ms),
         min_burst_ms=float(a.min_burst_ms),
         min_spikes=int(a.min_spikes),
+        psth_bin_ms=float(a.psth_bin_ms),
+        psth_pre_s=float(a.psth_pre_s),
+        psth_post_s=float(a.psth_post_s),
     )
 
 
@@ -673,6 +832,32 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     ex_base = save_dir / f"exemplary_voltage__{sel_h5.stem}__ch{int(example_channel):02d}"
     _plot_exemplary_with_opts(sel_h5, int(example_channel), ex_base, args.example_match_length, args.exemplary_index_x)
+
+    # ---------- PSTH computation and plotting ----------
+    print('[analysis] Computing PSTHs (channel-level, then pair-mean) ...')
+    psth_frames: list[pd.DataFrame] = []
+    for h5 in pair_h5:
+        try:
+            dfp = compute_psth_for_pair(h5, bin_ms=args.psth_bin_ms, pre_s=args.psth_pre_s, post_s=args.psth_post_s)
+            if not dfp.empty:
+                psth_frames.append(dfp)
+        except Exception as e:
+            print(f"[analysis] PSTH error: {h5.name} -> {e}")
+    psth_all = pd.concat(psth_frames, ignore_index=True) if psth_frames else pd.DataFrame(columns=['pair_id','round','plate','side','channel','time_s','fr_hz'])
+    # Save channel-level PSTH (could be large)
+    psth_all.to_csv(save_dir / 'psth_channel_level.csv', index=False)
+    # Pair-mean PSTH
+    psth_pair = aggregate_psth_pair_mean(psth_all)
+    psth_pair.to_csv(save_dir / 'psth_pair_mean.csv', index=False)
+    # Save plate color map for reproducibility
+    if not psth_pair.empty:
+        plates = sorted({int(p) for p in psth_pair['plate'].unique() if pd.notna(p)})
+        cmap = plate_color_map(plates)
+        pd.DataFrame({'plate': list(cmap.keys()), 'color_hex': list(cmap.values())}).to_csv(save_dir / 'psth_plate_colors.csv', index=False)
+    # Plots per side
+    for side in ('CTZ', 'VEH'):
+        plot_psth_by_plate_lines_median(psth_pair, side, save_dir / f'psth_{side.lower()}_by_plate_lines_median')
+        plot_psth_median_sem(psth_pair, side, save_dir / f'psth_{side.lower()}_median_sem')
 
     print(f"[analysis] Wrote outputs to: {save_dir}")
     return 0
