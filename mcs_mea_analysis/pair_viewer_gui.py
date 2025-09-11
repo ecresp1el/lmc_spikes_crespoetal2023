@@ -1,13 +1,65 @@
 from __future__ import annotations
 
 """
-Interactive CTZ–VEH pair viewer.
+Interactive CTZ–VEH Pair Viewer (GUI)
+====================================
 
-Shows raw voltage (top row) and IFR (bottom row) side-by-side for a selected
-channel, with the chemical timestamp marked. Lets the user accept/reject
-channels for a pair and saves selections to OUTPUT_ROOT/selections/.
+Purpose
+-------
+Provide a simple, robust GUI to visually inspect a CTZ vs VEH recording pair:
+- Top row: Raw analog voltage traces for CTZ and VEH
+- Bottom row: Smoothed IFR (Hz) for CTZ and VEH
+- Optional chem-centered windowing for all plots (pre/post seconds)
+- Optional full analog plotting (no decimation)
+- Per-channel Accept/Reject selections with auto-save + reload
 
-Dependencies: PyQt5, pyqtgraph, numpy, (optional) McsPy/McsPyDataTools for raw.
+Key Features
+------------
+- Raw + IFR plotted side-by-side, per channel
+- Chem markers (red dashed lines) per recording
+- Pre/Post window around the chem timestamp to focus analysis
+- Toggle: Full analog vs. decimated analog for performance control
+- Status line indicates raw load state per recording (CTZ/VEH ok/—)
+- Selections persist to JSON and auto-resume on next launch
+
+Dependencies
+------------
+- Core: numpy, PyQt5, pyqtgraph
+- Raw readers (optional): McsPy.McsData or McsPyDataTools; will fallback to
+  direct h5py read if the library interfaces fail
+
+Usage (from Python)
+-------------------
+from mcs_mea_analysis.pair_viewer_gui import PairInputs, launch_pair_viewer
+
+pin = PairInputs(
+    plate=10,
+    round='mea_blade_round4',
+    ctz_npz=Path('..._ctz_..._ifr_per_channel_1ms.npz'),
+    veh_npz=Path('..._veh_..._ifr_per_channel_1ms.npz'),
+    ctz_h5=Path('...ctz.h5'),
+    veh_h5=Path('...veh.h5'),
+    chem_ctz_s=181.27,
+    chem_veh_s=183.33,
+    initial_channel=0,
+)
+launch_pair_viewer(pin)
+
+User Controls
+-------------
+- Channel spin / Prev / Next: change active channel
+- Accept / Reject: mark current channel; selections auto-save to JSON
+- Save Selections: write JSON to disk immediately
+- Reload Selections: read JSON from disk and re-apply (useful after crash)
+- Full analog (no decimation): plot entire raw trace (may be heavy)
+- Chem window + pre/post: focus on chem-centered time span for all plots
+
+Notes
+-----
+- If raw HDF5 reads fail via MCS API, the viewer falls back to a direct h5py
+  slice of ChannelData; IFR continues to plot regardless.
+- The JSON selections live under `<output_root>/selections/` using a stable
+  name that combines plate + stems. You can edit this file manually if needed.
 """
 
 from dataclasses import dataclass
@@ -20,10 +72,21 @@ from .config import CONFIG
 
 
 def _try_open_first_stream(path: Path) -> Tuple[Optional[object], Optional[float], Optional[Any]]:
-    """Open the first analog stream and return (stream_like, sampling_rate_hz).
+    """Open the first analog stream from an MCS H5 file.
 
-    Uses legacy McsPy.McsData if available (preferred for channel_data access),
-    otherwise attempts McsPyDataTools. Returns (None, None) if unavailable.
+    Returns
+    -------
+    (stream_like, sampling_rate_hz, owner)
+        - stream_like: object exposing `channel_data` and `channel_infos`
+        - sampling_rate_hz: float or None if unknown
+        - owner: an object that must be kept alive (raw/rec) to prevent HDF5
+          handles from becoming invalid while the GUI is open
+
+    Strategy
+    --------
+    1) Try McsPy.McsData (legacy) — access `recordings/analog_streams`
+    2) Try McsPyDataTools (McsRecording)
+    3) Fallback: None if not accessible here (GUI will attempt h5py later)
     """
     # Try McsPy legacy API
     try:
@@ -78,12 +141,28 @@ def _decimated_channel_trace(
     max_points: int = 6000,
     decimate: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (time_s, y) for a given channel index from the analog stream.
+    """Read a time window from the analog stream with optional decimation.
 
-    Notes:
-    - Assumes `stream.channel_data` is [rows, samples] and that row order matches
-      the index used in IFR arrays (typical for our pipeline).
-    - If `sr_hz` is None, derives a simple x-axis in samples (seconds become None).
+    Parameters
+    ----------
+    stream : object
+        MCS analog stream exposing `channel_data` and `channel_infos`.
+    sr_hz : float | None
+        Sampling rate in Hz. If None, 1.0 is assumed for time axis.
+    ch_index : int
+        Channel index to read (0-based). Tries to map through `row_index` if
+        available; otherwise uses the same index as row.
+    t0_s, t1_s : float | None
+        Absolute time window in seconds (start/end). If None, uses full range.
+    max_points : int
+        Maximum plotted points (ignored when `decimate=False`).
+    decimate : bool
+        If False, returns full-resolution samples (can be heavy).
+
+    Returns
+    -------
+    (time_s, y) : Tuple[np.ndarray, np.ndarray]
+        The time axis (seconds) and the analog samples for the selected window.
     """
     # Attempt direct HDF5 access; keep robust to API quirks
     ds = getattr(stream, "channel_data", None)
@@ -149,9 +228,10 @@ def _decimated_channel_trace_h5(
     max_points: int = 6000,
     decimate: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Fallback: open HDF5 directly via h5py and read ChannelData decimated.
+    """Fallback reader: direct HDF5 slice via h5py.
 
-    Tries to locate the first AnalogStream/ChannelData dataset under /Data.
+    Tries to locate a `ChannelData` dataset under `/Data/.../AnalogStream/...`.
+    Accepts the same windowing/decimation knobs as `_decimated_channel_trace`.
     """
     try:
         import h5py  # type: ignore
@@ -238,6 +318,21 @@ class PairInputs:
 
 
 def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
+    """Launch the interactive Pair Viewer.
+
+    Parameters
+    ----------
+    args : PairInputs
+        Configuration for a CTZ/VEH pair including NPZ paths (required),
+        optional raw H5 paths, chem timestamps, and persistence options.
+
+    UI Layout
+    ---------
+    - Row 1: Raw CTZ | Raw VEH
+    - Row 2: IFR CTZ | IFR VEH
+    - Controls: channel navigation, Accept/Reject/Save/Reload, Full analog
+      toggle, Chem window toggle with pre/post seconds, status label.
+    """
     from PyQt5 import QtCore, QtWidgets
     import pyqtgraph as pg
 

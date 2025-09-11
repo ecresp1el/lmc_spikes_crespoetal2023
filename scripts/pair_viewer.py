@@ -1,19 +1,42 @@
 from __future__ import annotations
 
 """
-CLI: Launch the CTZ–VEH pair viewer GUI.
+Pair Viewer (CLI)
+=================
 
-Usage examples:
-  # From readiness (plate + index within that plate)
-  python -m scripts.pair_viewer --plate 1 --idx 0
+Launch the CTZ–VEH pair viewer GUI from the command line.
 
-  # Direct files
-  python -m scripts.pair_viewer \
-      --ctz-npz /path/to/ctz_ifr_per_channel_1ms.npz \
-      --veh-npz /path/to/veh_ifr_per_channel_1ms.npz \
-      --ctz-h5 /path/to/ctz_recording.h5 \
-      --veh-h5 /path/to/veh_recording.h5 \
-      --chem-ctz 600 --chem-veh 600 --plate 1 --round mea_blade_round5
+Two modes
+---------
+1) Index-based: pick a plate and pair index (derived from readiness)
+   python -m scripts.pair_viewer --plate 1 --idx 0 [--ch 0]
+
+2) Direct-file: specify NPZs (and optionally H5 + chem timestamps)
+   python -m scripts.pair_viewer \
+       --ctz-npz /...ctz..._ifr_per_channel_1ms.npz \
+       --veh-npz /...veh..._ifr_per_channel_1ms.npz \
+       [--ctz-h5 /path/ctz.h5] [--veh-h5 /path/veh.h5] \
+       [--chem-ctz 181.27] [--chem-veh 183.33] [--plate 10] [--round mea_blade_round4] [--ch 0]
+
+Flags
+-----
+--plate N         Plate number (required in index-based mode)
+--idx K           Pair index within that plate (0-based, required in index mode)
+--ch N            Initial channel to display (default 0)
+--ctz-npz PATH    Path to CTZ IFR NPZ (direct-file mode)
+--veh-npz PATH    Path to VEH IFR NPZ (direct-file mode)
+--ctz-h5 PATH     Optional raw CTZ H5 to enable analog plotting
+--veh-h5 PATH     Optional raw VEH H5 to enable analog plotting
+--chem-ctz S      Optional chem time (s) for CTZ; otherwise tries annotations
+--chem-veh S      Optional chem time (s) for VEH; otherwise tries annotations
+--round NAME      Optional round label for display and selection naming
+
+Notes
+-----
+- Selections are auto-saved under `<output_root>/selections/` and reloaded on
+  next launch.
+- If running from Jupyter, prefer the inline launcher to avoid module path
+  issues; otherwise set the working directory to the repo root.
 """
 
 import sys

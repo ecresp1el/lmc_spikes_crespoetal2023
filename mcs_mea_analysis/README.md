@@ -81,6 +81,7 @@ Components
 - Manifest (`manifest.py`): canonical inventory of recordings, combining index, curation, ignore flags, and outputs.
 - IFR processing (`ifr_processing.py`): process NPZ into per‑recording CSV metrics; build IFR NPZ catalog.
 - IFR plotting (`ifr_analysis.py`): plot directly from NPZ (no recompute); grid of all channels’ smoothed IFR.
+ - Pair Viewer GUI (`pair_viewer_gui.py`): interactive CTZ–VEH viewer with raw+IFR, chem-centered windows, full analog toggle, and persistent per-channel selections.
 
 Communication (GUI ↔ headless)
 - Commit Chem / Save in the GUI triggers the FR engine for the current recording (compute once; skip if outputs already exist). After FR, the GUI refreshes the manifest.
@@ -108,6 +109,8 @@ Headless CLIs (run from repo root)
 - Analyze ready set (NPZ processing + plotting): `python -m scripts.analyze_ready [filters/flags]`
 - Process NPZ catalog only: `python -m scripts.process_ifr_npz [<output_root>]`
 - Build manifest only: `python -m scripts.build_manifest [<output_root>] [--no-require-opto]`
+ - Launch Pair Viewer (from readiness): `python -m scripts.pair_viewer --plate <N> --idx <K> [--ch 0]`
+ - Launch Pair Viewer (direct files): `python -m scripts.pair_viewer --ctz-npz <path> --veh-npz <path> [--ctz-h5 <path>] [--veh-h5 <path>] [--chem-ctz S] [--chem-veh S] [--plate N] [--round NAME] [--ch 0]`
 
 Readiness Policy (configurable)
 - Default “ready” = chemical stamp + IFR NPZ present (not ignored). Options let you require opto, index eligibility, and/or FR summary.
@@ -125,3 +128,8 @@ Data Contracts (file formats)
 Reproducibility & Extensibility
 - All processing from this point forward should consume the NPZ files and/or the catalogs; do not re‑open raw H5 for downstream analysis.
 - The `ready` index gives a single, stable entry to pick analysis rows; plots and metrics are decoupled and can evolve without changing how data is accessed.
+
+Additional Docs
+---------------
+- `docs/WORKFLOW.md` — end‑to‑end workflow diagram, contracts, and CLI guides.
+- `docs/PAIR_VIEWER_HELP.md` — Pair Viewer usage, persistence, and troubleshooting.
