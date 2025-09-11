@@ -303,11 +303,24 @@ def _export_stats(csv_path: Path, ctz: np.ndarray, veh: np.ndarray, pair_stats: 
                 r['reject_fdr'] = False
             rows.append(r)
 
+    # Compose fieldnames as the union across all rows, in a sensible order
+    preferred_order = [
+        'level', 'pair_id', 'n_ctz', 'n_veh',
+        'median_ctz', 'median_veh', 'mean_ctz', 'mean_veh',
+        'iqr_ctz', 'iqr_veh', 'U', 'p', 'q_fdr', 'reject_fdr',
+    ]
+    keys = set()
+    for r in rows:
+        keys.update(r.keys())
+    fieldnames = [k for k in preferred_order if k in keys] + [k for k in sorted(keys) if k not in preferred_order]
+
     with csv_path.open('w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+            # Fill missing
+            out = {k: r.get(k, '') for k in fieldnames}
+            w.writerow(out)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
