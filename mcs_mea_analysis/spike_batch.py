@@ -148,6 +148,22 @@ def export_pair_spikes_waveforms(
         out.create_dataset("detect_config_json", data=np.string_(json.dumps(asdict(dcfg))))
         grp_ctz = out.create_group("CTZ")
         grp_veh = out.create_group("VEH")
+        # Record sampling rate and window bounds at the group level
+        grp_ctz.attrs["sr_hz"] = float(sr_ctz_hz)
+        grp_veh.attrs["sr_hz"] = float(sr_veh_hz)
+        # Baseline/analysis windows (absolute seconds)
+        def _bounds(chem_ts: Optional[float]):
+            t0b = None if chem_ts is None else max(0.0, float(chem_ts) - float(pre_s))
+            t1b = chem_ts
+            t0a = chem_ts
+            t1a = None if chem_ts is None else float(chem_ts) + float(post_s)
+            return t0b, t1b, t0a, t1a
+        ctz_b = _bounds(chem_ctz_s)
+        veh_b = _bounds(chem_veh_s)
+        grp_ctz.attrs["baseline_bounds"] = json.dumps({"t0": float(ctz_b[0] or 0.0), "t1": float(ctz_b[1] or 0.0)})
+        grp_ctz.attrs["analysis_bounds"] = json.dumps({"t0": float(ctz_b[2] or 0.0), "t1": float(ctz_b[3] or 0.0)})
+        grp_veh.attrs["baseline_bounds"] = json.dumps({"t0": float(veh_b[0] or 0.0), "t1": float(veh_b[1] or 0.0)})
+        grp_veh.attrs["analysis_bounds"] = json.dumps({"t0": float(veh_b[2] or 0.0), "t1": float(veh_b[3] or 0.0)})
 
         # CSV summary
         with open(csv_out.as_posix(), "w", newline="", encoding="utf-8") as fh:
@@ -164,10 +180,13 @@ def export_pair_spikes_waveforms(
                 snippet_pre = int(round(snippet_pre_ms * 1e-3 * sr))
                 snippet_post = int(round(snippet_post_ms * 1e-3 * sr))
                 for ch in range(n_ch):
-                    # Read window around [t0b, t1a]
+                    # Read window around [t0b, t1a] — full-resolution
                     x, y = _read_channel_window_h5(h5p, ch, float(sr), t0b, t1a)
                     if y.size == 0:
-                        # write empty datasets
+                        # write empty datasets (raw, filtered, spikes, waveforms)
+                        grp.create_dataset(f"ch{ch:02d}_time", data=np.empty(0, dtype=float))
+                        grp.create_dataset(f"ch{ch:02d}_raw", data=np.empty(0, dtype=float))
+                        grp.create_dataset(f"ch{ch:02d}_filtered", data=np.empty(0, dtype=float))
                         grp.create_dataset(f"ch{ch:02d}_timestamps", data=np.empty(0, dtype=float))
                         grp.create_dataset(f"ch{ch:02d}_waveforms", data=np.empty((0, snippet_pre + snippet_post), dtype=float))
                         w.writerow([ch, side, 0, 0.0])
@@ -190,6 +209,9 @@ def export_pair_spikes_waveforms(
                                 seg = np.pad(seg, (0, snippet_pre + snippet_post - seg.size))
                             wf.append(seg)
                     wf_arr = np.vstack(wf) if wf else np.empty((0, snippet_pre + snippet_post), dtype=float)
+                    grp.create_dataset(f"ch{ch:02d}_time", data=x.astype(float))
+                    grp.create_dataset(f"ch{ch:02d}_raw", data=y.astype(float))
+                    grp.create_dataset(f"ch{ch:02d}_filtered", data=yf.astype(float))
                     grp.create_dataset(f"ch{ch:02d}_timestamps", data=st.astype(float))
                     grp.create_dataset(f"ch{ch:02d}_waveforms", data=wf_arr.astype(float))
                     # Summary
@@ -198,4 +220,3 @@ def export_pair_spikes_waveforms(
                     w.writerow([ch, side, int(st.size), fr])
 
     return h5_out, csv_out
-
