@@ -204,17 +204,24 @@ class TkPSTHApp:
         e.bind('<Return>', lambda evt: self._on_duration())
         ttk.Button(ctrl, text='Apply', command=self._on_duration).grid(row=0, column=2, padx=4)
 
-        # Taps
-        ttk.Label(ctrl, text='taps:').grid(row=0, column=3, padx=10, pady=6, sticky='w')
+        # Smoothing window (bins)
+        ttk.Label(ctrl, text='smoothing (bins):').grid(row=0, column=3, padx=10, pady=6, sticky='w')
         self.var_taps = tk.IntVar(value=self.taps)
         taps_scale = ttk.Scale(ctrl, from_=1, to=21, orient=tk.HORIZONTAL, command=self._on_taps_scale)
         taps_scale.set(self.taps)
         taps_scale.grid(row=0, column=4, padx=4, pady=6, sticky='we')
 
+        # Normalization statistic
+        ttk.Label(ctrl, text='norm stat:').grid(row=0, column=5, padx=10, pady=6, sticky='w')
+        self.var_stat = tk.StringVar(value='mean')
+        stat_box = ttk.Combobox(ctrl, textvariable=self.var_stat, values=['mean', 'median'], width=8, state='readonly')
+        stat_box.grid(row=0, column=6, padx=4, pady=6)
+        stat_box.bind('<<ComboboxSelected>>', lambda evt: self._draw_all())
+
         # Pair nav
-        ttk.Button(ctrl, text='Prev', command=lambda: self._step_pair(-1)).grid(row=0, column=6, padx=6)
-        ttk.Button(ctrl, text='Next', command=lambda: self._step_pair(+1)).grid(row=0, column=7, padx=6)
-        ttk.Button(ctrl, text='Save', command=self._on_save).grid(row=0, column=8, padx=6)
+        ttk.Button(ctrl, text='Prev', command=lambda: self._step_pair(-1)).grid(row=0, column=7, padx=6)
+        ttk.Button(ctrl, text='Next', command=lambda: self._step_pair(+1)).grid(row=0, column=8, padx=6)
+        ttk.Button(ctrl, text='Save', command=self._on_save).grid(row=0, column=9, padx=6)
 
         # Early starts (CTZ/VEH)
         ttk.Label(ctrl, text='CTZ start').grid(row=1, column=0, padx=6, pady=6, sticky='w')
@@ -274,7 +281,14 @@ class TkPSTHApp:
         se = self.start[side]['early']
         mask_e = (t >= se) & (t <= (se + self.early_dur))
         eps = 1e-9
-        denom = np.maximum(eps, np.mean(S[:, mask_e], axis=1)) if np.any(mask_e) else np.ones(S.shape[0])
+        # Choose per-channel statistic over the early window
+        if np.any(mask_e):
+            if self.var_stat.get() == 'median':
+                denom = np.maximum(eps, np.median(S[:, mask_e], axis=1))
+            else:
+                denom = np.maximum(eps, np.mean(S[:, mask_e], axis=1))
+        else:
+            denom = np.ones(S.shape[0])
         N = (S.T / denom).T
         for idx, ch in enumerate(channels):
             y_raw = float(ch) + amp * S[idx, :]
@@ -309,7 +323,7 @@ class TkPSTHApp:
         ctz_e = f"{self.start['CTZ']['early']:.3f}..{(self.start['CTZ']['early']+self.early_dur):.3f}"
         veh_e = f"{self.start['VEH']['early']:.3f}..{(self.start['VEH']['early']+self.early_dur):.3f}"
         self.fig.suptitle(
-            f'PSTH Explorer — Pair: {self.pair_id} | taps={self.taps} | ' \
+            f'PSTH Explorer — Pair: {self.pair_id} | smoothing={self.taps} bins | stat={self.var_stat.get()} | ' \
             f'CTZ early {ctz_e} | VEH early {veh_e} | early_dur={self.early_dur:.3f}s'
         )
         self._draw_side('CTZ', self.ax_raw_ctz, self.ax_norm_ctz)
