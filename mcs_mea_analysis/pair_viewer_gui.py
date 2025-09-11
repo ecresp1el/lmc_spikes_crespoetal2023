@@ -201,13 +201,14 @@ def _decimated_channel_trace(
     step = 1 if (not decimate or max_points is None or max_points <= 0) else max(1, int(np.ceil(ns / max_points)))
     # Build x relative to t0_s for readability
     x = ((start_idx + np.arange(0, ns, step)) / sr_hz).astype(float)
-    # Row index selection
-    r = ch_index if 0 <= ch_index < int(shape[0]) else 0
-    # If channel_infos -> row_index available, prefer that ordering
+    # Row index selection — default: channel index directly
+    nrows = int(shape[0])
+    r = ch_index if 0 <= ch_index < nrows else 0
+    # Optional mapping via channel_infos.row_index only if it's a clean 0..nrows-1 permutation
     ci = getattr(stream, "channel_infos", {}) or {}
     try:
         rows = sorted({int(getattr(info, "row_index")) for info in ci.values() if hasattr(info, "row_index")})
-        if rows and 0 <= ch_index < len(rows):
+        if rows and len(rows) == nrows and rows[0] == 0 and rows[-1] == nrows - 1:
             r = rows[ch_index]
     except Exception:
         pass
