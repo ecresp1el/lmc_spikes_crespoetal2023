@@ -48,7 +48,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
+from matplotlib.widgets import Slider, Button, TextBox
 
 
 # Keep text editable in SVG/PDF
@@ -219,45 +219,43 @@ class Explorer:
         # Top row: raw smoothed lines
         self.ax_raw_ctz = self.fig.add_subplot(gs[0, 0])
         self.ax_raw_veh = self.fig.add_subplot(gs[0, 1], sharex=self.ax_raw_ctz, sharey=self.ax_raw_ctz)
-        # Bottom row: normalized lines
-        self.ax_norm_ctz = self.fig.add_subplot(gs[1, 0], sharex=self.ax_raw_ctz, sharey=self.ax_raw_ctz)
-        self.ax_norm_veh = self.fig.add_subplot(gs[1, 1], sharex=self.ax_raw_ctz, sharey=self.ax_raw_ctz)
+        # Bottom row: normalized lines (overlayed, not staggered)
+        self.ax_norm_ctz = self.fig.add_subplot(gs[1, 0], sharex=self.ax_raw_ctz)
+        self.ax_norm_veh = self.fig.add_subplot(gs[1, 1], sharex=self.ax_raw_ctz)
 
-        # Controls: durations + per‑side starts and buttons
-        ax_dur = self.fig.add_subplot(gs[2, 0])
-        ax_starts = self.fig.add_subplot(gs[2, 1])
-        ax_dur.set_title('Window durations (s)')
-        ax_starts.set_title('Start times: CTZ (top) / VEH (bottom)')
+        # Reserve bottom margin for controls to avoid overlap
+        self.fig.subplots_adjust(bottom=0.30)
 
-        # Duration sliders (placed with add_axes for fine control)
-        box_ed = self.fig.add_axes([0.10, 0.14, 0.30, 0.03])
-        box_ld = self.fig.add_axes([0.10, 0.09, 0.30, 0.03])
-        self.s_early_dur = Slider(box_ed, 'early_dur', 0.01, max(0.5, self.common_post), valinit=self.early_dur)
-        self.s_late_dur = Slider(box_ld, 'late_dur', 0.01, max(0.5, self.common_post), valinit=self.late_dur)
+        # Controls: durations (TextBox) + per‑side starts (Slider) and buttons
+        # Duration text boxes (left)
+        ax_ed = self.fig.add_axes([0.08, 0.18, 0.18, 0.05])
+        ax_ld = self.fig.add_axes([0.08, 0.12, 0.18, 0.05])
+        self.tb_early_dur = TextBox(ax_ed, 'early_dur (s): ', initial=f"{self.early_dur:.3f}")
+        self.tb_late_dur  = TextBox(ax_ld, 'late_dur (s):  ', initial=f"{self.late_dur:.3f}")
 
-        # Start sliders (CTZ top row; VEH bottom row)
-        box_ce = self.fig.add_axes([0.55, 0.14, 0.35, 0.03])
-        box_cl = self.fig.add_axes([0.55, 0.09, 0.35, 0.03])
-        box_ve = self.fig.add_axes([0.55, 0.05, 0.35, 0.03])
-        box_vl = self.fig.add_axes([0.55, 0.01, 0.35, 0.03])
+        # Start sliders — CTZ (middle), VEH (right)
+        box_ce = self.fig.add_axes([0.38, 0.18, 0.25, 0.04])
+        box_cl = self.fig.add_axes([0.38, 0.12, 0.25, 0.04])
+        box_ve = self.fig.add_axes([0.68, 0.18, 0.25, 0.04])
+        box_vl = self.fig.add_axes([0.68, 0.12, 0.25, 0.04])
         self.s_ctz_early = Slider(box_ce, 'CTZ early start', 0.0, max(0.0, self.common_post - self.early_dur), valinit=self.start['CTZ']['early'])
         self.s_ctz_late  = Slider(box_cl, 'CTZ late start',  0.0, max(0.0, self.common_post - self.late_dur),  valinit=self.start['CTZ']['late'])
         self.s_veh_early = Slider(box_ve, 'VEH early start', 0.0, max(0.0, self.common_post - self.early_dur), valinit=self.start['VEH']['early'])
         self.s_veh_late  = Slider(box_vl, 'VEH late start',  0.0, max(0.0, self.common_post - self.late_dur),  valinit=self.start['VEH']['late'])
 
-        # small overlay axes for taps slider and buttons
-        box = self.fig.add_axes([0.10, 0.02, 0.20, 0.03])
+        # Taps slider and buttons (bottom row)
+        box = self.fig.add_axes([0.08, 0.05, 0.20, 0.04])
         self.s_taps = Slider(box, 'taps', 1, 21, valinit=self.taps, valstep=2)
-        box_prev = self.fig.add_axes([0.35, 0.02, 0.08, 0.035])
-        box_next = self.fig.add_axes([0.45, 0.02, 0.08, 0.035])
-        box_save = self.fig.add_axes([0.55, 0.02, 0.08, 0.035])
+        box_prev = self.fig.add_axes([0.35, 0.05, 0.08, 0.045])
+        box_next = self.fig.add_axes([0.45, 0.05, 0.08, 0.045])
+        box_save = self.fig.add_axes([0.55, 0.05, 0.08, 0.045])
         self.b_prev = Button(box_prev, 'Prev')
         self.b_next = Button(box_next, 'Next')
         self.b_save = Button(box_save, 'Save')
 
         # wire events
-        self.s_early_dur.on_changed(self._on_duration)
-        self.s_late_dur.on_changed(self._on_duration)
+        self.tb_early_dur.on_submit(lambda txt: self._on_duration('early', txt))
+        self.tb_late_dur.on_submit(lambda txt: self._on_duration('late', txt))
         self.s_ctz_early.on_changed(lambda v: self._on_start('CTZ','early', v))
         self.s_ctz_late.on_changed(lambda v: self._on_start('CTZ','late', v))
         self.s_veh_early.on_changed(lambda v: self._on_start('VEH','early', v))
@@ -318,9 +316,10 @@ class Explorer:
         # draw lines per channel
         for idx, ch in enumerate(channels):
             y_raw = float(ch) + amp * S[idx, :]
-            y_norm = float(ch) + amp * N[idx, :]
             ax_raw.plot(t, y_raw, color='k', lw=0.6)
-            ax_norm.plot(t, y_norm, color='k', lw=0.6)
+        # normalized overlays (not staggered), low alpha for visibility
+        for idx, ch in enumerate(channels):
+            ax_norm.plot(t, N[idx, :], color='k', lw=0.6, alpha=0.25)
         # shade early/late windows for this side
         se = self.start[side]['early']
         sl = self.start[side]['late']
@@ -328,17 +327,18 @@ class Explorer:
         ax_raw.axvspan(sl, sl + self.late_dur, color='orange', alpha=0.10, lw=0)
         ax_norm.axvspan(se, se + self.early_dur, color='green', alpha=0.10, lw=0)
         ax_norm.axvspan(sl, sl + self.late_dur, color='orange', alpha=0.10, lw=0)
-        # y‑ticks: show downsampled labels
+        # y‑ticks: show downsampled labels for raw; set [0,1] for normalized
         if channels.size:
             ymin = int(np.min(channels)) - 0.5
             ymax = int(np.max(channels)) + 1.5
-            for ax in (ax_raw, ax_norm):
-                ax.set_ylim([ymin, ymax])
-                try:
-                    step = max(1, int(round((ymax - ymin) / 12)))
-                    ax.set_yticks(list(range(int(np.min(channels)), int(np.max(channels)) + 1, step)))
-                except Exception:
-                    pass
+            ax_raw.set_ylim([ymin, ymax])
+            try:
+                step = max(1, int(round((ymax - ymin) / 12)))
+                ax_raw.set_yticks(list(range(int(np.min(channels)), int(np.max(channels)) + 1, step)))
+            except Exception:
+                pass
+            ax_norm.set_ylim([0.0, 1.05])
+            ax_norm.set_yticks([0.0, 0.5, 1.0])
 
     def _draw_all(self) -> None:
         self._set_axes_common()
@@ -354,10 +354,19 @@ class Explorer:
         self._draw_side('VEH', self.ax_raw_veh, self.ax_norm_veh)
         self.fig.canvas.draw_idle()
 
-    def _on_duration(self, val) -> None:
-        # Update durations and adjust start sliders' max accordingly
-        self.early_dur = float(self.s_early_dur.val)
-        self.late_dur = float(self.s_late_dur.val)
+    def _on_duration(self, which: str, txt: str) -> None:
+        # Parse and update duration from TextBox; coerce to [0.01, common_post]
+        try:
+            v = float(txt)
+        except Exception:
+            return
+        v = max(0.01, min(self.common_post, v))
+        if which == 'early':
+            self.early_dur = v
+            self.tb_early_dur.set_val(f"{self.early_dur:.3f}")
+        else:
+            self.late_dur = v
+            self.tb_late_dur.set_val(f"{self.late_dur:.3f}")
         for side in ('CTZ','VEH'):
             max_e = max(0.0, self.common_post - self.early_dur)
             max_l = max(0.0, self.common_post - self.late_dur)
