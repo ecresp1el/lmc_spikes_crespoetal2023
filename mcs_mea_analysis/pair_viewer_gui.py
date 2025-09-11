@@ -454,17 +454,6 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     h.addStretch(1)
     h.addWidget(status_lbl)
 
-    # Toolbar with key actions (top)
-    toolbar = win.addToolBar("Navigate")
-    act_prev = toolbar.addAction("Prev"); act_prev.triggered.connect(on_prev)
-    act_next = toolbar.addAction("Next"); act_next.triggered.connect(on_next)
-    toolbar.addSeparator()
-    act_accept = toolbar.addAction("Accept"); act_accept.triggered.connect(on_accept)
-    act_reject = toolbar.addAction("Reject"); act_reject.triggered.connect(on_reject)
-    toolbar.addSeparator()
-    act_save = toolbar.addAction("Save"); act_save.triggered.connect(on_save)
-    act_reload = toolbar.addAction("Reload"); act_reload.triggered.connect(on_reload)
-
     # Put controls in a scrollable dock on the right (movable/floatable)
     dock = QtWidgets.QDockWidget("Controls", win)
     dock.setAllowedAreas(QtCore.Qt.RightDockWidgetArea | QtCore.Qt.LeftDockWidgetArea)
@@ -747,9 +736,9 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             if key in raw_cache_ctz:
                 xr, yr = raw_cache_ctz[key]
             else:
-                xr, yr = _decimated_channel_trace(st_c, sr_c, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full)
+                xr, yr = _decimated_channel_trace(st_c, sr_hz=sr_c, ch_index=ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=False)
                 if len(xr) == 0:
-                    xr, yr = _decimated_channel_trace_h5(args.ctz_h5, sr_c, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full) if args.ctz_h5 else (np.array([]), np.array([]))
+                    xr, yr = _decimated_channel_trace_h5(args.ctz_h5, sr_hz=sr_c, ch_index=ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=False) if args.ctz_h5 else (np.array([]), np.array([]))
                 raw_cache_ctz[key] = (xr, yr)
             c_raw.setData(xr, yr)
             raw_ctz.enableAutoRange(True, True)
@@ -762,9 +751,9 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             if key in raw_cache_veh:
                 xr, yr = raw_cache_veh[key]
             else:
-                xr, yr = _decimated_channel_trace(st_v, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                xr, yr = _decimated_channel_trace(st_v, sr_hz=sr_v, ch_index=ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=False)
                 if len(xr) == 0:
-                    xr, yr = _decimated_channel_trace_h5(args.veh_h5, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full) if args.veh_h5 else (np.array([]), np.array([]))
+                    xr, yr = _decimated_channel_trace_h5(args.veh_h5, sr_hz=sr_v, ch_index=ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=False) if args.veh_h5 else (np.array([]), np.array([]))
                 raw_cache_veh[key] = (xr, yr)
             v_raw.setData(xr, yr)
             raw_veh.enableAutoRange(True, True)
