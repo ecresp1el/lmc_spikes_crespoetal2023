@@ -64,7 +64,10 @@ def _ensure_interactive_backend() -> str:
         be = ""
         be_lower = ""
 
-    noninteractive = ("agg", "pdf", "svg", "ps", "cairo", "template", "pgf")
+    noninteractive = (
+        "agg", "pdf", "svg", "ps", "cairo", "template", "pgf",
+        "inline", "matplotlib_inline", "backend_inline", "nbagg", "ipympl", "widget",
+    )
     if any(tok in be_lower for tok in noninteractive):
         # Try platform-appropriate interactive backends in order
         sys_plat = sys.platform
@@ -76,7 +79,12 @@ def _ensure_interactive_backend() -> str:
             candidates = ["QtAgg", "Qt5Agg", "TkAgg"]
         for name in candidates:
             try:
-                matplotlib.use(name)
+                # If pyplot already imported, try switch_backend; else use()
+                if 'matplotlib.pyplot' in sys.modules:
+                    import matplotlib.pyplot as _plt  # local import
+                    _plt.switch_backend(name)
+                else:
+                    matplotlib.use(name)
                 be = name
                 break
             except Exception:
@@ -288,7 +296,7 @@ class Explorer:
         self.b_snap_ctz = Button(box_snap_c, 'Snap CTZ')
         self.b_snap_veh = Button(box_snap_v, 'Snap VEH')
 
-        # wire events
+        # wire widget events
         self.tb_early_dur.on_submit(self._on_duration)
         self.s_ctz_early.on_changed(lambda v: self._on_start('CTZ', v))
         self.s_veh_early.on_changed(lambda v: self._on_start('VEH', v))
@@ -303,6 +311,12 @@ class Explorer:
         # Improve widget interactivity by disabling nav on widget axes
         for axw in (box_ce, box_ve, box, box_prev, box_next, box_save, box_preset, box_snap_c, box_snap_v, ax_ed):
             axw.set_navigate(False)
+
+        # mouse drag to set early start via vertical line (on main axes only)
+        self._dragging_side: Optional[str] = None
+        self.cid_press = self.fig.canvas.mpl_connect('button_press_event', self._on_press)
+        self.cid_motion = self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
+        self.cid_release = self.fig.canvas.mpl_connect('button_release_event', self._on_release)
 
     def _compute_smoothed(self, side: str) -> np.ndarray:
         d = self.mats.get(side)
@@ -428,6 +442,42 @@ class Explorer:
         if self.taps % 2 == 0:
             self.taps += 1
         self._draw_all()
+
+    # ===== Mouse drag handlers to move early start line =====
+    def _which_side_from_axes(self, ax: Optional[plt.Axes]) -> Optional[str]:
+        if ax in (self.ax_raw_ctz, self.ax_norm_ctz):
+            return 'CTZ'
+        if ax in (self.ax_raw_veh, self.ax_norm_veh):
+            return 'VEH'
+        return None
+
+    def _on_press(self, event) -> None:
+        side = self._which_side_from_axes(getattr(event, 'inaxes', None))
+        if side is None or event.xdata is None:
+            return
+        self._dragging_side = side
+        self._apply_drag(event.xdata)
+
+    def _on_motion(self, event) -> None:
+        if self._dragging_side is None or event.xdata is None:
+            return
+        self._apply_drag(event.xdata)
+
+    def _on_release(self, event) -> None:
+        self._dragging_side = None
+
+    def _apply_drag(self, x: float) -> None:
+        # Clamp and update early start for the dragging side
+        side = self._dragging_side
+        if side is None:
+            return
+        x_clamped = max(0.0, min(float(x), max(0.0, self.common_post - self.early_dur)))
+        self.start[side]['early'] = x_clamped
+        # keep sliders in sync; set_val triggers redraw via _on_start
+        if side == 'CTZ':
+            self.s_ctz_early.set_val(x_clamped)
+        else:
+            self.s_veh_early.set_val(x_clamped)
 
     def _step_pair(self, delta: int) -> None:
         self.i = (self.i + delta) % len(self.pairs)
