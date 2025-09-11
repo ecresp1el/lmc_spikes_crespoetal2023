@@ -181,6 +181,53 @@ def _plot_group(fig_path_base: Path, Z: dict) -> None:
     plt.close(fig)
 
 
+def _plot_alltraces_1x2(fig_path_base: Path, Z: dict) -> None:
+    """Plot every available normalized trace across all pairs in a single 1×2 figure.
+
+    Left: CTZ — all per‑pair, per‑channel normalized traces overlaid (very light) + group mean.
+    Right: VEH — same.
+    """
+    t = Z['t']
+    ctz_norm = Z.get('ctz_norm')  # pair means stack (P,T)
+    veh_norm = Z.get('veh_norm')
+    ctz_norm_all = Z.get('ctz_norm_all')  # object array of (C,T) per pair
+    veh_norm_all = Z.get('veh_norm_all')
+
+    fig = plt.figure(figsize=(12, 6), dpi=100)
+    ax_ctz = fig.add_subplot(1, 2, 1)
+    ax_veh = fig.add_subplot(1, 2, 2, sharey=ax_ctz)
+
+    # Plot all normalized traces (very light)
+    if isinstance(ctz_norm_all, np.ndarray):
+        for arr in ctz_norm_all:
+            if hasattr(arr, 'ndim') and arr.ndim == 2 and arr.size:
+                ax_ctz.plot(t, arr.T, color='tab:blue', alpha=0.06, lw=0.4)
+    if isinstance(veh_norm_all, np.ndarray):
+        for arr in veh_norm_all:
+            if hasattr(arr, 'ndim') and arr.ndim == 2 and arr.size:
+                ax_veh.plot(t, arr.T, color='tab:orange', alpha=0.06, lw=0.4)
+
+    # Overlay group means (from pair means if available)
+    if ctz_norm is not None and ctz_norm.size:
+        ax_ctz.plot(t, np.nanmean(ctz_norm, axis=0), color='tab:blue', lw=2.0, label='CTZ mean')
+    if veh_norm is not None and veh_norm.size:
+        ax_veh.plot(t, np.nanmean(veh_norm, axis=0), color='tab:orange', lw=2.0, label='VEH mean')
+
+    for ax in (ax_ctz, ax_veh):
+        ax.axvline(0.0, color='r', lw=0.8, ls='--', alpha=0.7)
+        ax.grid(True, axis='x', alpha=0.2)
+        ax.set_xlabel('Time (s)')
+    ax_ctz.set_title('CTZ — ALL normalized traces + group mean')
+    ax_veh.set_title('VEH — ALL normalized traces + group mean')
+    ax_ctz.set_ylabel('Normalized firing (early)')
+
+    fig.suptitle('PSTH Group — ALL normalized traces (CTZ | VEH)')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(fig_path_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(fig_path_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = _parse_args(argv)
     grp_path = args.group_npz
@@ -200,6 +247,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     save_dir.mkdir(parents=True, exist_ok=True)
     base = save_dir / (grp_path.stem + '__ctz_veh_summary')
     _plot_group(base, Z)
+    # Also write the all‑traces 1×2 figure
+    base_all = save_dir / (grp_path.stem + '__ctz_veh_alltraces')
+    try:
+        _plot_alltraces_1x2(base_all, Z)
+    except Exception as e:
+        print('[psth-group] all-traces plot failed:', e)
     print('[psth-group] Wrote:', base.with_suffix('.svg'))
     return 0
 

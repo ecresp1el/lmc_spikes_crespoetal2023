@@ -38,4 +38,6 @@ CTZ vs VEH plotting (batch)
   - Looks for `psth_group_latest.npz` or newest `psth_group_data__*.npz` under
     `.../exports/spikes_waveforms/analysis/spike_matrices/plots`.
 - Or specify explicitly: `python -m scripts.plot_psth_group_ctz_veh --group-npz PATH`
-- Saves a 2×2 summary figure next to the NPZ (SVG/PDF).
+- Saves next to the NPZ:
+  - 2×2 summary: `__ctz_veh_summary.(svg|pdf)`
+  - 1×2 ALL‑traces overlay: `__ctz_veh_alltraces.(svg|pdf)` (plots every normalized trace available across all pairs)
