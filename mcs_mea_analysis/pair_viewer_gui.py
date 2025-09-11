@@ -545,6 +545,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
         bc_x, bc_y = xc, yc
         bv_x, bv_y = xv, yv
         spike_txt = ""
+        filt_txt = ""
         # Compute raw window bounds in seconds for each side (used for filtering too)
         def _raw_window(chem_ts: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
             if chem_chk.isChecked() and chem_ts is not None:
@@ -552,10 +553,19 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             return None, None
         t0_c, t1_c = _raw_window(args.chem_ctz_s)
         t0_v, t1_v = _raw_window(args.chem_veh_s)
+        # Debug: report window bounds
+        try:
+            print(f"[viewer] ch={ch} mode={bottom_mode} CTZ win=({t0_c},{t1_c}) VEH win=({t0_v},{t1_v})")
+        except Exception:
+            pass
         if bottom_mode in ("Filtered", "Spikes"):
             # Require sampling rate to filter reliably
             if (sr_c is None) or (sr_v is None) or (sr_c <= 0) or (sr_v <= 0):
                 spike_txt = "SR unknown; filtering disabled"
+                try:
+                    print(f"[viewer] sampling rate missing: sr_c={sr_c} sr_v={sr_v}")
+                except Exception:
+                    pass
             else:
                 # Build filter config from UI
                 mode_txt = filt_mode.currentText() if 'filt_mode' in locals() else "High-pass"
@@ -581,9 +591,20 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                     xr_v, yr_v = _decimated_channel_trace(st_v, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
                 elif args.veh_h5:
                     xr_v, yr_v = _decimated_channel_trace_h5(args.veh_h5, sr_v or 1.0, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                # Debug: raw presence
+                try:
+                    print(f"[viewer] raw sizes: CTZ raw_n={yr_c.size} VEH raw_n={yr_v.size}")
+                except Exception:
+                    pass
                 # Apply filters
                 fy_c = apply_filter(yr_c, float(sr_c), fcfg) if yr_c.size else yr_c
                 fy_v = apply_filter(yr_v, float(sr_v), fcfg) if yr_v.size else yr_v
+                # Debug: filtered presence
+                try:
+                    print(f"[viewer] filter={fcfg.mode} hp={getattr(fcfg,'hp_hz',None)} bp=({getattr(fcfg,'bp_low_hz',None)},{getattr(fcfg,'bp_high_hz',None)}) detrend={getattr(fcfg,'detrend_method',None)} | CTZ filt_n={fy_c.size} VEH filt_n={fy_v.size}")
+                except Exception:
+                    pass
+                filt_txt = f"Filt CTZ:{'ok' if fy_c.size else '—'} VEH:{'ok' if fy_v.size else '—'}"
                 # Relative time axes (chem at 0)
                 def rel(x: np.ndarray, chem_ts: Optional[float]) -> np.ndarray:
                     return (x - float(chem_ts)) if chem_ts is not None else x
@@ -695,6 +716,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             ifr_ctz.setTitle(f"Filtered+Spikes CTZ — ch {ch} (Hz)")
             ifr_veh.setTitle(f"Filtered+Spikes VEH — ch {ch} (Hz)")
         msg = "Raw " + " ".join(raw_msgs)
+        if filt_txt:
+            msg += " | " + filt_txt
         if spike_txt:
             msg += " | " + spike_txt
         status_lbl.setText(msg)
