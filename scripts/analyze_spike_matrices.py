@@ -23,14 +23,9 @@ Each NPZ contains (keys)
 
 What it produces
 ----------------
-- Per pair: 1×2 heatmaps of binary matrices (CTZ left, VEH right)
-  <save_dir>/plots/binary_matrix__<PAIR>__<bin>ms.svg/pdf
-- Per pair: 1×2 plots of active‑channel fraction vs time for each side
-  <save_dir>/plots/active_fraction__<PAIR>__<bin>ms.svg/pdf
-- Per pair/side: CSVs with:
-  - onset_latency_ms_per_channel__<PAIR>__<SIDE>.csv
-  - active_fraction_per_channel__<PAIR>__<SIDE>.csv
-  - active_fraction_vs_time__<PAIR>__<SIDE>.csv
+- Per pair: 1×2 raster (no heatmap) showing, for each channel, tick marks at
+  1 ms bins that contain ≥1 spike (CTZ left, VEH right):
+  <save_dir>/plots/binary_raster__<PAIR>__<bin>ms.svg/pdf
 
 Usage
 -----
@@ -53,7 +48,6 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
 
@@ -159,12 +153,10 @@ def _load_matrix(npz_path: Path) -> dict:
         return {k: Z[k] for k in Z.files}
 
 
-def plot_heatmap_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> None:
-    # mats: side -> dict (channels, time_s, binary)
+def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> None:
+    """1×2 raster plot (no heatmap), channels on y, tick per 1 ms bin with ≥1 spike."""
     sides = ['CTZ', 'VEH']
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
-    vmax = 1.0
-    vmin = 0.0
     plotted = False
     for ax, side in zip(axes, sides):
         d = mats.get(side)
@@ -173,13 +165,16 @@ def plot_heatmap_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> No
             continue
         channels = d['channels']
         time_s = d['time_s']
-        M = d['binary']
+        B = d['binary']
         if channels.size == 0 or time_s.size == 0:
             ax.set_visible(False)
             continue
-        im = ax.imshow(M, aspect='auto', origin='lower', interpolation='nearest',
-                       extent=[float(time_s[0]), float(time_s[-1]), int(channels[0]) - 0.5, int(channels[-1]) + 0.5],
-                       vmin=vmin, vmax=vmax, cmap='binary')
+        # For each channel, add vertical ticks at time bins with 1
+        for ch_idx, ch in enumerate(channels.astype(int)):
+            where = np.where(B[ch_idx, :] > 0)[0]
+            if where.size:
+                t = time_s[where]
+                ax.vlines(t, ch, ch + 0.9, color='k', lw=0.6)
         ax.axvline(0.0, color='r', lw=1.0, ls='--', alpha=0.7)
         ax.set_title(f'{side}')
         ax.set_xlabel('Time from chem (s)')
@@ -187,75 +182,26 @@ def plot_heatmap_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> No
     if not plotted:
         plt.close(fig)
         return
+    # y-limits and ticks
+    all_ch = [int(c) for d in mats.values() if d for c in d['channels'].tolist()]
+    if all_ch:
+        ymin = min(all_ch) - 0.5
+        ymax = max(all_ch) + 1.5
+        axes[0].set_ylim([ymin, ymax])
+        try:
+            step = max(1, int(round((ymax - ymin) / 12)))
+            axes[0].set_yticks(list(range(int(min(all_ch)), int(max(all_ch)) + 1, step)))
+        except Exception:
+            pass
     axes[0].set_ylabel('Channel index')
-    cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.9, pad=0.02)
-    cbar.set_label('Spike (0/1 per 1 ms bin)')
-    fig.suptitle(f'Binary Spike Matrix (channels×time) — {pair_id}')
+    fig.suptitle(f'Binary Spike Raster (channels × time) — {pair_id}')
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
     fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
     plt.close(fig)
 
 
-def plot_active_fraction_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> None:
-    sides = ['CTZ', 'VEH']
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4), sharey=True)
-    any_plot = False
-    for ax, side in zip(axes, sides):
-        d = mats.get(side)
-        if not d:
-            ax.set_visible(False)
-            continue
-        time_s = d['time_s']
-        M = d['binary'].astype(float)
-        if M.size == 0:
-            ax.set_visible(False)
-            continue
-        frac = np.nanmean(M, axis=0)  # fraction of channels with spikes per time bin
-        ax.plot(time_s, frac, color='k', lw=1.5)
-        ax.axvline(0.0, color='r', lw=1.0, ls='--', alpha=0.7)
-        ax.set_title(f'{side}')
-        ax.set_xlabel('Time from chem (s)')
-        any_plot = True
-    if not any_plot:
-        plt.close(fig)
-        return
-    axes[0].set_ylabel('Active channel fraction')
-    fig.suptitle(f'Active Channels vs Time — {pair_id}')
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
-    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
-    plt.close(fig)
-
-
-def compute_onset_latency_ms_per_channel(time_s: np.ndarray, binary: np.ndarray) -> np.ndarray:
-    # For each channel (row), find first time >= 0 with binary==1
-    C, T = binary.shape
-    onset = np.full(C, np.nan, dtype=float)
-    post_mask = time_s >= 0.0
-    if not np.any(post_mask):
-        return onset
-    post_idx = np.where(post_mask)[0]
-    for i in range(C):
-        row = binary[i, post_idx]
-        k = np.argmax(row > 0)
-        if row.size > 0 and row[k] > 0:
-            onset[i] = (time_s[post_idx[k]] * 1e3)
-    return onset
-
-
-def compute_active_fraction_per_channel(time_s: np.ndarray, binary: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    pre_mask = time_s < 0.0
-    post_mask = time_s >= 0.0
-    pre_frac = np.full(binary.shape[0], np.nan, dtype=float)
-    post_frac = np.full(binary.shape[0], np.nan, dtype=float)
-    if np.any(pre_mask):
-        pre_cnt = np.sum(binary[:, pre_mask] > 0, axis=1)
-        pre_frac = pre_cnt / float(np.sum(pre_mask))
-    if np.any(post_mask):
-        post_cnt = np.sum(binary[:, post_mask] > 0, axis=1)
-        post_frac = post_cnt / float(np.sum(post_mask))
-    return pre_frac, post_frac
+# (No aggregation metrics; per request, focus on plotting all channels)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -289,28 +235,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             d = _load_matrix(paths[0])
             mats[side] = d
 
-        # Plots
-        base = plots_dir / f"binary_matrix__{pair_id}"
-        plot_heatmap_pair(pair_id, mats, base)
-        plot_active_fraction_pair(pair_id, mats, plots_dir / f"active_fraction__{pair_id}")
-
-        # CSV metrics per side
-        for side, d in mats.items():
-            channels = d['channels']
-            time_s = d['time_s']
-            binary = d['binary']
-            onset_ms = compute_onset_latency_ms_per_channel(time_s, binary)
-            pre_frac, post_frac = compute_active_fraction_per_channel(time_s, binary)
-            # Onset per channel
-            df_on = pd.DataFrame({'channel': channels.astype(int), 'onset_latency_ms': onset_ms})
-            df_on.to_csv(save_dir / f'onset_latency_ms_per_channel__{pair_id}__{side}.csv', index=False)
-            # Active fraction per channel
-            df_frac = pd.DataFrame({'channel': channels.astype(int), 'pre_fraction': pre_frac, 'post_fraction': post_frac})
-            df_frac.to_csv(save_dir / f'active_fraction_per_channel__{pair_id}__{side}.csv', index=False)
-            # Active fraction vs time (across channels)
-            frac_t = np.nanmean(binary.astype(float), axis=0)
-            df_ft = pd.DataFrame({'time_s': time_s.astype(float), 'active_fraction': frac_t})
-            df_ft.to_csv(save_dir / f'active_fraction_vs_time__{pair_id}__{side}.csv', index=False)
+        # Plot raster (no heatmap, no aggregated metrics)
+        base = plots_dir / f"binary_raster__{pair_id}"
+        plot_raster_pair(pair_id, mats, base)
 
     print(f"[analyze-matrix] Wrote outputs to: {save_dir}")
     return 0
