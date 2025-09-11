@@ -11,10 +11,11 @@ What this GUI does
   matrices (no re‑detection):
   - Top row (CTZ | VEH): per‑channel PSTH lines (smoothed with boxcar)
   - Bottom row (CTZ | VEH): normalized per‑channel PSTH lines, where each
-    channel's PSTH is divided by its mean amplitude in the user‑defined late
-    post window.
+    channel's PSTH is divided by its mean amplitude in the side‑specific,
+    user‑defined late post window.
 - Lets you interactively adjust:
-  - Early and late post windows (RangeSliders)
+  - Fixed‑duration early and late windows (duration sliders)
+  - Independent start positions for CTZ and VEH early/late windows (4 sliders)
   - Smoothing taps (odd integer; default 5)
   - Pair selection (Prev/Next buttons)
 
@@ -46,9 +47,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.widgets import RangeSlider, Slider, Button
+from matplotlib.widgets import Slider, Button
 
 
 # Keep text editable in SVG/PDF
@@ -175,6 +175,9 @@ class Explorer:
         self.i = 0  # current pair index
         # state
         self.taps = 5
+        self.early_dur = 0.2  # seconds
+        self.late_dur = 0.2   # seconds
+        self.start = { 'CTZ': {'early': 0.0, 'late': 0.0}, 'VEH': {'early': 0.0, 'late': 0.0} }
         # preload first pair
         self._load_pair(self.pairs[self.i])
         # defaults for early/late windows based on post window
@@ -202,17 +205,17 @@ class Explorer:
         self.times = {side: _time_from_meta(d)[0] for side, d in self.mats.items()}
 
     def _init_windows(self) -> None:
-        # default early: [0, min(0.2, post)] ; late: [max(post-0.2, 0), post]
-        e1 = 0.0
-        e2 = min(0.2, self.common_post)
-        l2 = self.common_post
-        l1 = max(l2 - 0.2, 0.0)
-        self.early = (e1, e2)
-        self.late = (l1, l2)
+        # Initialize starts based on common post window and durations
+        self.early_dur = min(self.early_dur, self.common_post)
+        self.late_dur = min(self.late_dur, self.common_post)
+        self.start['CTZ']['early'] = 0.0
+        self.start['VEH']['early'] = 0.0
+        self.start['CTZ']['late'] = max(self.common_post - self.late_dur, 0.0)
+        self.start['VEH']['late'] = max(self.common_post - self.late_dur, 0.0)
 
     def _build_gui(self) -> None:
         self.fig = plt.figure(figsize=(12, 8))
-        gs = self.fig.add_gridspec(3, 2, height_ratios=[1, 1, 0.22])
+        gs = self.fig.add_gridspec(3, 2, height_ratios=[1, 1, 0.32])
         # Top row: raw smoothed lines
         self.ax_raw_ctz = self.fig.add_subplot(gs[0, 0])
         self.ax_raw_veh = self.fig.add_subplot(gs[0, 1], sharex=self.ax_raw_ctz, sharey=self.ax_raw_ctz)
@@ -220,17 +223,30 @@ class Explorer:
         self.ax_norm_ctz = self.fig.add_subplot(gs[1, 0], sharex=self.ax_raw_ctz, sharey=self.ax_raw_ctz)
         self.ax_norm_veh = self.fig.add_subplot(gs[1, 1], sharex=self.ax_raw_ctz, sharey=self.ax_raw_ctz)
 
-        # Controls: sliders and buttons
-        ax_e = self.fig.add_subplot(gs[2, 0])
-        ax_l = self.fig.add_subplot(gs[2, 1])
-        ax_e.set_title('Early window (s)')
-        ax_l.set_title('Late window (s)')
-        # early and late RangeSliders within [0, post]
-        self.rs_early = RangeSlider(ax_e, 'early', 0.0, self.common_post, valinit=self.early, valfmt='%.3f')
-        self.rs_late = RangeSlider(ax_l, 'late', 0.0, self.common_post, valinit=self.late, valfmt='%.3f')
+        # Controls: durations + per‑side starts and buttons
+        ax_dur = self.fig.add_subplot(gs[2, 0])
+        ax_starts = self.fig.add_subplot(gs[2, 1])
+        ax_dur.set_title('Window durations (s)')
+        ax_starts.set_title('Start times: CTZ (top) / VEH (bottom)')
+
+        # Duration sliders (placed with add_axes for fine control)
+        box_ed = self.fig.add_axes([0.10, 0.14, 0.30, 0.03])
+        box_ld = self.fig.add_axes([0.10, 0.09, 0.30, 0.03])
+        self.s_early_dur = Slider(box_ed, 'early_dur', 0.01, max(0.5, self.common_post), valinit=self.early_dur)
+        self.s_late_dur = Slider(box_ld, 'late_dur', 0.01, max(0.5, self.common_post), valinit=self.late_dur)
+
+        # Start sliders (CTZ top row; VEH bottom row)
+        box_ce = self.fig.add_axes([0.55, 0.14, 0.35, 0.03])
+        box_cl = self.fig.add_axes([0.55, 0.09, 0.35, 0.03])
+        box_ve = self.fig.add_axes([0.55, 0.05, 0.35, 0.03])
+        box_vl = self.fig.add_axes([0.55, 0.01, 0.35, 0.03])
+        self.s_ctz_early = Slider(box_ce, 'CTZ early start', 0.0, max(0.0, self.common_post - self.early_dur), valinit=self.start['CTZ']['early'])
+        self.s_ctz_late  = Slider(box_cl, 'CTZ late start',  0.0, max(0.0, self.common_post - self.late_dur),  valinit=self.start['CTZ']['late'])
+        self.s_veh_early = Slider(box_ve, 'VEH early start', 0.0, max(0.0, self.common_post - self.early_dur), valinit=self.start['VEH']['early'])
+        self.s_veh_late  = Slider(box_vl, 'VEH late start',  0.0, max(0.0, self.common_post - self.late_dur),  valinit=self.start['VEH']['late'])
 
         # small overlay axes for taps slider and buttons
-        box = self.fig.add_axes([0.1, 0.02, 0.2, 0.03])
+        box = self.fig.add_axes([0.10, 0.02, 0.20, 0.03])
         self.s_taps = Slider(box, 'taps', 1, 21, valinit=self.taps, valstep=2)
         box_prev = self.fig.add_axes([0.35, 0.02, 0.08, 0.035])
         box_next = self.fig.add_axes([0.45, 0.02, 0.08, 0.035])
@@ -240,8 +256,12 @@ class Explorer:
         self.b_save = Button(box_save, 'Save')
 
         # wire events
-        self.rs_early.on_changed(self._on_windows)
-        self.rs_late.on_changed(self._on_windows)
+        self.s_early_dur.on_changed(self._on_duration)
+        self.s_late_dur.on_changed(self._on_duration)
+        self.s_ctz_early.on_changed(lambda v: self._on_start('CTZ','early', v))
+        self.s_ctz_late.on_changed(lambda v: self._on_start('CTZ','late', v))
+        self.s_veh_early.on_changed(lambda v: self._on_start('VEH','early', v))
+        self.s_veh_late.on_changed(lambda v: self._on_start('VEH','late', v))
         self.s_taps.on_changed(self._on_taps)
         self.b_prev.on_clicked(lambda evt: self._step_pair(-1))
         self.b_next.on_clicked(lambda evt: self._step_pair(+1))
@@ -262,7 +282,9 @@ class Explorer:
         if S.size == 0:
             return S
         t = self.times[side]
-        m = (t >= self.late[0]) & (t <= self.late[1])
+        # side-specific late window [start, start+dur]
+        start = self.start[side]['late']
+        m = (t >= start) & (t <= (start + self.late_dur))
         eps = 1e-9
         denom = np.maximum(eps, np.mean(S[:, m], axis=1))  # per‑channel
         return (S.T / denom).T
@@ -299,6 +321,13 @@ class Explorer:
             y_norm = float(ch) + amp * N[idx, :]
             ax_raw.plot(t, y_raw, color='k', lw=0.6)
             ax_norm.plot(t, y_norm, color='k', lw=0.6)
+        # shade early/late windows for this side
+        se = self.start[side]['early']
+        sl = self.start[side]['late']
+        ax_raw.axvspan(se, se + self.early_dur, color='green', alpha=0.10, lw=0)
+        ax_raw.axvspan(sl, sl + self.late_dur, color='orange', alpha=0.10, lw=0)
+        ax_norm.axvspan(se, se + self.early_dur, color='green', alpha=0.10, lw=0)
+        ax_norm.axvspan(sl, sl + self.late_dur, color='orange', alpha=0.10, lw=0)
         # y‑ticks: show downsampled labels
         if channels.size:
             ymin = int(np.min(channels)) - 0.5
@@ -313,19 +342,40 @@ class Explorer:
 
     def _draw_all(self) -> None:
         self._set_axes_common()
-        self.fig.suptitle(f'PSTH Explorer — Pair: {self.pair_id} (taps={self.taps}, early={self.early}, late={self.late})')
+        ctz_e = f"{self.start['CTZ']['early']:.3f}..{(self.start['CTZ']['early']+self.early_dur):.3f}"
+        ctz_l = f"{self.start['CTZ']['late']:.3f}..{(self.start['CTZ']['late']+self.late_dur):.3f}"
+        veh_e = f"{self.start['VEH']['early']:.3f}..{(self.start['VEH']['early']+self.early_dur):.3f}"
+        veh_l = f"{self.start['VEH']['late']:.3f}..{(self.start['VEH']['late']+self.late_dur):.3f}"
+        self.fig.suptitle(
+            f'PSTH Explorer — Pair: {self.pair_id} | taps={self.taps} | '
+            f'CTZ early {ctz_e}, late {ctz_l} | VEH early {veh_e}, late {veh_l}'
+        )
         self._draw_side('CTZ', self.ax_raw_ctz, self.ax_norm_ctz)
         self._draw_side('VEH', self.ax_raw_veh, self.ax_norm_veh)
         self.fig.canvas.draw_idle()
 
-    def _on_windows(self, val) -> None:
-        e0, e1 = self.rs_early.val
-        l0, l1 = self.rs_late.val
-        # coerce windows to be within [0, post]
-        e0, e1 = max(0.0, e0), min(self.common_post, e1)
-        l0, l1 = max(0.0, l0), min(self.common_post, l1)
-        self.early = (e0, e1)
-        self.late = (l0, l1)
+    def _on_duration(self, val) -> None:
+        # Update durations and adjust start sliders' max accordingly
+        self.early_dur = float(self.s_early_dur.val)
+        self.late_dur = float(self.s_late_dur.val)
+        for side in ('CTZ','VEH'):
+            max_e = max(0.0, self.common_post - self.early_dur)
+            max_l = max(0.0, self.common_post - self.late_dur)
+            self.start[side]['early'] = min(self.start[side]['early'], max_e)
+            self.start[side]['late']  = min(self.start[side]['late'],  max_l)
+        # update slider ranges/values
+        self.s_ctz_early.valmax = max(0.0, self.common_post - self.early_dur)
+        self.s_ctz_late.valmax  = max(0.0, self.common_post - self.late_dur)
+        self.s_veh_early.valmax = max(0.0, self.common_post - self.early_dur)
+        self.s_veh_late.valmax  = max(0.0, self.common_post - self.late_dur)
+        self.s_ctz_early.set_val(self.start['CTZ']['early'])
+        self.s_ctz_late.set_val(self.start['CTZ']['late'])
+        self.s_veh_early.set_val(self.start['VEH']['early'])
+        self.s_veh_late.set_val(self.start['VEH']['late'])
+        self._draw_all()
+
+    def _on_start(self, side: str, phase: str, val: float) -> None:
+        self.start[side][phase] = float(val)
         self._draw_all()
 
     def _on_taps(self, val) -> None:
@@ -339,13 +389,15 @@ class Explorer:
         self.i = (self.i + delta) % len(self.pairs)
         self._load_pair(self.pairs[self.i])
         # update slider ranges if post changed
-        self.rs_early.valmin = 0.0
-        self.rs_early.valmax = self.common_post
-        self.rs_late.valmin = 0.0
-        self.rs_late.valmax = self.common_post
         self._init_windows()
-        self.rs_early.set_val(self.early)
-        self.rs_late.set_val(self.late)
+        self.s_ctz_early.valmax = max(0.0, self.common_post - self.early_dur)
+        self.s_ctz_late.valmax  = max(0.0, self.common_post - self.late_dur)
+        self.s_veh_early.valmax = max(0.0, self.common_post - self.early_dur)
+        self.s_veh_late.valmax  = max(0.0, self.common_post - self.late_dur)
+        self.s_ctz_early.set_val(self.start['CTZ']['early'])
+        self.s_ctz_late.set_val(self.start['CTZ']['late'])
+        self.s_veh_early.set_val(self.start['VEH']['early'])
+        self.s_veh_late.set_val(self.start['VEH']['late'])
         self._draw_all()
 
     def _on_save(self, event) -> None:
@@ -363,11 +415,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print('[psth-gui] No matrices found. Build them with scripts/build_spike_matrix.py')
         return 1
     print(f"[psth-gui] Pairs discovered: {len(mapping)}")
-    ex = Explorer(mapping)
+    Explorer(mapping)
     plt.show()
     return 0
 
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
