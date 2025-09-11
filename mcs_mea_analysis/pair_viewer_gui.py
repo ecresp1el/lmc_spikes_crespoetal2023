@@ -401,8 +401,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_reload = QtWidgets.QPushButton("Reload Selections")
     chem_chk = QtWidgets.QCheckBox("Chem window")
     chem_chk.setChecked(True)
-    pre_spin = QtWidgets.QDoubleSpinBox(); pre_spin.setRange(0.0, 1e5); pre_spin.setDecimals(1); pre_spin.setValue(60.0); pre_spin.setSuffix(" s pre")
-    post_spin = QtWidgets.QDoubleSpinBox(); post_spin.setRange(0.0, 1e5); post_spin.setDecimals(1); post_spin.setValue(60.0); post_spin.setSuffix(" s post")
+    pre_spin = QtWidgets.QDoubleSpinBox(); pre_spin.setRange(0.0, 1e5); pre_spin.setDecimals(1); pre_spin.setValue(1.0); pre_spin.setSuffix(" s pre")
+    post_spin = QtWidgets.QDoubleSpinBox(); post_spin.setRange(0.0, 1e5); post_spin.setDecimals(1); post_spin.setValue(1.0); post_spin.setSuffix(" s post")
     status_lbl = QtWidgets.QLabel("")
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
@@ -471,7 +471,9 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     v_raw = raw_veh.plot([], [], pen=pg.mkPen('w'))
     c_ifr = ifr_ctz.plot([], [], pen=pg.mkPen('c'))
     v_ifr = ifr_veh.plot([], [], pen=pg.mkPen('m'))
-    # Spike overlays for bottom plots
+    # Overlays and spike/threshold items for bottom plots
+    overlay_ctz = ifr_ctz.plot([], [], pen=pg.mkPen(150,150,150,120))
+    overlay_veh = ifr_veh.plot([], [], pen=pg.mkPen(150,150,150,120))
     ctg = pg.ScatterPlotItem(size=6, pen=pg.mkPen(None), brush=pg.mkBrush(255, 50, 50, 180))
     vtg = pg.ScatterPlotItem(size=6, pen=pg.mkPen(None), brush=pg.mkBrush(255, 150, 50, 180))
     th_pos = pg.InfiniteLine(angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine))
@@ -488,6 +490,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     def update_channel(ch: int) -> None:
         status_lbl.setText("Loading raw…")
         QtWidgets.QApplication.processEvents()
+        # Determine heavy/raw mode first
+        full = bool(full_chk.isChecked())
         # IFR with optional chem window per side
         def _slice_ifr(t: np.ndarray, y: np.ndarray, chem_ts: Optional[float]) -> Tuple[np.ndarray, np.ndarray]:
             if chem_chk.isChecked() and chem_ts is not None:
@@ -543,9 +547,12 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                     return (x - float(chem_ts)) if chem_ts is not None else x
                 if bottom_mode == "Filtered":
                     # Overlay raw (faint) vs filtered (bold)
-                    ifr_ctz.clear(); ifr_veh.clear()
-                    ifr_ctz.plot(rel(xr_c, args.chem_ctz_s), yr_c, pen=pg.mkPen(150,150,150,120))
-                    ifr_veh.plot(rel(xr_v, args.chem_veh_s), yr_v, pen=pg.mkPen(150,150,150,120))
+                    overlay_ctz.setData(rel(xr_c, args.chem_ctz_s), yr_c)
+                    overlay_veh.setData(rel(xr_v, args.chem_veh_s), yr_v)
+                    # clear spikes/threshold visuals
+                    ctg.setData([], [])
+                    vtg.setData([], [])
+                    th_pos.setValue(0.0); th_neg.setValue(0.0)
                     bc_x, bc_y = rel(xr_c, args.chem_ctz_s), fy_c
                     bv_x, bv_y = rel(xr_v, args.chem_veh_s), fy_v
                 else:
@@ -567,18 +574,15 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                     st_v_times, thr_pos_v, thr_neg_v = detect_spikes(xr_v, fy_v, float(sr_v), mb_v, ma_v, dcfg) if (xr_v.size and fy_v.size) else (np.array([]), np.nan, np.nan)
                     bc_x, bc_y = rel(xr_c, args.chem_ctz_s), fy_c
                     bv_x, bv_y = rel(xr_v, args.chem_veh_s), fy_v
-                    # Clear and re-add scatter/thresholds to ensure they draw on top
-                    ifr_ctz.clear(); ifr_veh.clear()
                     # thresholds
-                    if np.isfinite(thr_pos_c):
-                        ifr_ctz.addItem(pg.InfiniteLine(pos=thr_pos_c, angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine)))
-                    if np.isfinite(thr_neg_c):
-                        ifr_ctz.addItem(pg.InfiniteLine(pos=thr_neg_c, angle=0, pen=pg.mkPen('g', style=QtCore.Qt.DashLine)))
+                    th_pos.setValue(thr_pos_c if np.isfinite(thr_pos_c) else 0.0)
+                    th_neg.setValue(thr_neg_c if np.isfinite(thr_neg_c) else 0.0)
                     # spikes
-                    if st_c_times.size:
-                        ifr_ctz.addItem(pg.ScatterPlotItem(x=rel(st_c_times, args.chem_ctz_s), y=np.interp(st_c_times, xr_c, fy_c), size=6, pen=None, brush=pg.mkBrush(255,50,50,180)))
-                    if st_v_times.size:
-                        ifr_veh.addItem(pg.ScatterPlotItem(x=rel(st_v_times, args.chem_veh_s), y=np.interp(st_v_times, xr_v, fy_v), size=6, pen=None, brush=pg.mkBrush(255,150,50,180)))
+                    ctg.setData(x=rel(st_c_times, args.chem_ctz_s), y=(np.interp(st_c_times, xr_c, fy_c) if st_c_times.size else []))
+                    vtg.setData(x=rel(st_v_times, args.chem_veh_s), y=(np.interp(st_v_times, xr_v, fy_v) if st_v_times.size else []))
+                    # raw overlays under filtered
+                    overlay_ctz.setData(bc_x, yr_c if yr_c.size else [])
+                    overlay_veh.setData(bv_x, yr_v if yr_v.size else [])
                     # counts and FR
                     dur = float(post_spin.value()) if float(post_spin.value()) > 0 else 1.0
                     fr_c = st_c_times.size / dur
@@ -593,7 +597,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
 
         # Raw (optional)
         raw_msgs = []
-        full = bool(full_chk.isChecked())
+        # 'full' already captured above
         # Compute raw windows in seconds for each side
         # Re-use window bounds computed earlier (t0_c, t1_c, t0_v, t1_v)
         if st_c is not None:
