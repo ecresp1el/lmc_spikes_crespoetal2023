@@ -388,6 +388,132 @@ def compute_psth_from_exported_timestamps(
     return pd.DataFrame(rows)
 
 
+def compute_psth_matrix_from_exported(
+    h5: Path,
+    bin_ms: float = 1.0,
+    pre_s: float = 1.0,
+    post_s: float = 1.0,
+    units: str = 'counts',  # 'counts' or 'fr'
+) -> dict:
+    """Build time-locked PSTH matrices per side using exported timestamps.
+
+    Returns a dict with keys:
+      {
+        'pair_id': str,
+        'round': str,
+        'plate': int,
+        'channels': np.ndarray[int],        # shape (C,)
+        'time_s': np.ndarray[float],        # shape (T,) centers relative to chem
+        'bin_ms': float,
+        'CTZ': np.ndarray[float],           # shape (C, T)
+        'VEH': np.ndarray[float],           # shape (C, T)
+        'units': 'counts' | 'fr',
+      }
+    Missing sides are filled with zeros.
+    """
+    with h5py.File(h5.as_posix(), 'r') as f:
+        pair_id = _pair_id_from_h5(h5)
+        round_name = str(f.attrs.get('round', ''))
+        plate = int(f.attrs.get('plate', -1))
+        # Channels: use union of channels present in timestamps across sides
+        chans_set = set()
+        for side in ('CTZ', 'VEH'):
+            if side in f:
+                grp = f[side]
+                chans_set |= {int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_timestamps')}
+        channels = np.asarray(sorted(chans_set), dtype=int)
+        if channels.size == 0:
+            return {
+                'pair_id': pair_id,
+                'round': round_name,
+                'plate': plate,
+                'channels': channels,
+                'time_s': np.asarray([], dtype=float),
+                'bin_ms': float(bin_ms),
+                'CTZ': np.zeros((0, 0), dtype=float),
+                'VEH': np.zeros((0, 0), dtype=float),
+                'units': units,
+            }
+        # Build common time grid based on chem
+        # Prefer CTZ analysis_bounds for chem; fallback to VEH
+        chem = None
+        for side in ('CTZ', 'VEH'):
+            if side in f:
+                try:
+                    ab = f[side].attrs.get('analysis_bounds')
+                    abj = json.loads(ab) if isinstance(ab, (bytes, bytearray, str)) else {}
+                    chem = float(abj.get('t0', 0.0))
+                    break
+                except Exception:
+                    continue
+        chem = float(chem if chem is not None else 0.0)
+        bw = float(bin_ms) * 1e-3
+        edges = np.arange(chem - float(pre_s), chem + float(post_s) + 1e-12, bw)
+        centers = (edges[:-1] + edges[1:]) * 0.5
+        C = channels.size
+        T = centers.size
+        mats = { 'CTZ': np.zeros((C, T), dtype=float), 'VEH': np.zeros((C, T), dtype=float) }
+        for side in ('CTZ', 'VEH'):
+            if side not in f:
+                continue
+            grp = f[side]
+            # For FR conversion, FR = counts / bin_width
+            scale = 1.0 / bw if units == 'fr' else 1.0
+            for i, ch in enumerate(channels):
+                ds_name = f'ch{int(ch):02d}_timestamps'
+                if ds_name not in grp:
+                    mats[side][i, :] = 0.0
+                    continue
+                st = np.asarray(grp[ds_name][:], dtype=float)
+                counts, _ = np.histogram(st, bins=edges)
+                mats[side][i, :] = counts.astype(float) * scale
+        return {
+            'pair_id': pair_id,
+            'round': round_name,
+            'plate': plate,
+            'channels': channels,
+            'time_s': centers - chem,
+            'bin_ms': float(bin_ms),
+            'CTZ': mats['CTZ'],
+            'VEH': mats['VEH'],
+            'units': units,
+        }
+
+
+def plot_psth_matrix_pair_1x2(data: dict, out_base: Path) -> None:
+    """Plot 1x2 heatmap: channels × time for CTZ (left) and VEH (right)."""
+    channels = data['channels']
+    time_s = data['time_s']
+    mat_ctz = data['CTZ']
+    mat_veh = data['VEH']
+    units = data.get('units', 'counts')
+    if channels.size == 0 or time_s.size == 0:
+        return
+    # Shared color scale
+    vmax = np.nanpercentile(np.concatenate([mat_ctz.flatten(), mat_veh.flatten()]), 99)
+    vmax = max(1e-9, float(vmax))
+    vmin = 0.0
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
+    def _plot(ax, M, title):
+        im = ax.imshow(M, aspect='auto', origin='lower', interpolation='nearest',
+                       extent=[time_s[0], time_s[-1], int(channels[0]) - 0.5, int(channels[-1]) + 0.5],
+                       vmin=vmin, vmax=vmax, cmap='magma')
+        ax.axvline(0.0, color='w', lw=1.0, ls='--', alpha=0.8)
+        ax.set_title(title)
+        ax.set_xlabel('Time from chem (s)')
+        return im
+    im0 = _plot(axes[0], mat_ctz, 'CTZ')
+    im1 = _plot(axes[1], mat_veh, 'VEH')
+    axes[0].set_ylabel('Channel index')
+    cbar = fig.colorbar(im1, ax=axes.ravel().tolist(), shrink=0.9, pad=0.02)
+    cbar.set_label('Counts/bin' if units == 'counts' else 'FR (Hz)')
+    fig.suptitle(f'PSTH Matrix (channels × time) — {data.get("pair_id","")}, bin={data.get("bin_ms",1.0)} ms')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
 def aggregate_psth_pair_mean(psth_df: pd.DataFrame) -> pd.DataFrame:
     """Average PSTH across channels per (pair, side, time)."""
     if psth_df.empty:
@@ -736,7 +862,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--min-burst-ms', type=float, default=100.0, help='Analyze bursts with duration >= this (ms)')
     p.add_argument('--min-spikes', type=int, default=3, help='Minimum spikes per burst')
     # PSTH params
-    p.add_argument('--psth-bin-ms', type=float, default=50.0, help='PSTH bin width (ms)')
+    p.add_argument('--psth-bin-ms', type=float, default=1.0, help='PSTH bin width (ms); 1 ms for instantaneous PSTH')
     p.add_argument('--psth-pre-s', type=float, default=1.0, help='Pre-chem window for PSTH (s)')
     p.add_argument('--psth-post-s', type=float, default=1.0, help='Post-chem window for PSTH (s)')
     p.add_argument('--psth-per-channel', action='store_true', help='Generate 1x2 CTZ vs VEH PSTH plots per channel')
@@ -1047,6 +1173,36 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     for side in ('CTZ', 'VEH'):
         plot_psth_by_plate_lines_median(psth_pair, side, save_dir / f'psth_{side.lower()}_by_plate_lines_median')
         plot_psth_median_sem(psth_pair, side, save_dir / f'psth_{side.lower()}_median_sem')
+
+    # Per-pair (recording-level) PSTH matrices (channels × time), time-locked, using exported timestamps
+    print('[analysis] Building per-pair PSTH matrices (channels × time) ...')
+    for h5 in pair_h5:
+        try:
+            pm = compute_psth_matrix_from_exported(
+                h5,
+                bin_ms=args.psth_bin_ms,
+                pre_s=args.psth_pre_s,
+                post_s=args.psth_post_s,
+                units=args.psth_units,
+            )
+            base = save_dir / f"psth_matrix__{h5.stem}__{args.psth_bin_ms:g}ms"
+            # Save arrays
+            np.savez_compressed(
+                base.with_suffix('.npz').as_posix(),
+                pair_id=pm['pair_id'],
+                round=pm['round'],
+                plate=pm['plate'],
+                channels=pm['channels'],
+                time_s=pm['time_s'],
+                bin_ms=pm['bin_ms'],
+                CTZ=pm['CTZ'],
+                VEH=pm['VEH'],
+                units=pm['units'],
+            )
+            # Plot 1x2 heatmap
+            plot_psth_matrix_pair_1x2(pm, base)
+        except Exception as e:
+            print(f"[analysis] PSTH matrix error: {h5.name} -> {e}")
 
     # Optional: per-channel 1x2 CTZ vs VEH PSTH — using exported timestamps
     if args.psth_per_channel and not psth_exp_all.empty:
