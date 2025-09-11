@@ -22,8 +22,8 @@ Usage
                                      [--example-pair PAIR_ID] [--example-channel CH]
                                      [--example-match-length]
                                      [--exemplary-index-x]
-                                     [--psth-bin-ms 50] [--psth-pre-s 1.0] [--psth-post-s 1.0]
-                                     [--psth-per-channel] [--psth-channels CH [CH ...]]
+                                      [--psth-bin-ms 50] [--psth-pre-s 1.0] [--psth-post-s 1.0]
+                                     [--psth-per-channel] [--psth-channels CH [CH ...]] [--psth-mean-tci]
                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
                                      [--limit N]
 
@@ -484,6 +484,62 @@ def plot_psth_per_channel_1x2_median_sem(psth_channel_df: pd.DataFrame, channel:
     plt.close(fig)
 
 
+def _t_critical(alpha: float, df: np.ndarray) -> np.ndarray:
+    """Return t critical values elementwise for given degrees of freedom.
+
+    Falls back to normal approximation if SciPy is unavailable.
+    """
+    try:
+        from scipy.stats import t as student_t  # type: ignore
+
+        return student_t.ppf(1.0 - alpha / 2.0, df)
+    except Exception:
+        # Normal approx
+        return np.full_like(df, 1.96, dtype=float)
+
+
+def plot_psth_per_channel_1x2_mean_tci(
+    psth_channel_df: pd.DataFrame,
+    channel: int,
+    out_base: Path,
+    alpha: float = 0.05,
+) -> None:
+    """1x2 CTZ vs VEH, mean ± t-based CI across pairs for a given channel."""
+    sub = psth_channel_df[psth_channel_df['channel'] == int(channel)].copy()
+    if sub.empty:
+        return
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4.2), sharey=True)
+    for ax, side in zip(axes, ('CTZ', 'VEH')):
+        s = sub[sub['side'] == side]
+        if s.empty:
+            ax.set_visible(False)
+            continue
+        pivot = s.pivot_table(index='time_s', columns='pair_id', values='fr_hz', aggfunc='mean').sort_index()
+        t = pivot.index.values.astype(float)
+        vals = pivot.values
+        mean = np.nanmean(vals, axis=1)
+        std = np.nanstd(vals, axis=1, ddof=1)
+        n = np.sum(np.isfinite(vals), axis=1).astype(float)
+        sem = np.divide(std, np.sqrt(np.maximum(1.0, n)), out=np.zeros_like(std), where=n > 0)
+        df = np.maximum(1.0, n - 1.0)
+        tcrit = _t_critical(alpha, df)
+        half = tcrit * sem
+        color = PALETTE.get(side, '#333333')
+        ax.plot(t, mean, color=color, lw=2.0, label='Mean')
+        ax.fill_between(t, mean - half, mean + half, color=color, alpha=0.25, label=f'{int((1-alpha)*100)}% t-CI')
+        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
+        ax.set_title(f'{side}')
+        ax.grid(True, alpha=0.25)
+    axes[0].set_ylabel('FR (Hz)')
+    axes[0].set_xlabel('Time from chem (s)')
+    axes[1].set_xlabel('Time from chem (s)')
+    fig.suptitle(f'PSTH per channel — ch{int(channel):02d} (mean ± t-CI across pairs)')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
 def pick_example_pair_channel(fr_df: pd.DataFrame, prefer_side: str | None = None) -> tuple[str, int]:
     """Pick a pair/channel heuristically: max post FR across both sides.
 
@@ -611,6 +667,7 @@ class CLIArgs:
     psth_post_s: float
     psth_per_channel: bool
     psth_channels: Optional[list[int]]
+    psth_mean_tci: bool
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
@@ -632,6 +689,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--psth-post-s', type=float, default=1.0, help='Post-chem window for PSTH (s)')
     p.add_argument('--psth-per-channel', action='store_true', help='Generate 1x2 CTZ vs VEH PSTH plots per channel')
     p.add_argument('--psth-channels', type=int, nargs='+', default=None, help='Specific channel indices to plot PSTH per channel (defaults to example channel)')
+    p.add_argument('--psth-mean-tci', action='store_true', help='For per-channel PSTH, also plot mean ± t-based CI (1x2) across pairs')
     a = p.parse_args(argv)
     return CLIArgs(
         output_root=a.output_root,
@@ -650,6 +708,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
         psth_post_s=float(a.psth_post_s),
         psth_per_channel=bool(a.psth_per_channel),
         psth_channels=list(a.psth_channels) if a.psth_channels is not None else None,
+        psth_mean_tci=bool(a.psth_mean_tci),
     )
 
 
@@ -948,6 +1007,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         for ch in chans_to_plot:
             base = save_dir / f'psth_per_channel_ch{int(ch):02d}'
             try:
+                # New: per-channel mean ± t-CI (requested)
+                if args.psth_mean_tci:
+                    plot_psth_per_channel_1x2_mean_tci(psth_all, ch, base.with_name(base.name + '_mean_tci'))
+                # Existing variants for context/QA
                 plot_psth_per_channel_1x2_lines_median(psth_all, ch, base.with_name(base.name + '_lines_median'))
                 plot_psth_per_channel_1x2_median_sem(psth_all, ch, base.with_name(base.name + '_median_sem'))
             except Exception as e:
