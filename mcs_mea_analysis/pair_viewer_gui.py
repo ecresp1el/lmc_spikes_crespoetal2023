@@ -398,8 +398,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     grid = QtWidgets.QGridLayout(central)
     win.setCentralWidget(central)
 
-    # Plots: 2x2 grid
-    pg.setConfigOptions(antialias=True)
+    # Plots: 2x2 grid (clean look: white background)
+    pg.setConfigOptions(antialias=True, background='w', foreground='k')
     raw_ctz = pg.PlotWidget(); raw_ctz.setTitle("Raw CTZ")
     raw_veh = pg.PlotWidget(); raw_veh.setTitle("Raw VEH")
     ifr_ctz = pg.PlotWidget(); ifr_ctz.setTitle("IFR CTZ (Hz)")
@@ -409,7 +409,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     grid.addWidget(ifr_ctz, 1, 0)
     grid.addWidget(ifr_veh, 1, 1)
 
-    # Controls
+    # Controls (moved to a detachable dock to declutter the canvas)
     ctrl = QtWidgets.QWidget()
     h = QtWidgets.QHBoxLayout(ctrl)
     lbl_plate = QtWidgets.QLabel(f"Plate: {args.plate or '-'}  Round: {args.round or '-'}")
@@ -448,15 +448,39 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     h.addWidget(QtWidgets.QLabel("Detrend:")); h.addWidget(detrend_combo)
     h.addWidget(QtWidgets.QLabel("win:")); h.addWidget(detrend_win_spin)
     h.addWidget(QtWidgets.QLabel("sg_win/order:")); h.addWidget(savgol_win_spin); h.addWidget(savgol_ord_spin)
-    h.addWidget(btn_prev); h.addWidget(btn_next)
-    h.addWidget(btn_accept); h.addWidget(btn_reject)
-    h.addWidget(btn_save)
-    h.addWidget(btn_reload)
+    # (Prev/Next/Accept/Reject/Save/Reload moved to a toolbar for cleanliness)
     h.addWidget(chem_chk); h.addWidget(pre_spin); h.addWidget(post_spin)
     h.addWidget(full_chk)
     h.addStretch(1)
     h.addWidget(status_lbl)
-    grid.addWidget(ctrl, 2, 0, 1, 2)
+
+    # Toolbar with key actions (top)
+    toolbar = win.addToolBar("Navigate")
+    act_prev = toolbar.addAction("Prev"); act_prev.triggered.connect(on_prev)
+    act_next = toolbar.addAction("Next"); act_next.triggered.connect(on_next)
+    toolbar.addSeparator()
+    act_accept = toolbar.addAction("Accept"); act_accept.triggered.connect(on_accept)
+    act_reject = toolbar.addAction("Reject"); act_reject.triggered.connect(on_reject)
+    toolbar.addSeparator()
+    act_save = toolbar.addAction("Save"); act_save.triggered.connect(on_save)
+    act_reload = toolbar.addAction("Reload"); act_reload.triggered.connect(on_reload)
+
+    # Put controls in a scrollable dock on the right (movable/floatable)
+    dock = QtWidgets.QDockWidget("Controls", win)
+    dock.setAllowedAreas(QtCore.Qt.RightDockWidgetArea | QtCore.Qt.LeftDockWidgetArea)
+    dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable | QtWidgets.QDockWidget.DockWidgetClosable)
+    scroll = QtWidgets.QScrollArea()
+    scroll.setWidget(ctrl)
+    scroll.setWidgetResizable(True)
+    dock.setWidget(scroll)
+    win.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+
+    # Add a simple View menu to toggle the controls dock
+    try:
+        view_menu = win.menuBar().addMenu("View")
+        view_menu.addAction(dock.toggleViewAction())
+    except Exception:
+        pass
 
     # Chem markers
     chem_lines = []
@@ -508,8 +532,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             status_lbl.setText("Save failed")
 
     # Curve holders
-    c_raw = raw_ctz.plot([], [], pen=pg.mkPen('w'))
-    v_raw = raw_veh.plot([], [], pen=pg.mkPen('w'))
+    c_raw = raw_ctz.plot([], [], pen=pg.mkPen('k'))
+    v_raw = raw_veh.plot([], [], pen=pg.mkPen('k'))
     c_ifr = ifr_ctz.plot([], [], pen=pg.mkPen('c'))
     v_ifr = ifr_veh.plot([], [], pen=pg.mkPen('m'))
     # Overlays and spike/threshold items for bottom plots
