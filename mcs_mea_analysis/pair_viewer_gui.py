@@ -614,6 +614,23 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                     xr_v, yr_v = _decimated_channel_trace(st_v, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
                 elif args.veh_h5:
                     xr_v, yr_v = _decimated_channel_trace_h5(args.veh_h5, sr_v or 1.0, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                # As a last resort, reuse what's already plotted on the top raw panels
+                if (yr_c.size == 0):
+                    try:
+                        x_tmp, y_tmp = c_raw.getData()
+                        if x_tmp is not None and y_tmp is not None and len(y_tmp) > 0:
+                            xr_c = np.asarray(x_tmp); yr_c = np.asarray(y_tmp)
+                            print("[viewer] fallback: using top raw CTZ data for filtering")
+                    except Exception:
+                        pass
+                if (yr_v.size == 0):
+                    try:
+                        x_tmp, y_tmp = v_raw.getData()
+                        if x_tmp is not None and y_tmp is not None and len(y_tmp) > 0:
+                            xr_v = np.asarray(x_tmp); yr_v = np.asarray(y_tmp)
+                            print("[viewer] fallback: using top raw VEH data for filtering")
+                    except Exception:
+                        pass
                 # Debug: raw presence
                 try:
                     print(f"[viewer] raw sizes: CTZ raw_n={yr_c.size} VEH raw_n={yr_v.size}")
