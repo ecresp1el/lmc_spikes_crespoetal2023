@@ -25,6 +25,7 @@ Usage
                                       [--psth-bin-ms 50] [--psth-pre-s 1.0] [--psth-post-s 1.0]
                                      [--psth-per-channel] [--psth-channels CH [CH ...]] [--psth-mean-tci]
                                      [--psth-units counts|fr]
+                                     [--plot-aggregate-psth]
                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
                                      [--limit N]
 
@@ -514,6 +515,56 @@ def plot_psth_matrix_pair_1x2(data: dict, out_base: Path) -> None:
     plt.close(fig)
 
 
+def plot_psth_matrix_pair_1x2_lines(data: dict, out_base: Path, amplitude: float = 0.8) -> None:
+    """Line version of the matrix: each channel plotted as a thin line offset by channel index.
+
+    For each side, draws all channels' PSTHs as lines with per-channel normalization,
+    offset so that the baseline sits at the channel index. Chem is at 0 s.
+    """
+    channels = data['channels']
+    time_s = data['time_s']
+    mat_ctz = data['CTZ']
+    mat_veh = data['VEH']
+    units = data.get('units', 'counts')
+    if channels.size == 0 or time_s.size == 0:
+        return
+    ymin = int(np.min(channels)) - 0.5
+    ymax = int(np.max(channels)) + 0.5
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
+    def _plot(ax, M, title):
+        for i, ch in enumerate(channels):
+            m = M[i, :]
+            if not np.any(np.isfinite(m)):
+                continue
+            vmax = np.nanmax(m)
+            if vmax <= 0:
+                y = np.full_like(m, float(ch))
+            else:
+                y = float(ch) + amplitude * (m / vmax)
+            ax.plot(time_s, y, color='black', lw=0.5, alpha=0.9)
+        ax.axvline(0.0, color='k', lw=1.0, ls='--', alpha=0.6)
+        ax.set_title(title)
+        ax.set_xlabel('Time from chem (s)')
+        ax.set_ylim([ymin, ymax])
+        ax.grid(True, axis='x', alpha=0.2)
+    _plot(axes[0], mat_ctz, 'CTZ')
+    _plot(axes[1], mat_veh, 'VEH')
+    axes[0].set_ylabel('Channel index')
+    # Use sparse yticks for readability
+    try:
+        ticks = list(range(int(np.min(channels)), int(np.max(channels)) + 1))
+        # thin ticks to ~every 5
+        step = max(1, int(round(len(ticks) / 12)))
+        axes[0].set_yticks(ticks[::step])
+    except Exception:
+        pass
+    fig.suptitle(f'PSTH Matrix — Line Version (channels as lines) — {data.get("pair_id","")}, bin={data.get("bin_ms",1.0)} ms, units={units}')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+    fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+
 def aggregate_psth_pair_mean(psth_df: pd.DataFrame) -> pd.DataFrame:
     """Average PSTH across channels per (pair, side, time)."""
     if psth_df.empty:
@@ -846,6 +897,7 @@ class CLIArgs:
     psth_channels: Optional[list[int]]
     psth_mean_tci: bool
     psth_units: str
+    plot_aggregate_psth: bool
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
@@ -869,6 +921,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
     p.add_argument('--psth-channels', type=int, nargs='+', default=None, help='Specific channel indices to plot PSTH per channel (defaults to example channel)')
     p.add_argument('--psth-mean-tci', action='store_true', help='For per-channel PSTH, also plot mean ± t-based CI (1x2) across pairs')
     p.add_argument('--psth-units', choices=['counts','fr'], default='counts', help='PSTH units for per-channel plots (counts or FR)')
+    p.add_argument('--plot-aggregate-psth', action='store_true', help='Also plot aggregate per-side PSTH across pairs (lines+median and median±SEM)')
     a = p.parse_args(argv)
     return CLIArgs(
         output_root=a.output_root,
@@ -889,6 +942,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> CLIArgs:
         psth_channels=list(a.psth_channels) if a.psth_channels is not None else None,
         psth_mean_tci=bool(a.psth_mean_tci),
         psth_units=str(a.psth_units),
+        plot_aggregate_psth=bool(a.plot_aggregate_psth),
     )
 
 
@@ -1161,18 +1215,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             print(f"[analysis] PSTH(exported) error: {h5.name} -> {e}")
     psth_exp_all = pd.concat(psth_exp_frames, ignore_index=True) if psth_exp_frames else pd.DataFrame(columns=['pair_id','round','plate','side','channel','time_s','count','fr_hz'])
     psth_exp_all.to_csv(save_dir / 'psth_from_exported_channel.csv', index=False)
-    # For historical comparison, also compute pair-mean FR from re-detection if desired later
-    psth_pair = aggregate_psth_pair_mean(psth_exp_all.rename(columns={'fr_hz':'fr_hz'})) if not psth_exp_all.empty else pd.DataFrame(columns=['pair_id','round','plate','side','time_s','fr_hz_mean_ch'])
-    psth_pair.to_csv(save_dir / 'psth_pair_mean.csv', index=False)
-    # Save plate color map for reproducibility
-    if not psth_pair.empty:
-        plates = sorted({int(p) for p in psth_pair['plate'].unique() if pd.notna(p)})
-        cmap = plate_color_map(plates)
-        pd.DataFrame({'plate': list(cmap.keys()), 'color_hex': list(cmap.values())}).to_csv(save_dir / 'psth_plate_colors.csv', index=False)
-    # Plots per side
-    for side in ('CTZ', 'VEH'):
-        plot_psth_by_plate_lines_median(psth_pair, side, save_dir / f'psth_{side.lower()}_by_plate_lines_median')
-        plot_psth_median_sem(psth_pair, side, save_dir / f'psth_{side.lower()}_median_sem')
+    # Optional aggregate PSTH across pairs (disabled by default)
+    if args.plot_aggregate_psth:
+        psth_pair = aggregate_psth_pair_mean(psth_exp_all.rename(columns={'fr_hz':'fr_hz'})) if not psth_exp_all.empty else pd.DataFrame(columns=['pair_id','round','plate','side','time_s','fr_hz_mean_ch'])
+        psth_pair.to_csv(save_dir / 'psth_pair_mean.csv', index=False)
+        # Save plate color map for reproducibility
+        if not psth_pair.empty:
+            plates = sorted({int(p) for p in psth_pair['plate'].unique() if pd.notna(p)})
+            cmap = plate_color_map(plates)
+            pd.DataFrame({'plate': list(cmap.keys()), 'color_hex': list(cmap.values())}).to_csv(save_dir / 'psth_plate_colors.csv', index=False)
+        # Plots per side
+        for side in ('CTZ', 'VEH'):
+            plot_psth_by_plate_lines_median(psth_pair, side, save_dir / f'psth_{side.lower()}_by_plate_lines_median')
+            plot_psth_median_sem(psth_pair, side, save_dir / f'psth_{side.lower()}_median_sem')
 
     # Per-pair (recording-level) PSTH matrices (channels × time), time-locked, using exported timestamps
     print('[analysis] Building per-pair PSTH matrices (channels × time) ...')
@@ -1199,8 +1254,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 VEH=pm['VEH'],
                 units=pm['units'],
             )
-            # Plot 1x2 heatmap
+            # Plot 1x2 heatmap and 1x2 line version
             plot_psth_matrix_pair_1x2(pm, base)
+            plot_psth_matrix_pair_1x2_lines(pm, base.with_name(base.name + '_lines'))
         except Exception as e:
             print(f"[analysis] PSTH matrix error: {h5.name} -> {e}")
 
