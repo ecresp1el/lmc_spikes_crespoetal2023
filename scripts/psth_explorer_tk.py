@@ -835,7 +835,7 @@ class TkPSTHApp:
                 veh_counts_all=veh_counts_all,
                 channels_ctz=channels_ctz,
                 channels_veh=channels_veh,
-                # Metadata
+                # Metadata (global defaults)
                 pairs=np.array([it['pair_id'] for it in self.saved_pairs], dtype=object),
                 starts_ctz=np.array([it['starts']['CTZ'] for it in self.saved_pairs], dtype=float),
                 starts_veh=np.array([it['starts']['VEH'] for it in self.saved_pairs], dtype=float),
@@ -844,6 +844,12 @@ class TkPSTHApp:
                 early_dur=self.saved_pairs[0]['early_dur'],
                 stat=self.saved_pairs[0]['stat'],
                 taps=self.saved_pairs[0]['taps'],
+                # Per-pair meta (for per-pair plotting using exact GUI settings)
+                eff_bin_ms_per_pair=np.array([it['eff_bin_ms'] for it in self.saved_pairs], dtype=float),
+                bin_factor_per_pair=np.array([it['bin_factor'] for it in self.saved_pairs], dtype=int),
+                taps_per_pair=np.array([it['taps'] for it in self.saved_pairs], dtype=int),
+                stat_per_pair=np.array([it['stat'] for it in self.saved_pairs], dtype=object),
+                early_dur_per_pair=np.array([it['early_dur'] for it in self.saved_pairs], dtype=float),
             )
         except Exception as e:
             messagebox.showerror('Save failed', f'Could not save group data:\n{e}')

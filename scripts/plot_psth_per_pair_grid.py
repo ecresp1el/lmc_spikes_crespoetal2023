@@ -157,11 +157,17 @@ def _per_pair_from_group(Z: dict) -> List[dict]:
     if pairs is None:
         return out
     t = Z['t']
-    early_dur = float(Z.get('early_dur', 0.05))
+    early_dur_global = float(Z.get('early_dur', 0.05))
     starts_ctz = Z.get('starts_ctz')
     starts_veh = Z.get('starts_veh')
     ch_ctz = Z.get('channels_ctz')
     ch_veh = Z.get('channels_veh')
+    # per-pair meta if available
+    eff_per = Z.get('eff_bin_ms_per_pair')
+    bf_per = Z.get('bin_factor_per_pair')
+    taps_per = Z.get('taps_per_pair')
+    stat_per = Z.get('stat_per_pair')
+    early_per = Z.get('early_dur_per_pair')
     # full matrices
     ctz_norm_all = Z.get('ctz_norm_all')
     veh_norm_all = Z.get('veh_norm_all')
@@ -172,9 +178,13 @@ def _per_pair_from_group(Z: dict) -> List[dict]:
     for i, pid in enumerate(pairs):
         item = {
             'pair_id': str(pid),
-            'early_dur': early_dur,
+            'early_dur': float(early_per[i]) if early_per is not None else early_dur_global,
             'starts': {'CTZ': float(starts_ctz[i]) if starts_ctz is not None else 0.0,
                        'VEH': float(starts_veh[i]) if starts_veh is not None else 0.0},
+            'eff_bin_ms': float(eff_per[i]) if eff_per is not None else float(Z.get('eff_bin_ms', np.nan)),
+            'bin_factor': int(bf_per[i]) if bf_per is not None else int(Z.get('bin_factor', 1)),
+            'taps': int(taps_per[i]) if taps_per is not None else int(Z.get('taps', 5)),
+            'stat': str(stat_per[i]) if stat_per is not None else str(Z.get('stat', 'mean')),
             'CTZ': {
                 't': t,
                 'channels': ch_ctz[i] if ch_ctz is not None else np.array([]),
@@ -221,7 +231,15 @@ def _plot_pair_side_grid(save_dir: Path, pair: dict, side: str, signal: str) -> 
     fig_w = max(6.0, 2.0 * cols)
     fig_h = max(4.0, 1.6 * rows)
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=120)
-    fig.suptitle(f'{pair.get("pair_id","?")} — {side} — {signal}')
+    meta_bits = []
+    if pair.get('eff_bin_ms') is not None and np.isfinite(pair.get('eff_bin_ms', np.nan)):
+        meta_bits.append(f"bin={pair.get('eff_bin_ms'):.3f} ms")
+    if pair.get('taps') is not None:
+        meta_bits.append(f"taps={pair.get('taps')}")
+    if pair.get('stat'):
+        meta_bits.append(f"stat={pair.get('stat')}")
+    meta_txt = (' | ' + ' '.join(meta_bits)) if meta_bits else ''
+    fig.suptitle(f"{pair.get('pair_id','?')} — {side} — {signal}{meta_txt}")
     edur = float(pair.get('early_dur', 0.05))
     sstart = float(pair.get('starts', {}).get(side, 0.0))
     for i in range(C):

@@ -55,6 +55,9 @@ class Args:
     save_dir: Optional[Path]
     output_root: Optional[Path]
     spike_dir: Optional[Path]
+    by_pair: bool
+    pair_limit: Optional[int]
+    trace_smooth: int
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
@@ -63,8 +66,11 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--save-dir', type=Path, default=None, help='Directory to write plots (default: next to NPZ)')
     p.add_argument('--output-root', type=Path, default=None, help='Override output root (defaults to CONFIG or _mcs_mea_outputs_local)')
     p.add_argument('--spike-dir', type=Path, default=None, help='Override spike matrices dir (default under output_root)')
+    p.add_argument('--by-pair', action='store_true', help='Also write per-pair 1×2 overlays (CTZ|VEH)')
+    p.add_argument('--pair-limit', type=int, default=None, help='Limit number of pairs for per-pair overlays')
+    p.add_argument('--trace-smooth', type=int, default=5, help='Moving-average smoothing for individual traces (bins)')
     a = p.parse_args(argv)
-    return Args(group_npz=a.group_npz, save_dir=a.save_dir, output_root=a.output_root, spike_dir=a.spike_dir)
+    return Args(group_npz=a.group_npz, save_dir=a.save_dir, output_root=a.output_root, spike_dir=a.spike_dir, by_pair=bool(a.by_pair), pair_limit=a.pair_limit, trace_smooth=int(a.trace_smooth))
 
 
 def _ensure_repo_on_path() -> Path:
@@ -181,7 +187,17 @@ def _plot_group(fig_path_base: Path, Z: dict) -> None:
     plt.close(fig)
 
 
-def _plot_alltraces_1x2(fig_path_base: Path, Z: dict) -> None:
+def _smooth_ma2d(M: np.ndarray, k: int) -> np.ndarray:
+    if not isinstance(M, np.ndarray) or M.ndim != 2 or k <= 1:
+        return M
+    k = int(max(1, k))
+    if k == 1:
+        return M
+    K = np.ones(k, dtype=float) / float(k)
+    return np.apply_along_axis(lambda x: np.convolve(x.astype(float), K, mode='same'), 1, M)
+
+
+def _plot_alltraces_1x2(fig_path_base: Path, Z: dict, trace_smooth: int = 5) -> None:
     """Plot every available normalized trace across all pairs in a single 1×2 figure.
 
     Left: CTZ — all per‑pair, per‑channel normalized traces overlaid (very light) + group mean.
@@ -201,24 +217,26 @@ def _plot_alltraces_1x2(fig_path_base: Path, Z: dict) -> None:
     if isinstance(ctz_norm_all, np.ndarray):
         for arr in ctz_norm_all:
             if hasattr(arr, 'ndim') and arr.ndim == 2 and arr.size:
-                ax_ctz.plot(t, arr.T, color='tab:blue', alpha=0.06, lw=0.4)
+                X = _smooth_ma2d(arr, trace_smooth)
+                ax_ctz.plot(t, X.T, color='0.7', alpha=0.25, lw=0.5)
     if isinstance(veh_norm_all, np.ndarray):
         for arr in veh_norm_all:
             if hasattr(arr, 'ndim') and arr.ndim == 2 and arr.size:
-                ax_veh.plot(t, arr.T, color='tab:orange', alpha=0.06, lw=0.4)
+                X = _smooth_ma2d(arr, trace_smooth)
+                ax_veh.plot(t, X.T, color='0.7', alpha=0.25, lw=0.5)
 
     # Overlay group means (from pair means if available)
     if ctz_norm is not None and ctz_norm.size:
         ax_ctz.plot(t, np.nanmean(ctz_norm, axis=0), color='tab:blue', lw=2.0, label='CTZ mean')
     if veh_norm is not None and veh_norm.size:
-        ax_veh.plot(t, np.nanmean(veh_norm, axis=0), color='tab:orange', lw=2.0, label='VEH mean')
+        ax_veh.plot(t, np.nanmean(veh_norm, axis=0), color='k', lw=2.0, label='VEH mean')
 
     for ax in (ax_ctz, ax_veh):
         ax.axvline(0.0, color='r', lw=0.8, ls='--', alpha=0.7)
         ax.grid(True, axis='x', alpha=0.2)
         ax.set_xlabel('Time (s)')
-    ax_ctz.set_title('CTZ — ALL normalized traces + group mean')
-    ax_veh.set_title('VEH — ALL normalized traces + group mean')
+    ax_ctz.set_title('CTZ — ALL normalized (grey) + mean (blue)')
+    ax_veh.set_title('VEH — ALL normalized (grey) + mean (black)')
     ax_ctz.set_ylabel('Normalized firing (early)')
 
     fig.suptitle('PSTH Group — ALL normalized traces (CTZ | VEH)')
@@ -226,6 +244,57 @@ def _plot_alltraces_1x2(fig_path_base: Path, Z: dict) -> None:
     fig.savefig(fig_path_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
     fig.savefig(fig_path_base.with_suffix('.pdf'), bbox_inches='tight')
     plt.close(fig)
+
+
+def _plot_alltraces_by_pair(out_dir: Path, Z: dict, trace_smooth: int = 5, pair_limit: Optional[int] = None) -> None:
+    """Write a 1×2 overlay per pair (CTZ | VEH) with grey per-trace lines and blue/black means."""
+    t = Z['t']
+    pairs = Z.get('pairs')
+    if pairs is None:
+        return
+    ctz_norm = Z.get('ctz_norm')
+    veh_norm = Z.get('veh_norm')
+    ctz_norm_all = Z.get('ctz_norm_all')
+    veh_norm_all = Z.get('veh_norm_all')
+    P = len(pairs)
+    count = 0
+    for i in range(P):
+        if pair_limit is not None and count >= pair_limit:
+            break
+        pid = str(pairs[i])
+        fig = plt.figure(figsize=(12, 5), dpi=100)
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax2 = fig.add_subplot(1, 2, 2, sharey=ax1)
+        # CTZ
+        if isinstance(ctz_norm_all, np.ndarray):
+            arr = ctz_norm_all[i]
+            if hasattr(arr, 'ndim') and arr.ndim == 2 and arr.size:
+                X = _smooth_ma2d(arr, trace_smooth)
+                ax1.plot(t, X.T, color='0.7', alpha=0.25, lw=0.5)
+        if ctz_norm is not None and ctz_norm.size and i < ctz_norm.shape[0]:
+            ax1.plot(t, ctz_norm[i, :], color='tab:blue', lw=2.0, label='CTZ mean')
+        # VEH
+        if isinstance(veh_norm_all, np.ndarray):
+            arr = veh_norm_all[i]
+            if hasattr(arr, 'ndim') and arr.ndim == 2 and arr.size:
+                X = _smooth_ma2d(arr, trace_smooth)
+                ax2.plot(t, X.T, color='0.7', alpha=0.25, lw=0.5)
+        if veh_norm is not None and veh_norm.size and i < veh_norm.shape[0]:
+            ax2.plot(t, veh_norm[i, :], color='k', lw=2.0, label='VEH mean')
+        for ax in (ax1, ax2):
+            ax.axvline(0.0, color='r', lw=0.8, ls='--', alpha=0.7)
+            ax.grid(True, axis='x', alpha=0.2)
+            ax.set_xlabel('Time (s)')
+        ax1.set_title(f'{pid} — CTZ (grey) + mean (blue)')
+        ax2.set_title(f'{pid} — VEH (grey) + mean (black)')
+        ax1.set_ylabel('Normalized firing (early)')
+        fig.suptitle(f'PSTH All Traces — {pid}')
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        base = out_dir / f'{Path(str(pid)).stem}__ctz_veh_alltraces_pair'
+        fig.savefig(base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
+        fig.savefig(base.with_suffix('.pdf'), bbox_inches='tight')
+        plt.close(fig)
+        count += 1
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -250,9 +319,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     # Also write the all‑traces 1×2 figure
     base_all = save_dir / (grp_path.stem + '__ctz_veh_alltraces')
     try:
-        _plot_alltraces_1x2(base_all, Z)
+        _plot_alltraces_1x2(base_all, Z, trace_smooth=args.trace_smooth)
     except Exception as e:
         print('[psth-group] all-traces plot failed:', e)
+    if args.by_pair:
+        try:
+            _plot_alltraces_by_pair(save_dir, Z, trace_smooth=args.trace_smooth, pair_limit=args.pair_limit)
+        except Exception as e:
+            print('[psth-group] by-pair overlays failed:', e)
     print('[psth-group] Wrote:', base.with_suffix('.svg'))
     return 0
 
