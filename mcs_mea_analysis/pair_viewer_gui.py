@@ -483,7 +483,11 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     persist_box = QtWidgets.QGroupBox("Save / Status")
     persist_layout = QtWidgets.QVBoxLayout(persist_box)
     btn_row = QtWidgets.QHBoxLayout(); btn_row.addWidget(btn_save); btn_row.addWidget(btn_reload)
-    btn_export = QtWidgets.QPushButton("Export Spikes + Waveforms (All Channels)")
+    btn_export = QtWidgets.QPushButton("Export Raw/Filtered + Spikes/Waveforms (All Channels)")
+    try:
+        btn_export.setToolTip("Saves raw + filtered traces, spike timestamps, and waveforms for ALL channels in the displayed time window.")
+    except Exception:
+        pass
     btn_row.addWidget(btn_export); btn_row.addStretch(1)
     persist_layout.addLayout(btn_row)
     persist_layout.addWidget(status_lbl)

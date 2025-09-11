@@ -146,8 +146,9 @@ def export_pair_spikes_waveforms(
         out.attrs["chem_veh_s"] = float(chem_veh_s or 0.0)
         out.attrs["pre_s"] = float(pre_s)
         out.attrs["post_s"] = float(post_s)
-        out.create_dataset("filter_config_json", data=np.string_(json.dumps(asdict(fcfg))))
-        out.create_dataset("detect_config_json", data=np.string_(json.dumps(asdict(dcfg))))
+        # Store config JSON as UTF-8 bytes (NumPy >=2 compatible)
+        out.create_dataset("filter_config_json", data=json.dumps(asdict(fcfg)).encode("utf-8"))
+        out.create_dataset("detect_config_json", data=json.dumps(asdict(dcfg)).encode("utf-8"))
         grp_ctz = out.create_group("CTZ")
         grp_veh = out.create_group("VEH")
         # Record sampling rate and window bounds at the group level
