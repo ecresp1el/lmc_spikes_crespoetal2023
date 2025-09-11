@@ -26,6 +26,8 @@ What it produces
 - Per pair: 1×2 raster (no heatmap) showing, for each channel, tick marks at
   1 ms bins that contain ≥1 spike (CTZ left, VEH right):
   <save_dir>/plots/binary_raster__<PAIR>__<bin>ms.svg/pdf
+  - X‑axis spans exactly −pre_s .. +post_s (default 1 s each; total 2 s),
+    with chem at 0 s and a faint 1‑ms band highlighting the stim bin.
 
 Usage
 -----
@@ -180,6 +182,15 @@ def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> Non
     sides = ['CTZ', 'VEH']
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
     plotted = False
+    # Determine common window across sides (use max pre/post among present sides)
+    present = [mats[s] for s in sides if s in mats]
+    if not present:
+        plt.close(fig)
+        return
+    bw = float(present[0].get('bin_ms', 1.0)) * 1e-3
+    common_pre = max(float(d.get('window_pre_s', 1.0)) for d in present)
+    common_post = max(float(d.get('window_post_s', 1.0)) for d in present)
+
     for ax, side in zip(axes, sides):
         d = mats.get(side)
         if not d:
@@ -198,6 +209,10 @@ def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> Non
             if where.size:
                 t = time_s[where]
                 ax.vlines(t, ch, ch + 0.9, color='k', lw=0.6)
+        # Enforce identical x-limits for both sides: [-pre, +post]
+        ax.set_xlim(-common_pre, common_post)
+        # Highlight the 1 ms stim bin around 0
+        ax.axvspan(-bw * 0.5, bw * 0.5, color='red', alpha=0.12, lw=0)
         ax.axvline(0.0, color='r', lw=1.0, ls='--', alpha=0.7)
         ax.set_title(f'{side}')
         ax.set_xlabel('Time from chem (s)')
