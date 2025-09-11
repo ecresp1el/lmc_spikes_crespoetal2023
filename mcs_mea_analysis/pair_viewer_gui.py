@@ -407,6 +407,21 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     h.addWidget(lbl_plate); h.addStretch(1)
     h.addWidget(QtWidgets.QLabel("Channel:")); h.addWidget(spin)
     h.addWidget(QtWidgets.QLabel("Display:")); h.addWidget(disp_mode)
+    # Filter controls (visible in Filtered/Spikes; values still read if hidden)
+    filt_mode = QtWidgets.QComboBox(); filt_mode.addItems(["High-pass", "Band-pass", "Detrend+HP"]) 
+    hp_spin = QtWidgets.QDoubleSpinBox(); hp_spin.setRange(10.0, 10000.0); hp_spin.setDecimals(1); hp_spin.setValue(300.0); hp_spin.setSuffix(" Hz")
+    bp_lo_spin = QtWidgets.QDoubleSpinBox(); bp_lo_spin.setRange(10.0, 10000.0); bp_lo_spin.setDecimals(1); bp_lo_spin.setValue(300.0); bp_lo_spin.setSuffix(" Hz")
+    bp_hi_spin = QtWidgets.QDoubleSpinBox(); bp_hi_spin.setRange(10.0, 40000.0); bp_hi_spin.setDecimals(1); bp_hi_spin.setValue(5000.0); bp_hi_spin.setSuffix(" Hz")
+    detrend_combo = QtWidgets.QComboBox(); detrend_combo.addItems(["Median", "Savitzky–Golay"]) 
+    detrend_win_spin = QtWidgets.QDoubleSpinBox(); detrend_win_spin.setRange(0.005, 0.5); detrend_win_spin.setDecimals(3); detrend_win_spin.setValue(0.020); detrend_win_spin.setSuffix(" s")
+    savgol_win_spin = QtWidgets.QSpinBox(); savgol_win_spin.setRange(5, 999); savgol_win_spin.setSingleStep(2); savgol_win_spin.setValue(41)
+    savgol_ord_spin = QtWidgets.QSpinBox(); savgol_ord_spin.setRange(1, 5); savgol_ord_spin.setValue(2)
+    h.addWidget(QtWidgets.QLabel("Filter:")); h.addWidget(filt_mode)
+    h.addWidget(QtWidgets.QLabel("HP:")); h.addWidget(hp_spin)
+    h.addWidget(QtWidgets.QLabel("BP lo/hi:")); h.addWidget(bp_lo_spin); h.addWidget(bp_hi_spin)
+    h.addWidget(QtWidgets.QLabel("Detrend:")); h.addWidget(detrend_combo)
+    h.addWidget(QtWidgets.QLabel("win:")); h.addWidget(detrend_win_spin)
+    h.addWidget(QtWidgets.QLabel("sg_win/order:")); h.addWidget(savgol_win_spin); h.addWidget(savgol_ord_spin)
     h.addWidget(btn_prev); h.addWidget(btn_next)
     h.addWidget(btn_accept); h.addWidget(btn_reject)
     h.addWidget(btn_save)
@@ -486,6 +501,22 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     # Simple caches to avoid repeated HDF5 reads per channel and mode (full/decimated)
     raw_cache_ctz: Dict[Tuple[int, bool], Tuple[np.ndarray, np.ndarray]] = {}
     raw_cache_veh: Dict[Tuple[int, bool], Tuple[np.ndarray, np.ndarray]] = {}
+
+    def _set_filter_controls_visibility() -> None:
+        mode = filt_mode.currentText()
+        # Show controls relevant to the chosen filter mode
+        hp_spin.setVisible(mode in ("High-pass", "Detrend+HP"))
+        bp_lo_spin.setVisible(mode == "Band-pass")
+        bp_hi_spin.setVisible(mode == "Band-pass")
+        detrend_combo.setVisible(mode == "Detrend+HP")
+        # Detrend sub-controls
+        is_med = (detrend_combo.currentText().startswith("Median"))
+        is_sg = (detrend_combo.currentText().startswith("Savitzky"))
+        detrend_win_spin.setVisible(mode == "Detrend+HP" and is_med)
+        savgol_win_spin.setVisible(mode == "Detrend+HP" and is_sg)
+        savgol_ord_spin.setVisible(mode == "Detrend+HP" and is_sg)
+
+    _set_filter_controls_visibility()
 
     def update_channel(ch: int) -> None:
         status_lbl.setText("Loading raw…")
