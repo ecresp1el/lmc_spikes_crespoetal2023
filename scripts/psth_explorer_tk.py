@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
@@ -243,7 +243,9 @@ class TkPSTHApp:
         ttk.Button(ctrl, text='View Saved', command=self._show_saved_summary).grid(row=0, column=14, padx=6)
         ttk.Button(ctrl, text='Clear Saved', command=self._clear_saved).grid(row=0, column=15, padx=6)
         ttk.Button(ctrl, text='Run Group Comparison', command=self._run_group_comparison).grid(row=0, column=16, padx=6)
-        ttk.Checkbutton(ctrl, text='Carry to next', variable=self.var_carry).grid(row=0, column=17, padx=6)
+        ttk.Button(ctrl, text='Save Session (pairs)', command=self._save_session).grid(row=0, column=17, padx=6)
+        ttk.Button(ctrl, text='Load Session (pairs)', command=self._load_session).grid(row=0, column=18, padx=6)
+        ttk.Checkbutton(ctrl, text='Carry to next', variable=self.var_carry).grid(row=0, column=19, padx=6)
 
         # Early starts (CTZ/VEH)
         ttk.Label(ctrl, text='CTZ start').grid(row=1, column=0, padx=6, pady=6, sticky='w')
@@ -603,7 +605,7 @@ class TkPSTHApp:
     def _save_pair(self) -> None:
         t_ctz, N_ctz = self._compute_normalized('CTZ')
         t_veh, N_veh = self._compute_normalized('VEH')
-        # Also compute raw (rebinned + smoothed) means
+        # Also compute raw (rebinned + smoothed) and pre-smoothing counts
         t_ctz_raw, B_ctz = self._get_rebinned('CTZ')
         t_veh_raw, B_veh = self._get_rebinned('VEH')
         S_ctz = np.zeros_like(B_ctz)
@@ -612,6 +614,9 @@ class TkPSTHApp:
             S_ctz[i, :] = _smooth_boxcar(B_ctz[i, :], self.taps)
         for i in range(S_veh.shape[0]):
             S_veh[i, :] = _smooth_boxcar(B_veh[i, :], self.taps)
+        # Channels meta
+        ch_ctz = self.mats['CTZ']['channels'] if 'CTZ' in self.mats else np.array([])
+        ch_veh = self.mats['VEH']['channels'] if 'VEH' in self.mats else np.array([])
         item = {
             'pair_id': self.pair_id,
             'early_dur': float(self.early_dur),
@@ -623,13 +628,23 @@ class TkPSTHApp:
             'bin_factor': int(self.bin_factor),
             'CTZ': {
                 't': t_ctz,
+                'channels': ch_ctz,
+                'norm_all': N_ctz,
+                'raw_all': S_ctz,
+                'counts_all': B_ctz,
                 'norm_mean': np.nanmean(N_ctz, axis=0) if N_ctz.size else np.array([]),
                 'raw_mean': np.nanmean(S_ctz, axis=0) if S_ctz.size else np.array([]),
+                'counts_mean': np.nanmean(B_ctz, axis=0) if B_ctz.size else np.array([]),
             },
             'VEH': {
                 't': t_veh,
+                'channels': ch_veh,
+                'norm_all': N_veh,
+                'raw_all': S_veh,
+                'counts_all': B_veh,
                 'norm_mean': np.nanmean(N_veh, axis=0) if N_veh.size else np.array([]),
                 'raw_mean': np.nanmean(S_veh, axis=0) if S_veh.size else np.array([]),
+                'counts_mean': np.nanmean(B_veh, axis=0) if B_veh.size else np.array([]),
             },
         }
         self.saved_pairs.append(item)
@@ -678,6 +693,49 @@ class TkPSTHApp:
         except Exception as e:
             messagebox.showerror('Save failed', f'Could not save figure:\n{e}')
 
+    # ===== Session save/load =====
+    def _save_session(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title='Save Saved-Pairs Session (.npz)',
+            defaultextension='.npz',
+            filetypes=[('NumPy Zip', '*.npz')],
+            initialfile=f'psth_session__{len(self.saved_pairs)}_pairs.npz'
+        )
+        if not path:
+            return
+        try:
+            np.savez_compressed(path, saved_pairs=np.array(self.saved_pairs, dtype=object), version=1)
+            messagebox.showinfo('Session saved', f'Session saved to:\n{path}')
+        except Exception as e:
+            messagebox.showerror('Save failed', f'Could not save session:\n{e}')
+
+    def _load_session(self) -> None:
+        path = filedialog.askopenfilename(
+            title='Load Saved-Pairs Session (.npz)',
+            filetypes=[('NumPy Zip', '*.npz')]
+        )
+        if not path:
+            return
+        try:
+            with np.load(path, allow_pickle=True) as Z:
+                if 'saved_pairs' in Z:
+                    arr = Z['saved_pairs']
+                    self.saved_pairs = list(arr) if isinstance(arr, np.ndarray) else list(arr.tolist())
+                else:
+                    messagebox.showerror('Load failed', 'File missing saved_pairs array.')
+                    return
+            # Summarize what was loaded
+            pair_ids = [it.get('pair_id', '?') for it in self.saved_pairs]
+            meta0 = self.saved_pairs[0] if self.saved_pairs else {}
+            eff_bin = meta0.get('eff_bin_ms', 'N/A')
+            stat = meta0.get('stat', 'N/A')
+            early = meta0.get('early_dur', 'N/A')
+            summary = 'Pairs:\n- ' + '\n- '.join(pair_ids)
+            summary += f"\n\nSettings: bin={eff_bin} ms, stat={stat}, early_dur={early} s"
+            messagebox.showinfo('Session loaded', f'Loaded {len(self.saved_pairs)} saved pairs from:\n{path}\n\n{summary}')
+        except Exception as e:
+            messagebox.showerror('Load failed', f'Could not load session:\n{e}')
+
     def _run_group_comparison(self) -> None:
         if len(self.saved_pairs) < 2:
             messagebox.showerror('Need more', 'Save at least 2 pairs before group comparison.')
@@ -715,13 +773,34 @@ class TkPSTHApp:
         out_dir.mkdir(parents=True, exist_ok=True)
         npz_path = out_dir / f'psth_group_data__{len(self.saved_pairs)}.npz'
         try:
+            # Build per-pair all-traces lists (object arrays)
+            ctz_norm_all = np.array([it['CTZ']['norm_all'] for it in self.saved_pairs], dtype=object)
+            veh_norm_all = np.array([it['VEH']['norm_all'] for it in self.saved_pairs], dtype=object)
+            ctz_raw_all = np.array([it['CTZ']['raw_all'] for it in self.saved_pairs], dtype=object)
+            veh_raw_all = np.array([it['VEH']['raw_all'] for it in self.saved_pairs], dtype=object)
+            ctz_counts_all = np.array([it['CTZ']['counts_all'] for it in self.saved_pairs], dtype=object)
+            veh_counts_all = np.array([it['VEH']['counts_all'] for it in self.saved_pairs], dtype=object)
+            channels_ctz = np.array([it['CTZ']['channels'] for it in self.saved_pairs], dtype=object)
+            channels_veh = np.array([it['VEH']['channels'] for it in self.saved_pairs], dtype=object)
+
             np.savez_compressed(
                 npz_path.as_posix(),
                 t=t,
+                # Pair-level means stacks
                 ctz_norm=ctz_norm,
                 veh_norm=veh_norm,
                 ctz_raw=ctz_raw,
                 veh_raw=veh_raw,
+                # All per-pair traces (object arrays; load with allow_pickle)
+                ctz_norm_all=ctz_norm_all,
+                veh_norm_all=veh_norm_all,
+                ctz_raw_all=ctz_raw_all,
+                veh_raw_all=veh_raw_all,
+                ctz_counts_all=ctz_counts_all,
+                veh_counts_all=veh_counts_all,
+                channels_ctz=channels_ctz,
+                channels_veh=channels_veh,
+                # Metadata
                 pairs=np.array([it['pair_id'] for it in self.saved_pairs], dtype=object),
                 starts_ctz=np.array([it['starts']['CTZ'] for it in self.saved_pairs], dtype=float),
                 starts_veh=np.array([it['starts']['VEH'] for it in self.saved_pairs], dtype=float),
@@ -735,11 +814,17 @@ class TkPSTHApp:
             messagebox.showerror('Save failed', f'Could not save group data:\n{e}')
             return
 
-        # Plot summary figure
-        fig = Figure(figsize=(12, 4), dpi=100)
-        ax1 = fig.add_subplot(1, 3, 1)
-        ax2 = fig.add_subplot(1, 3, 2, sharey=ax1)
-        ax3 = fig.add_subplot(1, 3, 3, sharey=ax1)
+        # Plot summary figure (2x2):
+        #  [0,0] CTZ all per-pair (normalized) + group mean
+        #  [0,1] VEH all per-pair (normalized) + group mean
+        #  [1,0] CTZ vs VEH group means overlay
+        #  [1,1] CTZ+VEH all per-pair overlay (normalized) + both group means
+        fig = Figure(figsize=(12, 8), dpi=100)
+        gs = fig.add_gridspec(2, 2, hspace=0.32, wspace=0.25)
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax2 = fig.add_subplot(gs[0, 1], sharey=ax1)
+        ax3 = fig.add_subplot(gs[1, 0], sharex=ax1, sharey=ax1)
+        ax4 = fig.add_subplot(gs[1, 1], sharex=ax1, sharey=ax1)
         cmap = plt.get_cmap('tab10', max(len(self.saved_pairs), 1))
         for k, it in enumerate(self.saved_pairs):
             c = cmap(k % cmap.N)
@@ -747,6 +832,11 @@ class TkPSTHApp:
                 ax1.plot(it['CTZ']['t'], it['CTZ']['norm_mean'], color=c, lw=1.0, alpha=0.9)
             if it['VEH']['norm_mean'].size:
                 ax2.plot(it['VEH']['t'], it['VEH']['norm_mean'], color=c, lw=1.0, alpha=0.9)
+            # Combined overlay (normalized per-pair means)
+            if it['CTZ']['norm_mean'].size:
+                ax4.plot(it['CTZ']['t'], it['CTZ']['norm_mean'], color='tab:blue', lw=0.8, alpha=0.35)
+            if it['VEH']['norm_mean'].size:
+                ax4.plot(it['VEH']['t'], it['VEH']['norm_mean'], color='tab:orange', lw=0.8, alpha=0.35)
         if ctz_norm.size:
             ax1.plot(t, np.nanmean(ctz_norm, axis=0), color='k', lw=2.0, label='CTZ mean')
         if veh_norm.size:
@@ -754,13 +844,17 @@ class TkPSTHApp:
         if ctz_norm.size and veh_norm.size:
             ax3.plot(t, np.nanmean(ctz_norm, axis=0), color='tab:blue', lw=2.0, label='CTZ mean')
             ax3.plot(t, np.nanmean(veh_norm, axis=0), color='tab:orange', lw=2.0, label='VEH mean')
-        for ax in (ax1, ax2, ax3):
+            # Also overlay both means on the combined axis
+            ax4.plot(t, np.nanmean(ctz_norm, axis=0), color='tab:blue', lw=2.0, label='CTZ mean')
+            ax4.plot(t, np.nanmean(veh_norm, axis=0), color='tab:orange', lw=2.0, label='VEH mean')
+        for ax in (ax1, ax2, ax3, ax4):
             ax.axvline(0.0, color='r', lw=0.8, ls='--', alpha=0.7)
             ax.grid(True, axis='x', alpha=0.2)
             ax.set_xlabel('Time (s)')
         ax1.set_title('CTZ — normalized (pairs + mean)')
         ax2.set_title('VEH — normalized (pairs + mean)')
         ax3.set_title('CTZ vs VEH — group means')
+        ax4.set_title('CTZ + VEH — all pairs (normalized) + means')
         ax1.set_ylabel('Normalized firing (early)')
 
         # Save figure to disk
