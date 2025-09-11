@@ -23,7 +23,7 @@ from scipy import signal  # type: ignore
 
 Polarity = Literal["neg", "pos", "both"]
 NoiseEstimator = Literal["mad", "rms", "pctl"]
-DetrendMethod = Literal["none", "median", "savgol"]
+DetrendMethod = Literal["none", "median", "savgol", "poly"]
 FilterMode = Literal["hp", "bp", "detrend_hp"]
 
 
@@ -31,13 +31,16 @@ FilterMode = Literal["hp", "bp", "detrend_hp"]
 class FilterConfig:
     mode: FilterMode = "hp"
     hp_hz: float = 300.0
+    hp_order: int = 4
     bp_low_hz: float = 300.0
     bp_high_hz: float = 5000.0
+    bp_order: int = 4
     detrend_method: DetrendMethod = "none"
     # moving median window (s) or Savitzky–Golay window (samples) and order
-    detrend_win_s: float = 0.02
+    detrend_win_s: float = 0.05
     savgol_win: int = 41
     savgol_order: int = 2
+    poly_order: int = 1
 
 
 @dataclass(frozen=True)
@@ -51,14 +54,14 @@ class DetectConfig:
     merge_ms: float = 0.3
 
 
-def _butter_hp(hp_hz: float, sr_hz: float, order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+def _butter_hp(hp_hz: float, sr_hz: float, order: int = 4) -> Tuple[np.ndarray, np.ndarray]:
     nyq = 0.5 * sr_hz
     wn = max(1e-3, hp_hz / nyq)
     b, a = signal.butter(order, wn, btype="highpass")
     return b, a
 
 
-def _butter_bp(low_hz: float, high_hz: float, sr_hz: float, order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+def _butter_bp(low_hz: float, high_hz: float, sr_hz: float, order: int = 4) -> Tuple[np.ndarray, np.ndarray]:
     nyq = 0.5 * sr_hz
     lo = max(1e-3, low_hz / nyq)
     hi = min(0.999, high_hz / nyq)
@@ -90,6 +93,18 @@ def _detrend(y: np.ndarray, sr_hz: float, cfg: FilterConfig) -> np.ndarray:
         order = int(max(1, min(cfg.savgol_order, win - 1)))
         base = signal.savgol_filter(y, window_length=win, polyorder=order)
         return y - base
+    if cfg.detrend_method == "poly":
+        # Fit a low-order polynomial over the current vector (least-squares) and subtract
+        n = y.size
+        if n <= cfg.poly_order:
+            return y
+        x = np.arange(n, dtype=float)
+        try:
+            coeff = np.polyfit(x, y, int(cfg.poly_order))
+            base = np.polyval(coeff, x)
+            return y - base
+        except Exception:
+            return y
     return y
 
 
@@ -97,13 +112,13 @@ def apply_filter(y: np.ndarray, sr_hz: float, cfg: FilterConfig) -> np.ndarray:
     y0 = np.asarray(y, dtype=float)
     if cfg.mode == "detrend_hp":
         y0 = _detrend(y0, sr_hz, cfg)
-        b, a = _butter_hp(cfg.hp_hz, sr_hz)
+        b, a = _butter_hp(cfg.hp_hz, sr_hz, order=int(cfg.hp_order))
         return signal.filtfilt(b, a, y0)
     if cfg.mode == "hp":
-        b, a = _butter_hp(cfg.hp_hz, sr_hz)
+        b, a = _butter_hp(cfg.hp_hz, sr_hz, order=int(cfg.hp_order))
         return signal.filtfilt(b, a, y0)
     if cfg.mode == "bp":
-        b, a = _butter_bp(cfg.bp_low_hz, cfg.bp_high_hz, sr_hz)
+        b, a = _butter_bp(cfg.bp_low_hz, cfg.bp_high_hz, sr_hz, order=int(cfg.bp_order))
         return signal.filtfilt(b, a, y0)
     return y0
 
@@ -178,4 +193,3 @@ def detect_spikes(
 
     spike_times = ta[np.asarray(merged, dtype=int)]
     return spike_times, thr, -thr
-

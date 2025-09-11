@@ -598,30 +598,32 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                 except Exception:
                     pass
             else:
-                # Build filter config from UI
+                # Build filter config from UI, including filter orders
                 mode_txt = filt_mode.currentText() if 'filt_mode' in locals() else "High-pass"
                 if mode_txt == "High-pass":
-                    fcfg = FilterConfig(mode="hp", hp_hz=float(hp_spin.value()))
+                    fcfg = FilterConfig(mode="hp", hp_hz=float(hp_spin.value()), hp_order=4)
                 elif mode_txt == "Band-pass":
-                    fcfg = FilterConfig(mode="bp", bp_low_hz=float(bp_lo_spin.value()), bp_high_hz=float(bp_hi_spin.value()))
+                    fcfg = FilterConfig(mode="bp", bp_low_hz=float(bp_lo_spin.value()), bp_high_hz=float(bp_hi_spin.value()), bp_order=4)
                 else:
                     # Detrend + HP
                     if detrend_combo.currentText().startswith("Median"):
-                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), detrend_method="median", detrend_win_s=float(detrend_win_spin.value()))
+                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), hp_order=4, detrend_method="median", detrend_win_s=float(detrend_win_spin.value()))
+                    elif detrend_combo.currentText().startswith("Savitzky"):
+                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), hp_order=4, detrend_method="savgol", savgol_win=int(savgol_win_spin.value()), savgol_order=int(savgol_ord_spin.value()))
                     else:
-                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), detrend_method="savgol", savgol_win=int(savgol_win_spin.value()), savgol_order=int(savgol_ord_spin.value()))
+                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), hp_order=4, detrend_method="poly", poly_order=1)
                 dcfg = DetectConfig(noise="mad", K=5.0, polarity="neg", min_width_ms=0.3, refractory_ms=1.0)
                 # Pull raw for current channel & window
                 xr_c, yr_c = (np.array([]), np.array([]))
                 xr_v, yr_v = (np.array([]), np.array([]))
                 if st_c is not None:
-                    xr_c, yr_c = _decimated_channel_trace(st_c, sr_c, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full)
+                    xr_c, yr_c = _decimated_channel_trace(st_c, sr_hz=sr_c, ch_index=ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=False)
                 elif args.ctz_h5:
-                    xr_c, yr_c = _decimated_channel_trace_h5(args.ctz_h5, sr_c or 1.0, ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=not full)
+                    xr_c, yr_c = _decimated_channel_trace_h5(args.ctz_h5, sr_hz=sr_c or 1.0, ch_index=ch, t0_s=t0_c, t1_s=t1_c, max_points=6000, decimate=False)
                 if st_v is not None:
-                    xr_v, yr_v = _decimated_channel_trace(st_v, sr_v, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                    xr_v, yr_v = _decimated_channel_trace(st_v, sr_hz=sr_v, ch_index=ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=False)
                 elif args.veh_h5:
-                    xr_v, yr_v = _decimated_channel_trace_h5(args.veh_h5, sr_v or 1.0, ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=not full)
+                    xr_v, yr_v = _decimated_channel_trace_h5(args.veh_h5, sr_hz=sr_v or 1.0, ch_index=ch, t0_s=t0_v, t1_s=t1_v, max_points=6000, decimate=False)
                 # As a last resort, reuse what's already plotted on the top raw panels
                 if (yr_c.size == 0):
                     try:
