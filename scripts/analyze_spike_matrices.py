@@ -122,9 +122,10 @@ def _spike_dir(output_root: Path, cli_dir: Optional[Path]) -> Path:
 
 
 def _discover_npz(spike_dir: Path, sides: Tuple[str, ...], pairs: Optional[List[str]], limit: Optional[int]) -> Dict[str, Dict[str, List[Path]]]:
-    """Discover NPZs named binary_spikes__<PAIR>__<bin>ms__<SIDE>.npz.
+    """Discover NPZs named `binary_spikes__<PAIR>__<bin>ms__<SIDE>.npz`.
 
-    Uses a robust parser that allows <PAIR> to contain '__' (e.g., '__VS__').
+    Parser is robust to `<PAIR>` containing `__` (e.g., `__VS__`) by splitting
+    from the end of the filename.
     """
     out: Dict[str, Dict[str, List[Path]]] = {}
     files = sorted(spike_dir.rglob('binary_spikes__*__*ms__*.npz'))
@@ -151,6 +152,7 @@ def _discover_npz(spike_dir: Path, sides: Tuple[str, ...], pairs: Optional[List[
 
 
 def _load_matrix(npz_path: Path) -> dict:
+    """Load a matrix NPZ into a plain dict of arrays for convenience."""
     with np.load(npz_path.as_posix(), allow_pickle=True) as Z:
         return {k: Z[k] for k in Z.files}
 
@@ -178,7 +180,12 @@ def _compute_time_from_meta(d: dict) -> np.ndarray:
 
 
 def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> None:
-    """1×2 raster plot (no heatmap), channels on y, tick per 1 ms bin with ≥1 spike."""
+    """1×2 raster plot (no heatmap), channels on y, 1 ms tick for any spike.
+
+    - Left subplot: CTZ; Right subplot: VEH
+    - X‑axis: fixed −pre_s .. +post_s across both subplots
+    - Chem: dashed red line at 0 s; shaded 1‑ms stim bin
+    """
     sides = ['CTZ', 'VEH']
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
     plotted = False
@@ -203,7 +210,7 @@ def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> Non
         if channels.size == 0 or time_s.size == 0:
             ax.set_visible(False)
             continue
-        # For each channel, add vertical ticks at time bins with 1
+        # For each channel, add vertical ticks at 1 ms bins containing ≥1 spike
         for ch_idx, ch in enumerate(channels.astype(int)):
             where = np.where(B[ch_idx, :] > 0)[0]
             if where.size:
@@ -220,7 +227,7 @@ def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> Non
     if not plotted:
         plt.close(fig)
         return
-    # y-limits and ticks
+    # y-limits and ticks (show downsampled channel labels for readability)
     all_ch = [int(c) for d in mats.values() if d for c in d['channels'].tolist()]
     if all_ch:
         ymin = min(all_ch) - 0.5

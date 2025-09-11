@@ -123,6 +123,12 @@ def _spike_dir(output_root: Path, cli_dir: Optional[Path]) -> Path:
 
 
 def _discover_npz(spike_dir: Path, sides: Tuple[str, ...], pairs: Optional[List[str]], limit: Optional[int]) -> Dict[str, Dict[str, List[Path]]]:
+    """Discover matrices (NPZ) by name pattern and return a mapping.
+
+    Returns
+    -------
+    dict: pair_id -> side -> list[Path]
+    """
     out: Dict[str, Dict[str, List[Path]]] = {}
     files = sorted(spike_dir.rglob('binary_spikes__*__*ms__*.npz'))
     for p in files:
@@ -145,12 +151,17 @@ def _discover_npz(spike_dir: Path, sides: Tuple[str, ...], pairs: Optional[List[
 
 
 def _load_matrix(npz_path: Path) -> dict:
+    """Load a matrix NPZ into a plain dict of arrays for convenience."""
     with np.load(npz_path.as_posix(), allow_pickle=True) as Z:
         return {k: Z[k] for k in Z.files}
 
 
 def _compute_time_from_meta(d: dict) -> Tuple[np.ndarray, float, float, float]:
-    """Zero-centered time grid from metadata; also return (bw, pre, post)."""
+    """Zero-centered time grid from metadata; also return (bw, pre, post).
+
+    Ignores stored time_s to guarantee exact chem alignment and identical
+    −pre .. +post span in plots.
+    """
     bw = float(d.get('bin_ms', 1.0)) * 1e-3
     pre = float(d.get('window_pre_s', 1.0))
     post = float(d.get('window_post_s', 1.0))
@@ -166,11 +177,21 @@ def _compute_time_from_meta(d: dict) -> Tuple[np.ndarray, float, float, float]:
 
 
 def _smooth_5tap_boxcar(row: np.ndarray) -> np.ndarray:
+    """Apply a 5‑point boxcar [1,1,1,1,1]/5 with `same` mode.
+
+    Input is a 0/1 vector (1 ms bins). Output remains ∈ [0,1].
+    """
     K = np.ones(5, dtype=float) / 5.0
     return np.convolve(row.astype(float), K, mode='same')
 
 
 def plot_psth_lines_pair(pair_id: str, mats: Dict[str, dict], out_base: Path, amplitude: float = 0.8) -> None:
+    """Plot per‑channel PSTH line overlays for CTZ and VEH from binary matrices.
+
+    Each channel is drawn as a thin line offset by its channel index. The line's
+    vertical deflection is the 5‑tap boxcar smoothed 0/1 vector (scaled by
+    `amplitude`). X‑axis is fixed −pre .. +post with chem at 0 s.
+    """
     sides = ['CTZ', 'VEH']
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), sharey=True)
     drawn = False
@@ -277,4 +298,3 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-

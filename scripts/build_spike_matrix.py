@@ -4,22 +4,33 @@ from __future__ import annotations
 """
 Build binary (0/1) spike matrices from exported CTZ–VEH pair HDF5s.
 
+Data source and prerequisites
+-----------------------------
+- Inputs are the pair HDF5s written by `scripts/export_spikes_waveforms_batch.py`,
+  typically located under:
+  `<output_root>/exports/spikes_waveforms/<round>/plate_<N>/<CTZ>__VS__<VEH>.h5`.
+- This script does not re-filter or re-detect spikes. It only bins the exact
+  spike timestamps that the exporter saved into the HDF5 at:
+  `CTZ/` and `VEH/` groups → per-channel datasets `chXX_timestamps` (seconds).
+- Chem time is taken from each group's `analysis_bounds` JSON attribute (`t0`).
+  If absent, we fall back to the HDF5 root attributes `chem_ctz_s` / `chem_veh_s`.
+
 What it does
 ------------
-- Auto-discovers pair exports written by `scripts/export_spikes_waveforms_batch.py` under:
-  <output_root>/exports/spikes_waveforms/<round>/plate_<N>/<CTZ>__VS__<VEH>.h5
-- For each pair and side (CTZ/VEH), bins exported spike timestamps into 1 ms bins
-  over a chem-centered window (default: -1 s .. +1 s), producing a channels×time
-  matrix with 0 if no spike in bin, 1 if ≥1 spike in bin.
-- Saves one NPZ per (pair, side) with arrays and metadata embedded for traceability.
-- Writes a CSV manifest referencing all generated matrices and metadata.
+- For each pair and side (CTZ/VEH), create a fixed time axis centered on chem
+  and spanning `[-pre_s, +post_s]` with 1 ms bins by default.
+- Bin the exported spike timestamps into those 1 ms bins and produce a
+  channels × time matrix where each element is `1` if ≥1 spike occurred in that
+  bin and `0` otherwise.
+- Save one NPZ per (pair, side) with the arrays and key metadata embedded for
+  traceability, plus a manifest CSV referencing all matrices.
 
 Important notes
 ---------------
-- Uses exported HDF5 datasets `CTZ/` and `VEH/` -> `chXX_timestamps` (seconds) only.
-- Chem time is read from group attribute `analysis_bounds` JSON (`t0` key). If missing,
-  falls back to root attr `chem_ctz_s`/`chem_veh_s`.
-- If the exporter did not store baseline spikes, the pre-chem bins (-1..0 s) will be 0s.
+- If the exporter did not include baseline spikes, the pre-chem half of the
+  matrix (time < 0) will be zeros — this accurately reflects what was exported.
+- The matrix time axis is always centered at chem (0 s). Binning is strictly
+  derived from the stored timestamps; no smoothing or inference is applied.
 
 Usage
 -----
@@ -28,12 +39,26 @@ Usage
                                        [--bin-ms 1.0] [--pre-s 1.0] [--post-s 1.0]
                                        [--sides CTZ VEH] [--limit N]
 
+Options explained
+-----------------
+- `--output-root`: Root path where exports live (defaults to CONFIG.output_root
+  or `./_mcs_mea_outputs_local` if the external drive is not mounted).
+- `--exports-dir`: Explicit path to the `exports/spikes_waveforms` folder
+  (rarely needed if `output_root` is correct).
+- `--save-dir`: Where to write the matrices (default:
+  `<exports_root>/analysis/spike_matrices`).
+- `--bin-ms`: Bin width in milliseconds (default 1.0 ms → “instantaneous” PSTH).
+- `--pre-s`, `--post-s`: Seconds before/after chem to include (defaults 1.0 s each).
+- `--sides`: Which sides to process (`CTZ`, `VEH`, or both).
+- `--limit`: Only process the first N pairs (useful for a quick test).
+
 Outputs
 -------
-- <save_dir>/binary_spikes__<PAIR>__<bin>ms__<SIDE>.npz
-  keys: channels[int], time_s[float], binary[uint8], pair_id, side, round, plate,
-        bin_ms, window_pre_s, window_post_s, chem_s, meta_json (export metadata)
-- <save_dir>/spike_matrices_manifest.csv
+- NPZ per (pair, side): `binary_spikes__<PAIR>__<bin>ms__<SIDE>.npz`
+  keys: `channels[int]`, `time_s[float]` (bin centers, chem-centered),
+  `binary[uint8]`, `pair_id`, `side`, `round`, `plate`, `bin_ms`,
+  `window_pre_s`, `window_post_s`, `chem_s`, `meta_json` (serialized export metadata).
+- Manifest CSV: `spike_matrices_manifest.csv` with paths and shapes for all matrices.
 """
 
 import argparse
@@ -65,6 +90,13 @@ from mcs_mea_analysis.config import CONFIG
 
 
 def _infer_output_root(cli_root: Optional[Path]) -> Path:
+    """Return the effective output root.
+
+    Preference order:
+    1) CLI override
+    2) CONFIG.output_root (external drive)
+    3) Local mirror `./_mcs_mea_outputs_local`
+    """
     if cli_root is not None:
         return cli_root
     ext = CONFIG.output_root
@@ -74,12 +106,20 @@ def _infer_output_root(cli_root: Optional[Path]) -> Path:
 
 
 def _exports_root(output_root: Path, exports_dir: Optional[Path]) -> Path:
+    """Resolve the `exports/spikes_waveforms` directory.
+
+    Allows an explicit `--exports-dir` override for atypical layouts.
+    """
     if exports_dir is not None:
         return exports_dir
     return output_root / 'exports' / 'spikes_waveforms'
 
 
 def discover_pair_h5(exports_root: Path, limit: Optional[int] = None) -> list[Path]:
+    """Find pair HDF5 files under the exports root.
+
+    Skips `_summary.h5` if present. `limit` restricts results for quick tests.
+    """
     files = sorted([p for p in exports_root.rglob('*.h5') if not p.name.endswith('_summary.h5')])
     if limit is not None and limit > 0:
         files = files[:limit]
@@ -87,6 +127,10 @@ def discover_pair_h5(exports_root: Path, limit: Optional[int] = None) -> list[Pa
 
 
 def _read_group_bounds(grp: h5py.Group) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Read `(baseline_bounds, analysis_bounds)` JSON attributes from a group.
+
+    Returns two `(t0, t1)` tuples in seconds. Missing values default to 0.0.
+    """
     bb = grp.attrs.get('baseline_bounds')
     ab = grp.attrs.get('analysis_bounds')
     try:
@@ -127,6 +171,7 @@ def _json_safe(x):
 
 
 def _chem_time_for_side(f: h5py.File, side: str) -> float:
+    """Return chem time (seconds) for a side using group bounds or root attrs."""
     # Preferred: group analysis_bounds.t0
     if side in f:
         try:
@@ -150,10 +195,26 @@ def build_binary_spike_matrix(
     post_s: float = 1.0,
     sides: tuple[str, ...] = ("CTZ", "VEH"),
 ) -> list[dict]:
-    """Build binary matrices for requested sides. Returns list of per-side dicts.
+    """Build per-side binary spike matrices for a single pair.
 
-    Each dict has: pair_id, round, plate, side, bin_ms, window_pre_s, window_post_s,
-                   chem_s, channels[int], time_s[float], binary[uint8], meta_json
+    Parameters
+    ----------
+    h5_path : Path
+        Path to a pair HDF5 exported by scripts/export_spikes_waveforms_batch.py.
+    bin_ms : float
+        Bin width (ms). Default 1.0 ms.
+    pre_s, post_s : float
+        Seconds before and after chem to include in the window.
+    sides : tuple[str, ...]
+        Which sides to process (subset of ("CTZ", "VEH")).
+
+    Returns
+    -------
+    list[dict]
+        One dict per processed side containing:
+        `pair_id`, `round`, `plate`, `side`, `bin_ms`, `window_pre_s`, `window_post_s`,
+        `chem_s`, `channels[int]`, `time_s[float]` (bin centers rel. chem),
+        `binary[uint8]` (channels × time), and `meta_json` (serialized metadata).
     """
     out: list[dict] = []
     with h5py.File(h5_path.as_posix(), 'r') as f:
@@ -170,7 +231,7 @@ def build_binary_spike_matrix(
             bw = float(bin_ms) * 1e-3
             edges = np.arange(chem - float(pre_s), chem + float(post_s) + 1e-12, bw)
             centers_rel = (edges[:-1] + edges[1:]) * 0.5 - chem
-            # Channels set from timestamps datasets
+            # Channels exist where a `chXX_timestamps` dataset is present
             chans = sorted({int(k[2:4]) for k in grp.keys() if k.startswith('ch') and k.endswith('_timestamps')})
             M = np.zeros((len(chans), len(centers_rel)), dtype=np.uint8)
             for i, ch in enumerate(chans):
@@ -179,6 +240,7 @@ def build_binary_spike_matrix(
                     continue
                 st = np.asarray(grp[ds][:], dtype=float)
                 if st.size:
+                    # Count spikes per 1 ms bin and convert to binary 0/1
                     cnts, _ = np.histogram(st, bins=edges)
                     M[i, :] = (cnts > 0).astype(np.uint8)
             # Group-level metadata
@@ -228,6 +290,7 @@ class Args:
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
+    """CLI argument parsing with sensible defaults documented in the module docstring."""
     p = argparse.ArgumentParser(description='Build binary (0/1) spike matrices from exported pairs')
     p.add_argument('--output-root', type=Path, default=None, help='Override output root (defaults to CONFIG or _mcs_mea_outputs_local)')
     p.add_argument('--exports-dir', type=Path, default=None, help='Optional direct path to exports/spikes_waveforms')
@@ -251,6 +314,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
+    """Entry point: discover pairs, build matrices, and write a manifest."""
     args = _parse_args(argv)
     out_root = _infer_output_root(args.output_root)
     exp_root = _exports_root(out_root, args.exports_dir)
