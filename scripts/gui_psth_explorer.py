@@ -317,9 +317,11 @@ class Explorer:
         for idx, ch in enumerate(channels):
             y_raw = float(ch) + amp * S[idx, :]
             ax_raw.plot(t, y_raw, color='k', lw=0.6)
-        # normalized overlays (not staggered), low alpha for visibility
+        # normalized overlays (not staggered), colored for visibility
+        C = len(channels)
+        cmap = plt.get_cmap('tab20', max(C, 1))
         for idx, ch in enumerate(channels):
-            ax_norm.plot(t, N[idx, :], color='k', lw=0.6, alpha=0.25)
+            ax_norm.plot(t, N[idx, :], color=cmap(idx % cmap.N), lw=0.7, alpha=0.9)
         # shade early/late windows for this side
         se = self.start[side]['early']
         sl = self.start[side]['late']
@@ -337,8 +339,11 @@ class Explorer:
                 ax_raw.set_yticks(list(range(int(np.min(channels)), int(np.max(channels)) + 1, step)))
             except Exception:
                 pass
-            ax_norm.set_ylim([0.0, 1.05])
-            ax_norm.set_yticks([0.0, 0.5, 1.0])
+            ymax = float(np.nanmax(N)) if np.isfinite(np.nanmax(N)) else 1.0
+            ymax = min(max(1.05, 1.1 * ymax), 5.0)
+            ax_norm.set_ylim([0.0, ymax])
+            ax_norm.set_yticks([0.0, ymax/2, ymax])
+            ax_norm.set_ylabel('Normalized firing rate (to early)')
 
     def _draw_all(self) -> None:
         self._set_axes_common()
@@ -385,7 +390,36 @@ class Explorer:
 
     def _on_start(self, side: str, phase: str, val: float) -> None:
         self.start[side][phase] = float(val)
+        self._enforce_nonoverlap(side)
+        self._update_slider_bounds()
         self._draw_all()
+
+    def _enforce_nonoverlap(self, side: str) -> None:
+        # Keep early and late non-overlapping per side and inside [0, post]
+        e = self.start[side]['early']
+        l = self.start[side]['late']
+        e = max(0.0, min(e, max(0.0, self.common_post - self.early_dur)))
+        l = max(0.0, min(l, max(0.0, self.common_post - self.late_dur)))
+        if e + self.early_dur > l:
+            # push late forward if possible, else pull early back
+            l = min(max(e + self.early_dur, l), max(0.0, self.common_post - self.late_dur))
+            if l < e + self.early_dur:
+                e = max(0.0, l - self.early_dur)
+        self.start[side]['early'] = e
+        self.start[side]['late'] = l
+
+    def _update_slider_bounds(self) -> None:
+        # update slider min/max to reflect current constraints for both sides
+        for side, s_e, s_l in (
+            ('CTZ', self.s_ctz_early, self.s_ctz_late),
+            ('VEH', self.s_veh_early, self.s_veh_late),
+        ):
+            e = self.start[side]['early']
+            l = self.start[side]['late']
+            s_e.valmin = 0.0
+            s_e.valmax = max(0.0, min(self.common_post - self.early_dur, l - self.early_dur))
+            s_l.valmin = min(max(0.0, e + self.early_dur), max(0.0, self.common_post - self.late_dur))
+            s_l.valmax = max(0.0, self.common_post - self.late_dur)
 
     def _on_taps(self, val) -> None:
         self.taps = int(val)
