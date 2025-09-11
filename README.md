@@ -41,3 +41,10 @@ CTZ vs VEH plotting (batch)
 - Saves next to the NPZ:
   - 2×2 summary: `__ctz_veh_summary.(svg|pdf)`
   - 1×2 ALL‑traces overlay: `__ctz_veh_alltraces.(svg|pdf)` (plots every normalized trace available across all pairs)
+
+Per‑Pair Grids (NxN)
+- Plot a per‑channel grid for each pair, with the early window shaded and chem=0 marked.
+  - From a session NPZ: `python -m scripts.plot_psth_per_pair_grid --session-npz PATH`
+  - From pooled NPZ (or auto‑latest): `python -m scripts.plot_psth_per_pair_grid [--group-npz PATH]`
+  - Options: `--sides CTZ VEH` (default both), `--data normalized|raw|counts` (default normalized)
+  - Writes `psth_grid__<pair>__<side>__<data>.(svg|pdf)` next to the NPZ
