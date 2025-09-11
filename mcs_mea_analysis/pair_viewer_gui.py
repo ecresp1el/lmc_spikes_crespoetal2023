@@ -415,6 +415,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     # Controls (moved to a detachable dock to declutter the canvas)
     ctrl = QtWidgets.QWidget()
     h = QtWidgets.QHBoxLayout(ctrl)
+    # Prepare a vertical container layout for a single, tidy panel later
+    vpanel = QtWidgets.QVBoxLayout()
     lbl_plate = QtWidgets.QLabel(f"Plate: {args.plate or '-'}  Round: {args.round or '-'}")
     disp_mode = QtWidgets.QComboBox(); disp_mode.addItems(["IFR", "Filtered", "Spikes"])  # bottom content
     spin = QtWidgets.QSpinBox(); spin.setRange(0, max(0, n_ch - 1)); spin.setValue(int(max(0, min(n_ch-1, int(args.initial_channel or 0)))))
@@ -453,7 +455,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     sel_form.addRow("Plate/Round:", lbl_plate)
     sel_form.addRow("Channel:", spin)
     sel_form.addRow(disp_row)
-    v.addWidget(sel_box)
+    vpanel.addWidget(sel_box)
 
     win_box = QtWidgets.QGroupBox("Windowing")
     win_form = QtWidgets.QFormLayout(win_box)
@@ -461,7 +463,7 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     win_form.addRow("Pre:", pre_spin)
     win_form.addRow("Post:", post_spin)
     win_form.addRow("Full analog:", full_chk)
-    v.addWidget(win_box)
+    vpanel.addWidget(win_box)
 
     filt_box = QtWidgets.QGroupBox("Filtering")
     filt_form = QtWidgets.QFormLayout(filt_box)
@@ -475,14 +477,26 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     filt_form.addRow("Median win:", detrend_win_spin)
     filt_form.addRow("SavGol win:", savgol_win_spin)
     filt_form.addRow("SavGol order:", savgol_ord_spin)
-    v.addWidget(filt_box)
+    vpanel.addWidget(filt_box)
 
     persist_box = QtWidgets.QGroupBox("Save / Status")
     persist_layout = QtWidgets.QVBoxLayout(persist_box)
     btn_row = QtWidgets.QHBoxLayout(); btn_row.addWidget(btn_save); btn_row.addWidget(btn_reload); btn_row.addStretch(1)
     persist_layout.addLayout(btn_row)
     persist_layout.addWidget(status_lbl)
-    v.addWidget(persist_box)
+    vpanel.addWidget(persist_box)
+    # Replace horizontal layout with the vertical panel
+    # Clear any existing items in h and set a single widget
+    try:
+        # Remove old items if present
+        while h.count():
+            itm = h.takeAt(0)
+            wdg = itm.widget()
+            if wdg is not None:
+                wdg.setParent(None)
+    except Exception:
+        pass
+    h.addLayout(vpanel)
 
     # Put controls in a scrollable dock on the right (movable/floatable)
     dock = QtWidgets.QDockWidget("Controls", win)
