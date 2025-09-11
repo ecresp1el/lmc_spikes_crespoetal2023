@@ -481,7 +481,9 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
 
     persist_box = QtWidgets.QGroupBox("Save / Status")
     persist_layout = QtWidgets.QVBoxLayout(persist_box)
-    btn_row = QtWidgets.QHBoxLayout(); btn_row.addWidget(btn_save); btn_row.addWidget(btn_reload); btn_row.addStretch(1)
+    btn_row = QtWidgets.QHBoxLayout(); btn_row.addWidget(btn_save); btn_row.addWidget(btn_reload)
+    btn_export = QtWidgets.QPushButton("Export Spikes + Waveforms (All Channels)")
+    btn_row.addWidget(btn_export); btn_row.addStretch(1)
     persist_layout.addLayout(btn_row)
     persist_layout.addWidget(status_lbl)
     vpanel.addWidget(persist_box)
@@ -872,6 +874,50 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
     btn_save.clicked.connect(on_save)
     btn_reload.clicked.connect(on_reload)
     spin.valueChanged.connect(on_spin)
+
+    def on_export():
+        try:
+            mode_txt = filt_mode.currentText()
+            if mode_txt == "High-pass":
+                fcfg = FilterConfig(mode="hp", hp_hz=float(hp_spin.value()), hp_order=4)
+            elif mode_txt == "Band-pass":
+                fcfg = FilterConfig(mode="bp", bp_low_hz=float(bp_lo_spin.value()), bp_high_hz=float(bp_hi_spin.value()), bp_order=4)
+            else:
+                if detrend_combo.currentText().startswith("Median"):
+                    fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), hp_order=4, detrend_method="median", detrend_win_s=float(detrend_win_spin.value()))
+                elif detrend_combo.currentText().startswith("Savitzky"):
+                    fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), hp_order=4, detrend_method="savgol", savgol_win=int(savgol_win_spin.value()), savgol_order=int(savgol_ord_spin.value()))
+                else:
+                    fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), hp_order=4, detrend_method="poly", poly_order=1)
+            dcfg = DetectConfig(noise="mad", K=5.0, polarity="neg", min_width_ms=0.3, refractory_ms=1.0)
+            # window bounds
+            def bounds(chem_ts: Optional[float]):
+                return (None if chem_ts is None else max(0.0, float(chem_ts) - float(pre_spin.value())),
+                        None if chem_ts is None else float(chem_ts) + float(post_spin.value()))
+            t0c, t1c = bounds(args.chem_ctz_s)
+            t0v, t1v = bounds(args.chem_veh_s)
+            out_h5, out_csv = export_pair_spikes_waveforms(
+                out_root=CONFIG.output_root,
+                round_name=args.round or "",
+                plate=args.plate,
+                pair_stem_ctz=args.ctz_npz.stem.replace("_ifr_per_channel_1ms", ""),
+                pair_stem_veh=args.veh_npz.stem.replace("_ifr_per_channel_1ms", ""),
+                h5_ctz=(args.ctz_h5 or Path()),
+                h5_veh=(args.veh_h5 or Path()),
+                sr_ctz_hz=float(sr_c or 10000.0),
+                sr_veh_hz=float(sr_v or 10000.0),
+                chem_ctz_s=float(args.chem_ctz_s or 0.0),
+                chem_veh_s=float(args.chem_veh_s or 0.0),
+                pre_s=float(pre_spin.value()),
+                post_s=float(post_spin.value()),
+                fcfg=fcfg,
+                dcfg=dcfg,
+            )
+            status_lbl.setText(f"Exported -> {out_h5.name} ; summary -> {out_csv.name}")
+        except Exception as e:
+            status_lbl.setText(f"Export failed: {e}")
+
+    btn_export.clicked.connect(on_export)
 
     # Retain references to avoid GC closing the window in inline/Jupyter mode
     try:
