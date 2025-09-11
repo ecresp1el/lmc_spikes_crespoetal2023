@@ -14,8 +14,8 @@ What this GUI does
     where each channel's PSTH is divided by its mean amplitude in the
     side‑specific EARLY window (relative to stimulation at 0 s).
 - Lets you interactively adjust:
-  - Fixed‑duration early and late windows (text inputs)
-  - Independent start positions for CTZ and VEH early/late windows (4 sliders)
+  - Fixed‑duration early window (text input; default 0.05 s)
+  - Independent early window start positions for CTZ and VEH (2 sliders)
   - Smoothing taps (odd integer; default 5)
   - Pair selection (Prev/Next buttons)
 
