@@ -153,6 +153,28 @@ def _load_matrix(npz_path: Path) -> dict:
         return {k: Z[k] for k in Z.files}
 
 
+def _compute_time_from_meta(d: dict) -> np.ndarray:
+    """Robust, zero-centered time grid from metadata. Ignores stored time_s.
+
+    Uses bin_ms, window_pre_s, window_post_s and binary.shape[1] for length.
+    Ensures centers are [-pre + bw/2, ..., +post - bw/2].
+    """
+    bw = float(d.get('bin_ms', 1.0)) * 1e-3
+    pre = float(d.get('window_pre_s', 1.0))
+    post = float(d.get('window_post_s', 1.0))
+    T = int(d['binary'].shape[1])
+    edges = np.arange(-pre, post + 1e-12, bw)
+    centers = (edges[:-1] + edges[1:]) * 0.5
+    # Coerce length to match matrix if off by rounding
+    if centers.size > T:
+        centers = centers[:T]
+    elif centers.size < T:
+        # pad by repeating last value (rare)
+        pad = np.full(T - centers.size, centers[-1] if centers.size else 0.0)
+        centers = np.concatenate([centers, pad])
+    return centers.astype(float)
+
+
 def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> None:
     """1×2 raster plot (no heatmap), channels on y, tick per 1 ms bin with ≥1 spike."""
     sides = ['CTZ', 'VEH']
@@ -164,7 +186,8 @@ def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> Non
             ax.set_visible(False)
             continue
         channels = d['channels']
-        time_s = d['time_s']
+        # Always derive a zero-centered grid from meta to ensure accurate chem alignment
+        time_s = _compute_time_from_meta(d)
         B = d['binary']
         if channels.size == 0 or time_s.size == 0:
             ax.set_visible(False)
@@ -194,7 +217,7 @@ def plot_raster_pair(pair_id: str, mats: Dict[str, dict], out_base: Path) -> Non
         except Exception:
             pass
     axes[0].set_ylabel('Channel index')
-    fig.suptitle(f'Binary Spike Raster (channels × time) — {pair_id}')
+    fig.suptitle(f'Binary Spike Raster (channels × time; chem at 0 s) — {pair_id}')
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(out_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
     fig.savefig(out_base.with_suffix('.pdf'), bbox_inches='tight')
