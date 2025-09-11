@@ -526,7 +526,18 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
             if (sr_c is None) or (sr_v is None) or (sr_c <= 0) or (sr_v <= 0):
                 spike_txt = "SR unknown; filtering disabled"
             else:
-                fcfg = FilterConfig(mode="hp", hp_hz=300.0)
+                # Build filter config from UI
+                mode_txt = filt_mode.currentText() if 'filt_mode' in locals() else "High-pass"
+                if mode_txt == "High-pass":
+                    fcfg = FilterConfig(mode="hp", hp_hz=float(hp_spin.value()))
+                elif mode_txt == "Band-pass":
+                    fcfg = FilterConfig(mode="bp", bp_low_hz=float(bp_lo_spin.value()), bp_high_hz=float(bp_hi_spin.value()))
+                else:
+                    # Detrend + HP
+                    if detrend_combo.currentText().startswith("Median"):
+                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), detrend_method="median", detrend_win_s=float(detrend_win_spin.value()))
+                    else:
+                        fcfg = FilterConfig(mode="detrend_hp", hp_hz=float(hp_spin.value()), detrend_method="savgol", savgol_win=int(savgol_win_spin.value()), savgol_order=int(savgol_ord_spin.value()))
                 dcfg = DetectConfig(noise="mad", K=5.0, polarity="neg", min_width_ms=0.3, refractory_ms=1.0)
                 # Pull raw for current channel & window
                 xr_c, yr_c = (np.array([]), np.array([]))
@@ -687,6 +698,21 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                 w.stateChanged.connect(lambda *_: update_channel(spin.value()))
             else:
                 w.valueChanged.connect(lambda *_: update_channel(spin.value()))
+        except Exception:
+            pass
+    # Filter controls signals
+    def _on_filter_change(*_):
+        try:
+            _set_filter_controls_visibility()
+        except Exception:
+            pass
+        update_channel(spin.value())
+    for w in (filt_mode, hp_spin, bp_lo_spin, bp_hi_spin, detrend_combo, detrend_win_spin, savgol_win_spin, savgol_ord_spin):
+        try:
+            if hasattr(w, 'stateChanged'):
+                w.stateChanged.connect(_on_filter_change)
+            else:
+                w.valueChanged.connect(_on_filter_change)
         except Exception:
             pass
 
