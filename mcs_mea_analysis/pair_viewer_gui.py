@@ -70,6 +70,7 @@ import numpy as np
 
 from .config import CONFIG
 from .spike_filtering import FilterConfig, DetectConfig, apply_filter, detect_spikes
+from .spike_batch import export_pair_spikes_waveforms
 
 # Keep strong references to live windows/handlers to prevent premature GC
 _LIVE_WINDOWS = []
@@ -877,6 +878,12 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
 
     def on_export():
         try:
+            # Ensure we are in 'Spikes' display mode to match exactly what is shown
+            bottom_mode = str(disp_mode.currentText())
+            if bottom_mode != "Spikes":
+                QtWidgets.QMessageBox.information(win, "Export", "Switch Display to 'Spikes' to export the filtered+spikes view.")
+                status_lbl.setText("Export blocked: Display mode is not 'Spikes'.")
+                return
             mode_txt = filt_mode.currentText()
             if mode_txt == "High-pass":
                 fcfg = FilterConfig(mode="hp", hp_hz=float(hp_spin.value()), hp_order=4)
@@ -896,6 +903,13 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                         None if chem_ts is None else float(chem_ts) + float(post_spin.value()))
             t0c, t1c = bounds(args.chem_ctz_s)
             t0v, t1v = bounds(args.chem_veh_s)
+            # Match the displayed filtered window exactly: if chem window is off, export full
+            if bool(chem_chk.isChecked()):
+                win_ctz = (t0c, t1c)
+                win_veh = (t0v, t1v)
+            else:
+                win_ctz = (None, None)
+                win_veh = (None, None)
             out_h5, out_csv = export_pair_spikes_waveforms(
                 out_root=CONFIG.output_root,
                 round_name=args.round or "",
@@ -912,6 +926,8 @@ def launch_pair_viewer(args: PairInputs) -> None:  # pragma: no cover - GUI
                 post_s=float(post_spin.value()),
                 fcfg=fcfg,
                 dcfg=dcfg,
+                window_ctz=win_ctz,
+                window_veh=win_veh,
             )
             status_lbl.setText(f"Exported -> {out_h5.name} ; summary -> {out_csv.name}")
         except Exception as e:

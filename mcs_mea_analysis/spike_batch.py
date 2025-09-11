@@ -94,6 +94,8 @@ def export_pair_spikes_waveforms(
     post_s: float,
     fcfg: FilterConfig,
     dcfg: DetectConfig,
+    window_ctz: Tuple[Optional[float], Optional[float]] | None = None,
+    window_veh: Tuple[Optional[float], Optional[float]] | None = None,
     snippet_pre_ms: float = 0.8,
     snippet_post_ms: float = 1.6,
 ) -> Tuple[Path, Path]:
@@ -164,6 +166,11 @@ def export_pair_spikes_waveforms(
         grp_ctz.attrs["analysis_bounds"] = json.dumps({"t0": float(ctz_b[2] or 0.0), "t1": float(ctz_b[3] or 0.0)})
         grp_veh.attrs["baseline_bounds"] = json.dumps({"t0": float(veh_b[0] or 0.0), "t1": float(veh_b[1] or 0.0)})
         grp_veh.attrs["analysis_bounds"] = json.dumps({"t0": float(veh_b[2] or 0.0), "t1": float(veh_b[3] or 0.0)})
+        # Record the actual exported display window per side (to reflect GUI state)
+        win_c = window_ctz or (ctz_b[0], ctz_b[3])
+        win_v = window_veh or (veh_b[0], veh_b[3])
+        out.attrs["export_window_ctz"] = json.dumps({"t0": float((win_c[0] or 0.0)), "t1": float((win_c[1] or 0.0))})
+        out.attrs["export_window_veh"] = json.dumps({"t0": float((win_v[0] or 0.0)), "t1": float((win_v[1] or 0.0))})
 
         # CSV summary
         with open(csv_out.as_posix(), "w", newline="", encoding="utf-8") as fh:
@@ -177,11 +184,16 @@ def export_pair_spikes_waveforms(
                 t1b = chem
                 t0a = chem
                 t1a = None if chem is None else float(chem) + float(post_s)
+                # Display/read window (exactly what was shown): use explicit window if provided
+                if side == "CTZ":
+                    t0_read, t1_read = win_c
+                else:
+                    t0_read, t1_read = win_v
                 snippet_pre = int(round(snippet_pre_ms * 1e-3 * sr))
                 snippet_post = int(round(snippet_post_ms * 1e-3 * sr))
                 for ch in range(n_ch):
-                    # Read window around [t0b, t1a] — full-resolution
-                    x, y = _read_channel_window_h5(h5p, ch, float(sr), t0b, t1a)
+                    # Read the display/read window — reflects GUI state (chem window on/off)
+                    x, y = _read_channel_window_h5(h5p, ch, float(sr), t0_read, t1_read)
                     if y.size == 0:
                         # write empty datasets (raw, filtered, spikes, waveforms)
                         grp.create_dataset(f"ch{ch:02d}_time", data=np.empty(0, dtype=float))
