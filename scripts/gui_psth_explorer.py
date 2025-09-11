@@ -47,6 +47,45 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+import os
+import platform
+import matplotlib
+
+
+def _ensure_interactive_backend() -> str:
+    """Select an interactive matplotlib backend if current is non-interactive.
+
+    Must be called before importing pyplot. Returns the chosen backend name.
+    """
+    try:
+        be = matplotlib.get_backend()
+        be_lower = (be or "").lower()
+    except Exception:
+        be = ""
+        be_lower = ""
+
+    noninteractive = ("agg", "pdf", "svg", "ps", "cairo", "template", "pgf")
+    if any(tok in be_lower for tok in noninteractive):
+        # Try platform-appropriate interactive backends in order
+        sys_plat = sys.platform
+        if sys_plat == "darwin":
+            candidates = ["MacOSX", "TkAgg", "QtAgg", "Qt5Agg"]
+        elif sys_plat.startswith("linux"):
+            candidates = ["QtAgg", "Qt5Agg", "TkAgg", "GTK3Agg"]
+        else:  # win32 or others
+            candidates = ["QtAgg", "Qt5Agg", "TkAgg"]
+        for name in candidates:
+            try:
+                matplotlib.use(name)
+                be = name
+                break
+            except Exception:
+                continue
+    return matplotlib.get_backend()
+
+
+# Ensure interactive backend before pyplot import
+_chosen_backend = _ensure_interactive_backend()
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, TextBox
 
@@ -432,6 +471,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = _parse_args(argv)
     out_root = _infer_output_root(args.output_root)
     spike_dir = _spike_dir(out_root, args.spike_dir)
+    try:
+        print(f"[psth-gui] Matplotlib backend: {_chosen_backend}")
+    except Exception:
+        pass
     mapping = _discover_npz(spike_dir, args.pairs, args.limit)
     if not mapping:
         print('[psth-gui] No matrices found. Build them with scripts/build_spike_matrix.py')
