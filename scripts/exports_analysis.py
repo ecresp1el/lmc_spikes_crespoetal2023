@@ -4,17 +4,47 @@ from __future__ import annotations
 """
 Unified analysis and plotting for exported CTZ–VEH MEA pairs.
 
-Features
---------
-- Discovers pair exports under `<output_root>/exports/spikes_waveforms/`
-- Computes post FR (Hz) for CTZ vs VEH (channel-level)
-- Computes ISI and burst metrics on post spikes with filters:
-  - Link spikes into bursts using ISI threshold (ms)
-  - Keep only bursts with duration >= min_burst_ms
-  - Average firing per burst (spikes / duration)
-- Picks an exemplary pair/channel and plots raw + filtered traces side-by-side
-- Color-consistent plots; auto-saves SVG (editable text) and PDF
-- Writes CSV summaries for downstream editing
+What this script analyzes
+------------------------
+- Channel‑level post FR (Hz) for CTZ vs VEH (from the exporter’s per‑pair CSV)
+- Post‑window ISI and burst metrics (from the exporter’s HDF5 spike timestamps)
+- Post onset latency (first spike after chem) per channel/side
+- Nonparametric two‑group stats (Mann–Whitney U, Holm–Bonferroni across metrics)
+- An exemplary raw+filtered voltage trace for a chosen pair/channel
+
+Where the data comes from (exports)
+-----------------------------------
+- Exports are produced by: `python scripts/export_spikes_waveforms_batch.py ...`
+- This script reads those exports under:
+  <output_root>/exports/spikes_waveforms/<round>/plate_<N>/<CTZ>__VS__<VEH>.h5
+  with a sibling CSV:
+  <output_root>/exports/spikes_waveforms/<round>/plate_<N>/<CTZ>__VS__<VEH>_summary.csv
+
+HDF5 schema (written by the exporter)
+-------------------------------------
+- Root attrs: `round`, `plate`, `ctz_stem`, `veh_stem`, `chem_ctz_s`, `chem_veh_s`, `pre_s`, `post_s`
+- Groups: `CTZ/` and `VEH/`
+  - Group attrs: `sr_hz` (float sampling rate)
+  - Group attrs: `baseline_bounds` and `analysis_bounds` (JSON with keys `t0`, `t1` in seconds)
+  - Datasets per channel (two‑digit index XX):
+    - `chXX_time` (seconds), `chXX_raw` (raw signal), `chXX_filtered` (filtered signal)
+    - `chXX_timestamps` (spike times within analysis window, seconds)
+    - `chXX_waveforms` (stacked filtered snippets around detections)
+
+CSV schema (written by the exporter)
+------------------------------------
+- `<PAIR>_summary.csv`: columns `[channel, side, n_spikes, fr_hz]` (post window FR per channel)
+
+Prerequisites before running this analysis
+-----------------------------------------
+1) Configure output paths: `mcs_mea_analysis/config.py` sets `CONFIG.output_root`.
+   - If your external drive is present (e.g., Manny2TB), exports live there.
+   - Otherwise this tool falls back to a local mirror: `./_mcs_mea_outputs_local`.
+2) Compute FR/IFR and build readiness (used by the exporter to find eligible recordings):
+   - `python -m scripts.run_fr_batch [<output_root>]` (creates per‑recording FR/IFR artifacts)
+   - `python -m scripts.build_ready [<output_root>]` (builds readiness and pairings)
+3) Export spikes + waveforms for CTZ–VEH pairs (what this script consumes):
+   - `python -m scripts.export_spikes_waveforms_batch --plates ... --pre 1.0 --post 1.0 [other filter/detect flags]`
 
 Usage
 -----
@@ -22,14 +52,14 @@ Usage
                                      [--example-pair PAIR_ID] [--example-channel CH]
                                      [--example-match-length]
                                      [--exemplary-index-x]
-                                      [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
-                                      [--limit N]
+                                     [--isi-thr-ms 100] [--min-burst-ms 100] [--min-spikes 3]
+                                     [--limit N]
 
 Notes
 -----
-- If `--output-root` is not provided, it falls back to CONFIG.output_root or
-  `_mcs_mea_outputs_local` under the repo root if the external drive is absent.
-- Expects HDF5/CSV files written by `scripts/export_spikes_waveforms_batch.py`.
+- If `--output-root` is not provided, it falls back to `CONFIG.output_root` or
+  `./_mcs_mea_outputs_local` if the external drive is not mounted.
+- This script requires the HDF5/CSV exports described above to exist.
 """
 
 import argparse
@@ -565,10 +595,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     save_dir = args.save_dir or (exp_root / 'analysis')
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # Log where inputs are being read from and where outputs go
+    print(f"[analysis] Using output_root: {out_root}")
+    print(f"[analysis] Exports root:    {exp_root}")
+    print(f"[analysis] Output dir:      {save_dir}")
+    if not exp_root.exists():
+        print("[analysis] ERROR: exports root does not exist. Make sure you ran:\n"
+              "  python -m scripts.export_spikes_waveforms_batch ...\n"
+              "and that exports live under <output_root>/exports/spikes_waveforms/")
+        return 1
+
     # Discover pair H5s
     pair_h5 = discover_pair_h5(exp_root, limit=args.limit)
     if not pair_h5:
         print(f"[analysis] No pair H5 found under: {exp_root}")
+        print("[analysis] Expected files like: <output_root>/exports/spikes_waveforms/<round>/plate_<N>/<CTZ>__VS__<VEH>.h5")
         return 0
     print(f"[analysis] Pairs found: {len(pair_h5)} — using: {len(pair_h5)}")
 
