@@ -212,11 +212,22 @@ def _decimated_channel_trace(
             r = rows[ch_index]
     except Exception:
         pass
-    # Read slice defensively
+    # Read slice defensively; try (rows, samples) then fallback to (samples, rows)
     try:
         y = np.asarray(ds[r, start_idx:end_idx:step])
     except Exception:
-        return np.array([]), np.array([])
+        y = np.array([])
+    if y.size == 0:
+        try:
+            y = np.asarray(ds[start_idx:end_idx:step, r])
+        except Exception:
+            y = np.array([])
+    # Debug: print indices if empty
+    if y.size == 0:
+        try:
+            print(f"[raw-read] empty slice rows={int(shape[0])} samples={int(shape[1])} ch={ch_index} row={r} idx=({start_idx},{end_idx}) step={step} sr={sr_hz}")
+        except Exception:
+            pass
     m = min(len(x), len(y))
     return x[:m], y[:m]
 
@@ -292,10 +303,21 @@ def _decimated_channel_trace_h5(
                 return np.array([]), np.array([])
             step = 1 if (not decimate or max_points is None or max_points <= 0) else max(1, int(np.ceil(ns / max_points)))
             x = ((start_idx + np.arange(0, ns, step)) / sr_hz).astype(float)
+            # Read slice defensively; try (rows, samples) then fallback to (samples, rows)
             try:
                 y = np.asarray(ds[r, start_idx:end_idx:step])
             except Exception:
-                return np.array([]), np.array([])
+                y = np.array([])
+            if y.size == 0:
+                try:
+                    y = np.asarray(ds[start_idx:end_idx:step, r])
+                except Exception:
+                    y = np.array([])
+            if y.size == 0:
+                try:
+                    print(f"[raw-read-h5] empty slice rows={nrows} samples={total_samples} ch={ch_index} row={r} idx=({start_idx},{end_idx}) step={step} sr={sr_hz}")
+                except Exception:
+                    pass
             m = min(len(x), len(y))
             return x[:m], y[:m]
     except Exception:
