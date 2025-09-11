@@ -126,25 +126,29 @@ def _spike_dir(output_root: Path, cli_dir: Optional[Path]) -> Path:
 
 
 def _discover_npz(spike_dir: Path, sides: Tuple[str, ...], pairs: Optional[List[str]], limit: Optional[int]) -> Dict[str, Dict[str, List[Path]]]:
-    # Map: pair_id -> side -> list[npz]
+    """Discover NPZs named binary_spikes__<PAIR>__<bin>ms__<SIDE>.npz.
+
+    Uses a robust parser that allows <PAIR> to contain '__' (e.g., '__VS__').
+    """
     out: Dict[str, Dict[str, List[Path]]] = {}
     files = sorted(spike_dir.rglob('binary_spikes__*__*ms__*.npz'))
     for p in files:
-        # Expect name: binary_spikes__<PAIR>__<bin>ms__<SIDE>.npz
         name = p.name
-        try:
-            prefix, pair_id, bin_part, side_part = name.split('__')
-            side = side_part.replace('.npz', '')
-        except ValueError:
-            # Unexpected name; skip
+        if not name.startswith('binary_spikes__') or not name.endswith('.npz'):
             continue
+        core = name[len('binary_spikes__'):-4]  # strip prefix and '.npz'
+        # Expect: <PAIR>__<bin>ms__<SIDE>
+        parts = core.rsplit('__', 2)
+        if len(parts) != 3:
+            continue
+        pair_id, bin_part, side = parts
         if side not in sides:
             continue
         if pairs is not None and pair_id not in pairs:
             continue
         out.setdefault(pair_id, {}).setdefault(side, []).append(p)
-    # limit by pair count if requested
     if limit is not None and limit > 0:
+        # Limit by pair count while preserving mapping structure
         limited = dict(list(out.items())[:limit])
         return limited
     return out
@@ -314,4 +318,3 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
