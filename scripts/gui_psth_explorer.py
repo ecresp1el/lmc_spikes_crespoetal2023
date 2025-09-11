@@ -300,8 +300,8 @@ class Explorer:
             ax.grid(True, axis='x', alpha=0.2)
         self.ax_raw_ctz.set_title('CTZ — raw (smoothed)')
         self.ax_raw_veh.set_title('VEH — raw (smoothed)')
-        self.ax_norm_ctz.set_title('CTZ — normalized by late')
-        self.ax_norm_veh.set_title('VEH — normalized by late')
+        self.ax_norm_ctz.set_title('CTZ — normalized to early (overlaid)')
+        self.ax_norm_veh.set_title('VEH — normalized to early (overlaid)')
         self.ax_norm_ctz.set_xlabel('Time from chem (s)')
         self.ax_norm_veh.set_xlabel('Time from chem (s)')
         self.ax_raw_ctz.set_ylabel('Channel index')
@@ -316,7 +316,12 @@ class Explorer:
         channels = d['channels'].astype(int)
         t = self.times[side]
         S = self._compute_smoothed(side)
-        N = self._normalize_by_late(side, S)
+        # Normalize to side-specific EARLY window
+        se = self.start[side]['early']
+        mask_e = (t >= se) & (t <= (se + self.early_dur))
+        eps = 1e-9
+        denom = np.maximum(eps, np.mean(S[:, mask_e], axis=1)) if np.any(mask_e) else np.ones(S.shape[0])
+        N = (S.T / denom).T
         # draw lines per channel
         for idx, ch in enumerate(channels):
             y_raw = float(ch) + amp * S[idx, :]
@@ -325,7 +330,7 @@ class Explorer:
         C = len(channels)
         cmap = plt.get_cmap('tab20', max(C, 1))
         for idx, ch in enumerate(channels):
-            ax_norm.plot(t, N[idx, :], color=cmap(idx % cmap.N), lw=0.7, alpha=0.9)
+            ax_norm.plot(t, N[idx, :], color=cmap(idx % cmap.N), lw=0.8, alpha=0.9)
         # shade early/late windows for this side
         se = self.start[side]['early']
         sl = self.start[side]['late']
@@ -437,14 +442,42 @@ class Explorer:
         self._load_pair(self.pairs[self.i])
         # update slider ranges if post changed
         self._init_windows()
-        self.s_ctz_early.valmax = max(0.0, self.common_post - self.early_dur)
-        self.s_ctz_late.valmax  = max(0.0, self.common_post - self.late_dur)
-        self.s_veh_early.valmax = max(0.0, self.common_post - self.early_dur)
-        self.s_veh_late.valmax  = max(0.0, self.common_post - self.late_dur)
+        self._update_slider_bounds()
         self.s_ctz_early.set_val(self.start['CTZ']['early'])
         self.s_ctz_late.set_val(self.start['CTZ']['late'])
         self.s_veh_early.set_val(self.start['VEH']['early'])
         self.s_veh_late.set_val(self.start['VEH']['late'])
+        self._draw_all()
+
+    def _apply_preset(self, early_s: float, late_s: float) -> None:
+        # Set durations and refresh starts and sliders
+        self.early_dur = max(0.01, min(self.common_post, early_s))
+        self.late_dur = max(0.01, min(self.common_post, late_s))
+        self.tb_early_dur.set_val(f"{self.early_dur:.3f}")
+        self.tb_late_dur.set_val(f"{self.late_dur:.3f}")
+        for side in ('CTZ','VEH'):
+            self.start[side]['early'] = 0.0
+            self.start[side]['late'] = max(0.0, self.common_post - self.late_dur)
+            self._enforce_nonoverlap(side)
+        self._update_slider_bounds()
+        self.s_ctz_early.set_val(self.start['CTZ']['early'])
+        self.s_ctz_late.set_val(self.start['CTZ']['late'])
+        self.s_veh_early.set_val(self.start['VEH']['early'])
+        self.s_veh_late.set_val(self.start['VEH']['late'])
+        self._draw_all()
+
+    def _snap_side(self, side: str) -> None:
+        # Snap early to 0 and late to the end of post window for this side
+        self.start[side]['early'] = 0.0
+        self.start[side]['late'] = max(0.0, self.common_post - self.late_dur)
+        self._enforce_nonoverlap(side)
+        self._update_slider_bounds()
+        if side == 'CTZ':
+            self.s_ctz_early.set_val(self.start['CTZ']['early'])
+            self.s_ctz_late.set_val(self.start['CTZ']['late'])
+        else:
+            self.s_veh_early.set_val(self.start['VEH']['early'])
+            self.s_veh_late.set_val(self.start['VEH']['late'])
         self._draw_all()
 
     def _on_save(self, event) -> None:
