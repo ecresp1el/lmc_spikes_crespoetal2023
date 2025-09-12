@@ -2,13 +2,39 @@
 from __future__ import annotations
 
 """
-Standalone, non-notebook GUI for PSTH exploration using Tkinter + Matplotlib (TkAgg).
+PSTH Explorer (Tk GUI) — Early-only, terminal-launched, no notebooks required.
 
-- Loads binary spike matrices (NPZ) from the spike_matrices directory.
-- Shows 2×2 plots (CTZ | VEH): raw smoothed lines on top, normalized-to-early on bottom.
-- Early-only normalization: divide each channel by its mean in the chosen early window.
-- Interactive controls (Tk widgets): early duration, per-side early start, smoothing taps,
-  pair navigation, snap/preset, and save.
+What this GUI does
+------------------
+- Loads precomputed binary spike matrices (NPZ) created by scripts/build_spike_matrix.py.
+- Draws a 2×2 figure per pair:
+  - Top row (CTZ | VEH): per-channel raw lines (re-binned counts, smoothed for display) stacked by channel.
+  - Bottom row (CTZ | VEH): normalized per-channel overlays (each channel divided by its own early-window stat).
+- Lets you interactively set, per side (CTZ/VEH):
+  - Early-window duration (seconds) and start time (via sliders or by drag line on plot).
+  - Smoothing window ("taps", in bins) for display and for the saved normalized/raw matrices.
+  - Binning (ms) by integer multiples of the original bin size (cannot go finer than original).
+- Saves outputs without re-detecting spikes, only reading NPZ matrices.
+
+UI controls (quick guide)
+------------------------
+- early (s): type seconds and press Apply (or Enter).
+- bin (ms): type desired bin width (rounded to integer× original bin) and Apply.
+- smooth (bins): horizontal slider — odd enforced, per-trace moving average used for display + saved matrices.
+- stat: mean or median for early-window normalization (per channel).
+- Prev/Next: navigate pairs; check "Carry to next" to preserve settings across pairs.
+- Save Fig: writes a per-pair SVG figure.
+- Save Pair: stores full per-channel matrices (counts/raw/norm) + metadata for CTZ/VEH (used by pooling).
+- View/Clear Saved: preview or clear the in-memory saved pairs list.
+- Group: pools saved pairs, writes a NPZ with all matrices + metadata, and a 2×2 summary SVG.
+- Save/Load Session: persist / restore the saved pairs list to/from an NPZ.
+
+Assumptions and constraints
+---------------------------
+- This GUI never re-detects spikes; it uses prebuilt binary matrices.
+- Binning can only coarsen (integer multiples of original bin). Going finer is impossible without raw timestamps.
+- Normalization is per channel and per side, with the early window you specify (mean/median).
+- Colors/conventions are kept consistent across plotting scripts.
 
 Launch from a terminal (not a notebook):
   python -m scripts.psth_explorer_tk [--output-root PATH] [--spike-dir PATH] [--pairs ...] [--limit N]
@@ -323,6 +349,14 @@ class TkPSTHApp:
         return S
 
     def _get_rebinned(self, side: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (t_re, counts_re) using the current bin settings.
+
+        Notes
+        -----
+        - Respects the GUI's bin setting by aggregating an integer number of
+          original bins. Cannot go finer than original.
+        - Aggregation is sum across bins (counts), and time is the mean of bin centers.
+        """
         d = self.mats.get(side)
         if not d:
             return np.array([]), np.array([])
@@ -347,6 +381,12 @@ class TkPSTHApp:
         return t_re, B_re.astype(float)
 
     def _draw_side(self, side: str, ax_raw: plt.Axes, ax_norm: plt.Axes, amp: float = 0.8) -> None:
+        """Draw one side (CTZ/VEH) on raw and normalized axes.
+
+        - Raw: re-binned + smoothed counts stacked by channel index (for context).
+        - Normalized: per-channel overlays after dividing by early-window stat.
+        - Shadings: chem at 0 (red band) and early window (green span + line).
+        """
         d = self.mats.get(side)
         if not d:
             ax_raw.set_visible(False)
@@ -423,6 +463,7 @@ class TkPSTHApp:
         self.canvas.draw()
 
     def _on_duration(self) -> None:
+        """Apply early-window duration typed by user and refresh sliders/plots."""
         try:
             v = float(self.var_early.get())
         except Exception:
@@ -442,6 +483,7 @@ class TkPSTHApp:
         self._draw_all()
 
     def _on_start(self, side: str, val: float) -> None:
+        """Update early-window start for a side from the slider and redraw."""
         v = max(0.0, min(float(val), max(0.0, self.common_post - self.early_dur)))
         self.start[side]['early'] = v
         self._draw_all()
@@ -478,6 +520,7 @@ class TkPSTHApp:
         self._draw_all()
 
     def _apply_bottom_ylim(self) -> None:
+        """Apply manual bottom y-axis limits for normalized overlays (both sides)."""
         try:
             ymin = float(self.var_ymin.get())
             ymax = float(self.var_ymax.get())
@@ -491,6 +534,7 @@ class TkPSTHApp:
         self._draw_all()
 
     def _auto_bottom_ylim(self) -> None:
+        """Use autoscaling again for bottom y-axis (normalized overlays)."""
         self.bottom_ylim = None
         self.var_ymin.set("")
         self.var_ymax.set("")
