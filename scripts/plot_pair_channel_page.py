@@ -190,41 +190,70 @@ def main() -> None:
             "VEH": {"t": t_vr, "y": yv_f, "spk": spk_v},
         }
 
-    # Create 3x2-style grid (rows = channels, cols = sides)
-    nrows = len(channels)
-    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(12, max(5, 2 + 2.5 * nrows)), sharex=True)
-    if nrows == 1:
-        axes = np.array([axes])  # unify indexing
+    # Build 1x2 layout: left VEH (all chosen channels), right CTZ (all chosen channels)
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(14, 6), sharex=True)
     fig.suptitle(
         f"{plate_txt} | {round_txt} | chs {','.join(map(str, channels))} | HP {int(args.hp)} Hz o{args.order} | window {args.pre:.3f}s/{args.post:.3f}s",
         fontsize=12,
     )
 
-    def _plot_cell(ax: plt.Axes, t: np.ndarray, y: np.ndarray, spk: np.ndarray, color: str, label: str) -> None:
-        ax.plot(t, y, color=color, lw=0.9)
-        # Place raster ticks near the top of the analog range
-        if y.size:
-            yr = float(np.max(y) - np.min(y)) or 1.0
-            y0 = float(np.max(y)) + 0.05 * yr
-            y1 = y0 + 0.15 * yr
+    def _plot_side(ax: plt.Axes, side: str, color: str) -> None:
+        # Gather traces and spikes for this side in channel order
+        items: list[tuple[int, np.ndarray, np.ndarray]] = []  # (ch, t, y)
+        spikes_list: list[tuple[int, np.ndarray]] = []        # (ch, spikes)
+        for ch in channels:
+            d = per_channel.get(ch) or {}
+            s = d.get(side) or {}
+            t = np.asarray(s.get("t", []))
+            y = np.asarray(s.get("y", []))
+            spk = np.asarray(s.get("spk", []))
+            if t.size and y.size:
+                items.append((ch, t, y))
+                spikes_list.append((ch, spk))
+
+        if not items:
+            ax.set_title(f"{side}")
+            ax.set_xlim(-args.pre, args.post)
+            ax.axvline(0.0, color="r", ls="--", lw=0.8)
+            return
+
+        # Determine vertical step via robust scale across all traces
+        def _mad(x: np.ndarray) -> float:
+            med = float(np.median(x)) if x.size else 0.0
+            return float(1.4826 * np.median(np.abs(x - med))) if x.size else 0.0
+        scales = [max(1e-6, _mad(y)) for (_, _, y) in items]
+        step = 6.0 * float(np.median(scales)) if scales else 1.0
+
+        ymins, ymaxs = [], []
+        for i, (ch, t, y) in enumerate(items):
+            off = i * step
+            ax.plot(t, y + off, color=color, lw=0.9, label=(f"{side} ch {ch}" if i == 0 else None))
+            ymins.append(float(np.min(y + off)))
+            ymaxs.append(float(np.max(y + off)))
+
+        # Raster: one lane per channel stacked above the top trace
+        y_top = (max(ymaxs) if ymaxs else 0.0) + 0.2 * step
+        lane_h = 0.12 * step
+        for i, (ch, spk) in enumerate(spikes_list):
             if spk.size:
-                ax.vlines(spk, y0, y1, color=color, lw=0.9)
-            ax.set_ylim(float(np.min(y)) - 0.05 * yr, y1 + 0.05 * yr)
+                y0 = y_top + i * lane_h * 1.2
+                y1 = y0 + lane_h
+                ax.vlines(spk, y0, y1, color=color, lw=0.8)
+
+        # Decor
         ax.axvline(0.0, color="r", ls="--", lw=0.8)
         ax.set_xlim(-args.pre, args.post)
-        ax.set_title(label)
+        y_min = (min(ymins) if ymins else 0.0)
+        y_max = (y_top + lane_h * (1.2 * len(items) + 2)) if items else (max(ymaxs) if ymaxs else 1.0)
+        ax.set_ylim(y_min, y_max)
+        ax.set_title(f"{side}")
+        ax.set_ylabel("Filtered (offset per ch)")
 
-    for r, ch in enumerate(channels):
-        d = per_channel.get(ch) or {}
-        # Left = VEH, Right = CTZ
-        dv = d.get("VEH") or {}
-        dc = d.get("CTZ") or {}
-        _plot_cell(axes[r, 0], np.asarray(dv.get("t", [])), np.asarray(dv.get("y", [])), np.asarray(dv.get("spk", [])), COL_VEH, f"VEH — ch {ch}")
-        _plot_cell(axes[r, 1], np.asarray(dc.get("t", [])), np.asarray(dc.get("y", [])), np.asarray(dc.get("spk", [])), COL_CTZ, f"CTZ — ch {ch}")
-        axes[r, 0].set_ylabel(f"ch {ch}")
-
-    axes[-1, 0].set_xlabel("Time (s, chem=0)")
-    axes[-1, 1].set_xlabel("Time (s, chem=0)")
+    # Left = VEH, Right = CTZ
+    _plot_side(axes[0], "VEH", COL_VEH)
+    _plot_side(axes[1], "CTZ", COL_CTZ)
+    axes[0].set_xlabel("Time (s, chem=0)")
+    axes[1].set_xlabel("Time (s, chem=0)")
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
     # Output path
