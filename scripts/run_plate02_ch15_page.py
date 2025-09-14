@@ -30,8 +30,8 @@ def main() -> None:
         "--round", "mea_blade_round5",
         "--chs",
         *[str(c) for c in CHS],
-        "--pre", "0.5",
-        "--post", "0.5",
+        "--pre", "0.2",
+        "--post", "1.0",
         "--hp", "300",
         "--order", "4",
     ]
@@ -42,4 +42,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
