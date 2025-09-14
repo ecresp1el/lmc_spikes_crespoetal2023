@@ -40,6 +40,8 @@ from typing import Optional, Tuple, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import math
 
 # Ensure repo root import for internal helpers
 import sys
@@ -72,6 +74,7 @@ class Args:
     plate: Optional[int]
     round: Optional[str]
     out: Optional[Path]
+    units: str
 
 
 def _parse_args() -> Args:
@@ -89,6 +92,7 @@ def _parse_args() -> Args:
     p.add_argument("--plate", type=int, default=None, help="Plate label for titles")
     p.add_argument("--round", type=str, default=None, help="Round label for titles")
     p.add_argument("--out", type=Path, default=None, help="Output figure path (.png/.svg/.pdf). Defaults next to CTZ H5")
+    p.add_argument("--units", type=str, default="µV", help="Y-axis units label for analog (default: µV)")
     a = p.parse_args()
     return Args(
         ctz_h5=a.ctz_h5,
@@ -104,6 +108,7 @@ def _parse_args() -> Args:
         plate=a.plate,
         round=a.round,
         out=a.out,
+        units=a.units,
     )
 
 
@@ -197,6 +202,21 @@ def main() -> None:
         fontsize=12,
     )
 
+    def _nice_scale(v: float) -> float:
+        if not np.isfinite(v) or v <= 0:
+            return 1.0
+        e = math.floor(math.log10(v))
+        b = v / (10 ** e)
+        if b < 1.5:
+            nb = 1.0
+        elif b < 3.5:
+            nb = 2.0
+        elif b < 7.5:
+            nb = 5.0
+        else:
+            nb = 10.0
+        return nb * (10 ** e)
+
     def _plot_side(ax: plt.Axes, side: str, color: str) -> None:
         # Gather traces and spikes for this side in channel order
         items: list[tuple[int, np.ndarray, np.ndarray]] = []  # (ch, t, y)
@@ -247,7 +267,17 @@ def main() -> None:
         y_max = (y_top + lane_h * (1.2 * len(items) + 2)) if items else (max(ymaxs) if ymaxs else 1.0)
         ax.set_ylim(y_min, y_max)
         ax.set_title(f"{side}")
-        ax.set_ylabel("Filtered (offset per ch)")
+        ax.set_ylabel(f"Filtered ({args.units}, offset per ch)")
+
+        # Scale bar (vertical), placed near left within view
+        if items:
+            sb_val = _nice_scale(0.5 * step)  # choose a clean value relative to offsets
+            x0 = -args.pre + 0.05 * (args.pre + args.post)
+            yb0 = y_min + 0.1 * (y_max - y_min)
+            ax.vlines([x0], yb0, yb0 + sb_val, color=color, lw=2.0)
+            ax.text(x0 + 0.01 * (args.pre + args.post), yb0 + sb_val * 0.5, f"{sb_val:.0f} {args.units}",
+                    va="center", ha="left", color=color, fontsize=9,
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.6))
 
     # Left = VEH, Right = CTZ
     _plot_side(axes[0], "VEH", COL_VEH)
