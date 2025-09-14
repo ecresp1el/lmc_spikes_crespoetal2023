@@ -204,6 +204,20 @@ def main() -> None:
         }
 
     # Determine a global vertical offset step and a unified scale-bar value across both sides
+    def _nice_scale(v: float) -> float:
+        if not np.isfinite(v) or v <= 0:
+            return 1.0
+        e = math.floor(math.log10(v))
+        b = v / (10 ** e)
+        if b < 1.5:
+            nb = 1.0
+        elif b < 3.5:
+            nb = 2.0
+        elif b < 7.5:
+            nb = 5.0
+        else:
+            nb = 10.0
+        return nb * (10 ** e)
     def _mad(x: np.ndarray) -> float:
         med = float(np.median(x)) if x.size else 0.0
         return float(1.4826 * np.median(np.abs(x - med))) if x.size else 0.0
@@ -244,20 +258,7 @@ def main() -> None:
         fontsize=12,
     )
 
-    def _nice_scale(v: float) -> float:
-        if not np.isfinite(v) or v <= 0:
-            return 1.0
-        e = math.floor(math.log10(v))
-        b = v / (10 ** e)
-        if b < 1.5:
-            nb = 1.0
-        elif b < 3.5:
-            nb = 2.0
-        elif b < 7.5:
-            nb = 5.0
-        else:
-            nb = 10.0
-        return nb * (10 ** e)
+    
 
     def _plot_side(ax: plt.Axes, side: str, color: str) -> None:
         # Gather traces and spikes for this side in channel order
