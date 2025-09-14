@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 """
-CTZ vs VEH — six‑trace overlay + top raster
-==========================================
+CTZ vs VEH — 3×2 grid (per‑channel, per‑side)
+=============================================
 
 What this script does
 ---------------------
@@ -11,8 +11,9 @@ What this script does
 - Extracts a chem‑centered window (default: 0.5 s pre, 0.5 s post).
 - Applies high‑pass filtering (default: 300 Hz, order 4; full analog, no decimation).
 - Detects spikes on the filtered trace using the shared utilities (MAD×K threshold; default K=5, polarity=neg).
-- Produces a single axes overlay of six filtered traces (CTZ blue, VEH grey) with
-  per‑trace vertical offsets for visual separation; a compact two‑lane raster sits on top.
+- Produces a grid with rows = channels and two columns (left = VEH grey, right = CTZ blue).
+  Each subplot shows the filtered analog trace with a compact spike raster drawn on top
+  as short vertical ticks near the top of the panel. Time is aligned so chem = 0 s.
 
 Usage (example)
 ---------------
@@ -156,11 +157,8 @@ def main() -> None:
     fcfg = FilterConfig(mode="hp", hp_hz=args.hp, hp_order=args.order)
     dcfg = DetectConfig(noise="mad", K=5.0, polarity="neg", min_width_ms=0.3, refractory_ms=1.0, merge_ms=0.3)
     
-    # Collect all traces and spikes
-    traces: list[tuple[str, int, np.ndarray, np.ndarray]] = []  # (side, ch, t_rebased, y_filt)
-    spikes_ctz_all: list[np.ndarray] = []
-    spikes_veh_all: list[np.ndarray] = []
-    
+    # Precompute per-channel per-side data
+    per_channel: dict[int, dict[str, dict[str, np.ndarray | float]]] = {}
     for ch in channels:
         # Compute absolute windows around chem for each side
         t0_c = max(0.0, args.chem_ctz - args.pre)
@@ -187,68 +185,46 @@ def main() -> None:
         spk_c, _, _ = detect_spikes(t_cr, yc_f, sr_c, base_c, full_c, dcfg) if t_cr.size else (np.array([]), np.nan, np.nan)
         spk_v, _, _ = detect_spikes(t_vr, yv_f, sr_v, base_v, full_v, dcfg) if t_vr.size else (np.array([]), np.nan, np.nan)
 
-        # Store
-        if t_cr.size and yc_f.size:
-            traces.append(("CTZ", ch, t_cr, yc_f))
-        if t_vr.size and yv_f.size:
-            traces.append(("VEH", ch, t_vr, yv_f))
-        spikes_ctz_all.append(spk_c if spk_c.size else np.array([]))
-        spikes_veh_all.append(spk_v if spk_v.size else np.array([]))
+        per_channel[ch] = {
+            "CTZ": {"t": t_cr, "y": yc_f, "spk": spk_c},
+            "VEH": {"t": t_vr, "y": yv_f, "spk": spk_v},
+        }
 
-    # Create single overlay axes
-    fig, ax = plt.subplots(figsize=(12, 6))
+    # Create 3x2-style grid (rows = channels, cols = sides)
+    nrows = len(channels)
+    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(12, max(5, 2 + 2.5 * nrows)), sharex=True)
+    if nrows == 1:
+        axes = np.array([axes])  # unify indexing
     fig.suptitle(
         f"{plate_txt} | {round_txt} | chs {','.join(map(str, channels))} | HP {int(args.hp)} Hz o{args.order} | window {args.pre:.3f}s/{args.post:.3f}s",
         fontsize=12,
     )
 
-    # Compute vertical offsets for visual staggering
-    if traces:
-        # Robust scale across all traces
-        def _mad(x: np.ndarray) -> float:
-            med = float(np.median(x)) if x.size else 0.0
-            return float(1.4826 * np.median(np.abs(x - med))) if x.size else 0.0
-        scales = [max(1e-6, _mad(y)) for (_, _, _, y) in traces]
-        step = 6.0 * float(np.median(scales)) if scales else 1.0
-    else:
-        step = 1.0
+    def _plot_cell(ax: plt.Axes, t: np.ndarray, y: np.ndarray, spk: np.ndarray, color: str, label: str) -> None:
+        ax.plot(t, y, color=color, lw=0.9)
+        # Place raster ticks near the top of the analog range
+        if y.size:
+            yr = float(np.max(y) - np.min(y)) or 1.0
+            y0 = float(np.max(y)) + 0.05 * yr
+            y1 = y0 + 0.15 * yr
+            if spk.size:
+                ax.vlines(spk, y0, y1, color=color, lw=0.9)
+            ax.set_ylim(float(np.min(y)) - 0.05 * yr, y1 + 0.05 * yr)
+        ax.axvline(0.0, color="r", ls="--", lw=0.8)
+        ax.set_xlim(-args.pre, args.post)
+        ax.set_title(label)
 
-    # Order traces grouping by side for clarity: VEH first then CTZ (or vice versa)
-    # Keep channel order as provided
-    order = [(s, ch, t, y) for (s, ch, t, y) in traces if s == "VEH"] + [(s, ch, t, y) for (s, ch, t, y) in traces if s == "CTZ"]
-    labels_drawn = {"VEH": False, "CTZ": False}
-    ymins, ymaxs = [], []
-    for k, (side, ch, t, y) in enumerate(order):
-        off = k * step
-        color = COL_VEH if side == "VEH" else COL_CTZ
-        lab = f"{side} ch {ch}" if not labels_drawn[side] else None
-        ax.plot(t, y + off, color=color, lw=0.9, label=lab)
-        ymins.append(float(np.min(y + off)))
-        ymaxs.append(float(np.max(y + off)))
-        labels_drawn[side] = True
+    for r, ch in enumerate(channels):
+        d = per_channel.get(ch) or {}
+        # Left = VEH, Right = CTZ
+        dv = d.get("VEH") or {}
+        dc = d.get("CTZ") or {}
+        _plot_cell(axes[r, 0], np.asarray(dv.get("t", [])), np.asarray(dv.get("y", [])), np.asarray(dv.get("spk", [])), COL_VEH, f"VEH — ch {ch}")
+        _plot_cell(axes[r, 1], np.asarray(dc.get("t", [])), np.asarray(dc.get("y", [])), np.asarray(dc.get("spk", [])), COL_CTZ, f"CTZ — ch {ch}")
+        axes[r, 0].set_ylabel(f"ch {ch}")
 
-    # Chem at 0
-    ax.axvline(0.0, color="r", ls="--", lw=0.8)
-
-    # Raster lanes placed above the highest trace
-    y_top = (max(ymaxs) if ymaxs else 0.0) + 0.2 * step
-    lane_h = 0.15 * step
-    # Concatenate spikes across channels per side
-    spk_ctz = np.sort(np.concatenate([s for s in spikes_ctz_all if s.size])) if any(s.size for s in spikes_ctz_all) else np.array([])
-    spk_veh = np.sort(np.concatenate([s for s in spikes_veh_all if s.size])) if any(s.size for s in spikes_veh_all) else np.array([])
-    if spk_veh.size:
-        ax.vlines(spk_veh, y_top, y_top + lane_h, color=COL_VEH, linewidth=0.8)
-    if spk_ctz.size:
-        ax.vlines(spk_ctz, y_top + lane_h*1.3, y_top + lane_h*2.3, color=COL_CTZ, linewidth=0.8)
-    # Expand ylim to include raster
-    y_min = (min(ymins) if ymins else 0.0)
-    y_max = (y_top + lane_h*2.5) if (spk_ctz.size or spk_veh.size) else (max(ymaxs) if ymaxs else 1.0)
-    ax.set_ylim(y_min, y_max)
-
-    # Labels/legend
-    ax.set_xlabel("Time (s, chem=0)")
-    ax.set_ylabel("Filtered (offset per trace)")
-    ax.legend(ncol=2, frameon=False)
+    axes[-1, 0].set_xlabel("Time (s, chem=0)")
+    axes[-1, 1].set_xlabel("Time (s, chem=0)")
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
     # Output path
