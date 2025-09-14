@@ -22,8 +22,8 @@ python -m scripts.plot_pair_channel_page \
   --veh-h5 /Volumes/Manny2TB/mea_blade_round5_led_ctz/h5_files/plate_02_led_veh_2023-12-05T16-16-23.h5 \
   --chem-ctz 180.1597 --chem-veh 181.6293 \
   --plate 2 --round mea_blade_round5 --chs 15 22 33 \
-  --pre 0.2 --post 1.0 --hp 300 --order 4 \
-  --out /tmp/plate02_ch15_2x3.png
+  --pre 0.2 --post 1.0 --hp 300 --order 4 --gain 1200 --units µV \
+  --out /tmp/plate02_chs_15-22-33
 
 Notes
 -----
@@ -75,6 +75,7 @@ class Args:
     round: Optional[str]
     out: Optional[Path]
     units: str
+    gain: float
 
 
 def _parse_args() -> Args:
@@ -93,6 +94,7 @@ def _parse_args() -> Args:
     p.add_argument("--round", type=str, default=None, help="Round label for titles")
     p.add_argument("--out", type=Path, default=None, help="Output figure path (.png/.svg/.pdf). Defaults next to CTZ H5")
     p.add_argument("--units", type=str, default="µV", help="Y-axis units label for analog (default: µV)")
+    p.add_argument("--gain", type=float, default=1200.0, help="Amplifier gain to divide by (default: 1200)")
     a = p.parse_args()
     return Args(
         ctz_h5=a.ctz_h5,
@@ -109,6 +111,7 @@ def _parse_args() -> Args:
         round=a.round,
         out=a.out,
         units=a.units,
+        gain=float(a.gain),
     )
 
 
@@ -174,6 +177,11 @@ def main() -> None:
         # Read raw windows
         t_c, y_c, sr_c = _read_window(args.ctz_h5, ch, t0_c, t1_c)
         t_v, y_v, sr_v = _read_window(args.veh_h5, ch, t0_v, t1_v)
+        # Convert from measured output to electrode voltage by dividing by gain
+        if y_c.size:
+            y_c = y_c.astype(float) / float(args.gain)
+        if y_v.size:
+            y_v = y_v.astype(float) / float(args.gain)
         # Rebase time so chem == 0 for both sides
         t_cr = t_c - args.chem_ctz
         t_vr = t_v - args.chem_veh
@@ -245,26 +253,37 @@ def main() -> None:
         step = 6.0 * float(np.median(scales)) if scales else 1.0
 
         ymins, ymaxs = [], []
+        # First pass: draw traces and collect per-trace scale info
+        per_trace_top: list[tuple[int, float, float, np.ndarray]] = []  # (index, y_max_off, yr, spikes)
         for i, (ch, t, y) in enumerate(items):
             off = i * step
             ax.plot(t, y + off, color=color, lw=0.9, label=(f"{side} ch {ch}" if i == 0 else None))
-            ymins.append(float(np.min(y + off)))
-            ymaxs.append(float(np.max(y + off)))
+            y_min_i = float(np.min(y + off))
+            y_max_i = float(np.max(y + off))
+            ymins.append(y_min_i)
+            ymaxs.append(y_max_i)
+            yr_i = max(1e-9, y_max_i - y_min_i)
+            # find spikes array
+            spk = next((s for (c, s) in spikes_list if c == ch), np.array([]))
+            per_trace_top.append((i, y_max_i, yr_i, spk))
 
-        # Raster: one lane per channel stacked above the top trace
-        y_top = (max(ymaxs) if ymaxs else 0.0) + 0.2 * step
-        lane_h = 0.12 * step
-        for i, (ch, spk) in enumerate(spikes_list):
+        # Raster: draw ticks just above each trace, thicker and close to the analog
+        # Larger tick size: 25% of that trace's dynamic range
+        for (i, y_max_i, yr_i, spk) in per_trace_top:
             if spk.size:
-                y0 = y_top + i * lane_h * 1.2
-                y1 = y0 + lane_h
-                ax.vlines(spk, y0, y1, color=color, lw=0.8)
+                y0 = y_max_i + 0.02 * yr_i  # closer to the analog
+                y1 = y0 + 0.25 * yr_i       # larger tick size
+                ax.vlines(spk, y0, y1, color=color, lw=1.5, zorder=5)
 
         # Decor
         ax.axvline(0.0, color="r", ls="--", lw=0.8)
         ax.set_xlim(-args.pre, args.post)
         y_min = (min(ymins) if ymins else 0.0)
-        y_max = (y_top + lane_h * (1.2 * len(items) + 2)) if items else (max(ymaxs) if ymaxs else 1.0)
+        y_max = (max(ymaxs) if ymaxs else 1.0)
+        # ensure room for the tallest raster ticks
+        if per_trace_top:
+            tallest = max((y_max_i + 0.27 * yr_i) for (_, y_max_i, yr_i, _) in per_trace_top)
+            y_max = max(y_max, tallest)
         ax.set_ylim(y_min, y_max)
         ax.set_title(f"{side}")
         ax.set_ylabel(f"Filtered ({args.units}, offset per ch)")
@@ -286,16 +305,19 @@ def main() -> None:
     axes[1].set_xlabel("Time (s, chem=0)")
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-    # Output path
+    # Output paths (save both PNG and SVG)
     if args.out is not None:
-        out = args.out
+        base = args.out
     else:
         out_dir = args.ctz_h5.parent
         ch_tag = "-".join(str(c) for c in channels)
-        out = out_dir / f"pair_channels_page__chs_{ch_tag}__{args.pre:.3f}pre_{args.post:.3f}post__hp{int(args.hp)}o{args.order}.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=200)
-    print(f"Wrote figure -> {out}")
+        base = out_dir / f"pair_channels_page__chs_{ch_tag}__{args.pre:.3f}pre_{args.post:.3f}post__hp{int(args.hp)}o{args.order}"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    out_png = base.with_suffix(".png")
+    out_svg = base.with_suffix(".svg")
+    fig.savefig(out_png, dpi=200)
+    fig.savefig(out_svg)
+    print(f"Wrote figures -> {out_png} and {out_svg}")
 
 
 if __name__ == "__main__":
