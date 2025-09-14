@@ -23,6 +23,10 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+import sys
+import io
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
@@ -44,6 +48,29 @@ mpl.rcParams["axes.grid"] = True
 mpl.rcParams["grid.linestyle"] = "-"
 mpl.rcParams["grid.alpha"] = 0.25
 mpl.rcParams["figure.dpi"] = 120
+
+# -----------------------------------------------------------------------------
+# Print capture (tee to console + file)
+# -----------------------------------------------------------------------------
+class Tee(io.TextIOBase):
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, s):
+        for st in self.streams:
+            try:
+                st.write(s)
+                st.flush()
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self):
+        for st in self.streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
 
 # Consistent palette
 BLUE       = (0.0, 0.0, 1.0)      # same as MATLAB 'b'
@@ -453,6 +480,24 @@ def main():
     outdir = args.outdir
     ensure_dir(outdir)
 
+    # Set up log capture
+    log_path = outdir / "step3_analysis_log.txt"
+    log_file = open(log_path, "w", encoding="utf-8")
+    tee_out = Tee(sys.stdout, log_file)
+    tee_err = Tee(sys.stderr, log_file)
+    sys_stdout_orig, sys_stderr_orig = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = tee_out, tee_err
+
+    # Header for the log
+    print("=" * 80)
+    print("LMC4f Step 3 Analysis Log")
+    print(f"Timestamp: {datetime.now().isoformat(timespec='seconds')}")
+    print(f"FOV CSV:   {args.fov_csv}")
+    print(f"CELL CSV:  {args.cell_csv}")
+    print(f"OUTDIR:    {outdir}")
+    print(f"Groups:    CTZ-NMDA={args.ctz_nmda} | CTZ-ONLY={args.ctz_only} | DARK-ONLY={args.dark_only}")
+    print("=" * 80)
+
     # 1) Annotate per-FOV table and save csv
     fov_df = annotate_fov_table(
         args.fov_csv,
@@ -500,6 +545,20 @@ def main():
         threshold_classification_nmda_vs_only(T, outdir)
     else:
         print("[WARN] Column 'GFP_dTom_ratio' not found in per-cell table. Skipping ratio-based analyses and ROC.")
+
+    # Footer and cleanup
+    print("=" * 80)
+    print("Analysis complete. Figures saved as PDF and SVG. Log saved to:")
+    print(log_path)
+    print("=" * 80)
+
+    # Restore std streams and close the log file
+    sys.stdout.flush(); sys.stderr.flush()
+    sys.stdout, sys.stderr = sys_stdout_orig, sys_stderr_orig
+    try:
+        log_file.close()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
