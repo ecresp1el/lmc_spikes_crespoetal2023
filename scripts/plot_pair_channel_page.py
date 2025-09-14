@@ -203,6 +203,40 @@ def main() -> None:
             "VEH": {"t": t_vr, "y": yv_f, "spk": spk_v},
         }
 
+    # Determine a global vertical offset step and a unified scale-bar value across both sides
+    def _mad(x: np.ndarray) -> float:
+        med = float(np.median(x)) if x.size else 0.0
+        return float(1.4826 * np.median(np.abs(x - med))) if x.size else 0.0
+
+    mads: list[float] = []
+    ranges: list[float] = []
+    for ch in channels:
+        for side in ("VEH", "CTZ"):
+            y = np.asarray((per_channel.get(ch) or {}).get(side, {}).get("y", []))
+            if y.size:
+                mads.append(max(0.0, _mad(y)))
+                ranges.append(float(np.max(y) - np.min(y)))
+    med_mad = float(np.median(mads)) if mads else 0.0
+    step = 6.0 * med_mad if med_mad > 0 else (0.3 * float(np.median(ranges)) if ranges else 1.0)
+    step = max(step, 1e-9)
+
+    # Unified scale-bar value (nice-round) based on the global step
+    base_sb = 0.5 * step
+    sb_val = _nice_scale(base_sb)
+
+    # Humanize scale-bar label (prefer µV -> mV or nV if needed)
+    def _humanize(val: float, units: str) -> tuple[float, str]:
+        # Only special-case µV; otherwise return as-is
+        if units.lower() in ("µv", "uv", "microv", "microvolt", "microvolts"):
+            if abs(val) >= 1000.0:
+                return val / 1000.0, "mV"
+            if abs(val) < 0.1:
+                return val * 1000.0, "nV"
+            return val, "µV"
+        return val, units
+
+    sb_show, sb_unit = _humanize(sb_val, args.units)
+
     # Build 1x2 layout: left VEH (all chosen channels), right CTZ (all chosen channels)
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(14, 6), sharex=True)
     fig.suptitle(
@@ -245,13 +279,7 @@ def main() -> None:
             ax.axvline(0.0, color="r", ls="--", lw=0.8)
             return
 
-        # Determine vertical step via robust scale across all traces
-        def _mad(x: np.ndarray) -> float:
-            med = float(np.median(x)) if x.size else 0.0
-            return float(1.4826 * np.median(np.abs(x - med))) if x.size else 0.0
-        scales = [max(1e-6, _mad(y)) for (_, _, y) in items]
-        step = 6.0 * float(np.median(scales)) if scales else 1.0
-
+        # Use global step for consistent staggering and scalebar
         ymins, ymaxs = [], []
         # First pass: draw traces and collect per-trace scale info
         per_trace_top: list[tuple[int, float, float, np.ndarray]] = []  # (index, y_max_off, yr, spikes)
@@ -288,13 +316,12 @@ def main() -> None:
         ax.set_title(f"{side}")
         ax.set_ylabel(f"Filtered ({args.units}, offset per ch)")
 
-        # Scale bar (vertical), placed near left within view
+        # Scale bar (vertical), placed near left within view — unified across sides
         if items:
-            sb_val = _nice_scale(0.5 * step)  # choose a clean value relative to offsets
             x0 = -args.pre + 0.05 * (args.pre + args.post)
             yb0 = y_min + 0.1 * (y_max - y_min)
             ax.vlines([x0], yb0, yb0 + sb_val, color=color, lw=2.0)
-            ax.text(x0 + 0.01 * (args.pre + args.post), yb0 + sb_val * 0.5, f"{sb_val:.0f} {args.units}",
+            ax.text(x0 + 0.01 * (args.pre + args.post), yb0 + sb_val * 0.5, f"{sb_show:.3g} {sb_unit}",
                     va="center", ha="left", color=color, fontsize=9,
                     bbox=dict(facecolor="white", edgecolor="none", alpha=0.6))
 
