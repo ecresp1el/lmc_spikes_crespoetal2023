@@ -228,6 +228,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--xbar', type=float, default=0.2, help='Horizontal time scale bar length in seconds (default 0.2)')
     ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
+    ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -485,6 +486,87 @@ def main(argv: Optional[List[str]] = None) -> int:
     fig.savefig(svg)
     fig.savefig(pdf)
     print(f"Wrote -> {svg} and {pdf}")
+
+    # Optional late-phase boxplot + stats from the plotted data
+    if getattr(args, 'save_boxplot', False):
+        from pathlib import Path as _Path
+        ctz_vals: list[float] = []
+        veh_vals: list[float] = []
+        for row in rows:
+            t_r = np.asarray(row['t'], dtype=float)
+            # VEH
+            lv = row.get('late_veh')
+            if lv is not None and row['Yv'].size:
+                l0, ldur = lv
+                l1 = min(x1, l0 + (ldur if (ldur is not None and ldur > 0) else max(0.0, x1 - l0)))
+                m = (t_r >= l0) & (t_r <= l1)
+                if np.any(m):
+                    vmax = np.nanmax(np.asarray(row['Yv'], dtype=float)[:, m], axis=1)
+                    vmax = vmax[np.isfinite(vmax)]
+                    veh_vals.extend(vmax.tolist())
+            # CTZ
+            lc = row.get('late_ctz')
+            if lc is not None and row['Yc'].size:
+                l0, ldur = lc
+                l1 = min(x1, l0 + (ldur if (ldur is not None and ldur > 0) else max(0.0, x1 - l0)))
+                m = (t_r >= l0) & (t_r <= l1)
+                if np.any(m):
+                    vmax = np.nanmax(np.asarray(row['Yc'], dtype=float)[:, m], axis=1)
+                    vmax = vmax[np.isfinite(vmax)]
+                    ctz_vals.extend(vmax.tolist())
+
+        ctz_arr = np.asarray(ctz_vals, dtype=float)
+        veh_arr = np.asarray(veh_vals, dtype=float)
+
+        # Boxplot figure
+        fig2 = plt.figure(figsize=(5, 5), dpi=150)
+        axb = fig2.add_subplot(1, 1, 1)
+        data = [ctz_arr, veh_arr]
+        boxprops_patch = dict(linewidth=1.2, edgecolor='k')
+        whiskerprops_line = dict(linewidth=1.2, color='k')
+        capprops_line = dict(linewidth=1.2, color='k')
+        medianprops_line = dict(linewidth=1.6, color='k')
+        bp = axb.boxplot(
+            data, positions=[1, 2], widths=0.6, patch_artist=True,
+            boxprops=boxprops_patch, medianprops=medianprops_line,
+            whiskerprops=whiskerprops_line, capprops=capprops_line, showfliers=False,
+        )
+        for patch, fc in zip(bp['boxes'], ['tab:blue', 'k']):
+            patch.set_facecolor(fc); patch.set_alpha(0.5)
+        rng = np.random.default_rng(42)
+        for i, arr in enumerate(data, start=1):
+            if arr.size:
+                xj = i + (rng.random(arr.size) - 0.5) * 0.18
+                axb.scatter(xj, arr, s=8, color='0.6', alpha=0.6, linewidths=0)
+        axb.set_xticks([1, 2]); axb.set_xticklabels(['CTZ', 'VEH'])
+        axb.set_ylabel('Normalized late-phase max (a.u.)')
+        fig2.tight_layout()
+        box_base = _Path(str(base.with_suffix('')) + '__late_boxplot')
+        fig2.savefig(box_base.with_suffix('.svg'))
+        fig2.savefig(box_base.with_suffix('.pdf'))
+        plt.close(fig2)
+
+        # Stats CSV (overall MWU)
+        try:
+            from scipy import stats as _sstats
+            U, p = _sstats.mannwhitneyu(ctz_arr, veh_arr, alternative='two-sided') if ctz_arr.size and veh_arr.size else (np.nan, np.nan)
+        except Exception:
+            U, p = (np.nan, np.nan)
+        import csv as _csv
+        csv_path = _Path(str(base.with_suffix('')) + '__late_boxplot__stats.csv')
+        with csv_path.open('w', newline='') as f:
+            w = _csv.DictWriter(f, fieldnames=['n_ctz','n_veh','median_ctz','median_veh','mean_ctz','mean_veh','U','p'])
+            w.writeheader()
+            w.writerow({
+                'n_ctz': int(ctz_arr.size), 'n_veh': int(veh_arr.size),
+                'median_ctz': float(np.nanmedian(ctz_arr)) if ctz_arr.size else np.nan,
+                'median_veh': float(np.nanmedian(veh_arr)) if veh_arr.size else np.nan,
+                'mean_ctz': float(np.nanmean(ctz_arr)) if ctz_arr.size else np.nan,
+                'mean_veh': float(np.nanmean(veh_arr)) if veh_arr.size else np.nan,
+                'U': float(U), 'p': float(p),
+            })
+        print(f"Wrote late-phase boxplot -> {box_base.with_suffix('.svg')} and stats -> {csv_path}")
+
     return 0
 
 
