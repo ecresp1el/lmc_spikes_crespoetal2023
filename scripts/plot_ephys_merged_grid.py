@@ -34,7 +34,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.cm import ScalarMappable
 from matplotlib import cm as mplcm
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib.ticker import FuncFormatter
 from matplotlib import patches
 import tifffile
@@ -245,15 +245,36 @@ def main() -> int:
     if nrows == 1:
         axes = np.array([axes])
 
-    cmaps = {'DAPI': 'Blues', 'EYFP': 'Greens', 'tdTom': 'Reds'}
+    # Pure-channel coloring helpers (match invivo overlay semantics)
+    def pure_rgb_from_single(gray01: np.ndarray, ch: str) -> np.ndarray:
+        v = np.clip(gray01, 0.0, 1.0)
+        v8 = (v * 255.0 + 0.5).astype(np.uint8)
+        z = np.zeros_like(v8, dtype=np.uint8)
+        if ch == 'tdTom':
+            return np.stack([v8, z, z], axis=-1)  # red
+        if ch == 'EYFP':
+            return np.stack([z, v8, z], axis=-1)  # green
+        return np.stack([z, z, v8], axis=-1)      # blue (DAPI)
+
+    def pure_channel_cmap(ch: str) -> LinearSegmentedColormap:
+        if ch == 'tdTom':
+            colors = [(0.0, (0, 0, 0)), (1.0, (1, 0, 0))]
+        elif ch == 'EYFP':
+            colors = [(0.0, (0, 0, 0)), (1.0, (0, 1, 0))]
+        else:  # DAPI
+            colors = [(0.0, (0, 0, 0)), (1.0, (0, 0, 1))]
+        return LinearSegmentedColormap.from_list(f"pure_{ch}", [c for _, c in colors])
     for i, r in enumerate(roots):
         for j, ch in enumerate(channels):
             ax = axes[i, j]
-            im = ax.imshow(disp[r][ch], cmap=cmaps[ch], vmin=0.0, vmax=1.0)
+            rgb_panel = pure_rgb_from_single(disp[r][ch], ch)
+            ax.imshow(rgb_panel)
             ax.set_title(f"{r} — {ch}", fontsize=10)
             ax.axis('off')
             if args.colorbar_mode != 'none':
-                cbar = fig.colorbar(im, ax=ax, shrink=0.65)
+                # Add a colorbar representing intensity with pure channel ramp
+                sm = ScalarMappable(norm=Normalize(0.0, 1.0), cmap=pure_channel_cmap(ch))
+                cbar = fig.colorbar(sm, ax=ax, shrink=0.65)
                 cbar.ax.tick_params(labelsize=8)
                 if args.colorbar_mode == 'normalized':
                     cbar.set_label('Normalized (a.u.)', fontsize=8)
