@@ -2,21 +2,41 @@
 from __future__ import annotations
 
 """
-CTZ vs VEH — 3×2 grid (per‑channel, per‑side)
-=============================================
+CTZ vs VEH — 1×2 Channel Stack (per‑side) with Raster
+=====================================================
 
-What this script does
----------------------
-- Loads raw analog for both CTZ and VEH from their H5 files.
-- Extracts a chem‑centered window (default: 0.5 s pre, 0.5 s post).
-- Applies high‑pass filtering (default: 300 Hz, order 4; full analog, no decimation).
-- Detects spikes on the filtered trace using the shared utilities (MAD×K threshold; default K=5, polarity=neg).
-- Produces a grid with rows = channels and two columns (left = VEH grey, right = CTZ blue).
-  Each subplot shows the filtered analog trace with a compact spike raster drawn on top
-  as short vertical ticks near the top of the panel. Time is aligned so chem = 0 s.
+Overview
+--------
+Render a two‑panel figure (left = VEH, right = CTZ) where each panel stacks your
+selected channels vertically. For every channel, the script:
+- Loads raw analog from H5 (no decimation), centered on the chemical timestamp.
+- Converts measured values to electrode voltage by dividing by amplifier gain
+  (default ×1200; e.g., ±4 mV input range ×1200 amplifier → divide measured by 1200).
+- High‑pass filters (default 300 Hz, order 4).
+- Detects spikes (MAD×K threshold; K=5; negative polarity) and overlays a raster directly
+  above each trace as thicker ticks, keeping chem aligned at t = 0 s.
 
-Usage (example)
----------------
+Isolated and Derived From
+-------------------------
+- Isolated runner: no GUI session/state required; just reads H5 and writes figures.
+- Derived from:
+  - mcs_mea_analysis/pair_viewer_gui.py (robust H5 window reading; h5py fallback)
+  - mcs_mea_analysis/spike_filtering.py (filtering and detection helpers)
+This script glues those utilities together and focuses on publication‑style plots.
+
+Requirements (What You Need)
+----------------------------
+- Inputs (required): `--ctz-h5`, `--veh-h5`, `--chem-ctz`, `--chem-veh`, and channels via
+  `--ch` or `--chs`.
+- Environment: numpy, scipy, h5py, matplotlib. No PyQt required. No NPZ required.
+
+Not Required (What You Don’t Need)
+----------------------------------
+- PSTH/IFR NPZs, readiness index, selection JSON, notebooks, or GUI.
+- MCS Python SDK at runtime; if not available, h5py is used directly.
+
+CLI Example
+-----------
 python -m scripts.plot_pair_channel_page \
   --ctz-h5 /Volumes/Manny2TB/mea_blade_round5_led_ctz/h5_files/plate_02_led_ctz_2023-12-05T09-10-45.h5 \
   --veh-h5 /Volumes/Manny2TB/mea_blade_round5_led_ctz/h5_files/plate_02_led_veh_2023-12-05T16-16-23.h5 \
@@ -25,12 +45,24 @@ python -m scripts.plot_pair_channel_page \
   --pre 0.2 --post 1.0 --hp 300 --order 4 --gain 1200 --units µV \
   --out /tmp/plate02_chs_15-22-33
 
-Notes
------
-- If sampling rate cannot be inferred from the MCS APIs, the script falls back to 10000 Hz.
-- Spike detection uses the utilities in mcs_mea_analysis.spike_filtering.
-- Time is rebased so chem = 0 s for both CTZ and VEH, ensuring alignment.
-- Default window: pre 0.2 s, post 1.0 s.
+Outputs
+-------
+- Saves both PNG and SVG: `<base>.png` and `<base>.svg`. If `--out` is omitted, files are
+  placed next to the CTZ H5 using an auto‑generated base name.
+
+Assumptions & Defaults
+----------------------
+- Time alignment: chem = 0 s on both sides; default window [−0.2, 1.0] s.
+- Gain conversion occurs before filtering/detection: electrode_voltage = measured / gain.
+- Unified scale bar: one “nice” value used for both sides so CTZ and VEH scales are comparable.
+- Units label: set by `--units` (default µV). The scale‑bar text auto‑humanizes (µV/mV/nV) to avoid 0‑labels.
+
+Limitations
+-----------
+- Filtering is fixed to HP; add band‑pass/notch in code if needed.
+- Spike detection parameters are limited (MAD×K, negative polarity). For richer control, use
+  the GUI or extend `spike_filtering`.
+- Chem timestamps must be provided; the script does not infer them.
 """
 
 import argparse
