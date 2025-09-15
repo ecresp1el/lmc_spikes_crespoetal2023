@@ -602,6 +602,130 @@ def main(argv: Optional[List[str]] = None) -> int:
             })
         print(f"Wrote late-phase boxplot -> {box_base.with_suffix('.svg')} and stats -> {csv_path}")
 
+    # Optional: find and plot enhanced channels (CTZ late high, VEH late low)
+    if getattr(args, 'find_enhanced', False):
+        # Collect per-channel late metrics for all rows
+        vals: list[dict] = []
+        for ridx, row in enumerate(rows):
+            t_r = np.asarray(row['t'], dtype=float)
+            for side, Y, late in (("CTZ", row['Yc'], row.get('late_ctz')), ("VEH", row['Yv'], row.get('late_veh'))):
+                if Y.size == 0 or late is None:
+                    continue
+                l0, ldur = late
+                l1 = min(x1, l0 + (ldur if (ldur is not None and ldur > 0) else max(0.0, x1 - l0)))
+                m = (t_r >= l0) & (t_r <= l1)
+                if not np.any(m):
+                    continue
+                # compute per-channel metric over late window
+                if str(args.metric) == 'mean':
+                    v = np.nanmean(np.asarray(Y, dtype=float)[:, m], axis=1)
+                else:
+                    v = np.nanmax(np.asarray(Y, dtype=float)[:, m], axis=1)
+                v = np.asarray(v, dtype=float)
+                for ch, val in enumerate(v):
+                    if np.isfinite(val):
+                        vals.append({'row': ridx, 'pair': rows[ridx]['pid'], 'ch': ch, 'side': side, 'val': float(val)})
+        if not vals:
+            print('Enhanced: no per-channel late metrics (check windows/time clip); skipping enhanced outputs.')
+        else:
+            # Build pairwise mapping for CTZ/VEH per (row,ch)
+            from collections import defaultdict
+            ctz_map = defaultdict(dict)
+            veh_map = defaultdict(dict)
+            for d in vals:
+                if d['side'] == 'CTZ':
+                    ctz_map[d['row']][d['ch']] = d['val']
+                else:
+                    veh_map[d['row']][d['ch']] = d['val']
+            points = []  # (veh, ctz, row, ch, pair)
+            for r in range(len(rows)):
+                for ch, cval in ctz_map[r].items():
+                    vval = veh_map[r].get(ch, np.nan)
+                    if np.isfinite(cval) and np.isfinite(vval):
+                        points.append((vval, cval, r, ch, rows[r]['pid']))
+            pts = np.array(points, dtype=object)
+            if pts.size == 0:
+                print('Enhanced: no matched CTZ/VEH channel metrics; skipping enhanced outputs.')
+            else:
+                veh_vals = pts[:, 0].astype(float)
+                ctz_vals = pts[:, 1].astype(float)
+                sel = (ctz_vals >= float(args.ctz_min)) & (veh_vals <= float(args.veh_max))
+                if not np.any(sel):
+                    diffs = ctz_vals - veh_vals
+                    order = np.argsort(diffs)[::-1]
+                    sel_idx = order[: int(args.top_k)]
+                else:
+                    sel_idx = np.where(sel)[0]
+                    diffs = ctz_vals[sel_idx] - veh_vals[sel_idx]
+                    order = np.argsort(diffs)[::-1]
+                    sel_idx = sel_idx[order][: int(args.top_k)]
+
+                # Scatter plot
+                fig3 = plt.figure(figsize=(5, 5), dpi=150)
+                ax3 = fig3.add_subplot(1, 1, 1)
+                ax3.scatter(veh_vals, ctz_vals, s=12, color='0.7', label='all channels')
+                if sel_idx.size:
+                    ax3.scatter(veh_vals[sel_idx], ctz_vals[sel_idx], s=22, color='tab:orange', label='selected')
+                    for j in sel_idx:
+                        ax3.text(veh_vals[j], ctz_vals[j], f"{pts[j,4]} ch{int(pts[j,3])}", fontsize=7, color='0.3', ha='left', va='bottom')
+                ax3.axvline(float(args.veh_max), color='k', ls='--', lw=0.8)
+                ax3.axhline(float(args.ctz_min), color='k', ls='--', lw=0.8)
+                ax3.set_xlabel(f'VEH late ({args.metric})')
+                ax3.set_ylabel(f'CTZ late ({args.metric})')
+                ax3.legend(frameon=False, fontsize=8)
+                sc_base = Path(
+                    str(base.with_suffix(''))
+                    + f"__enhanced_scatter__metric-{str(args.metric)}__ctzmin-{float(args.ctz_min):.2f}__vehmax-{float(args.veh_max):.2f}"
+                )
+                fig3.tight_layout(); fig3.savefig(sc_base.with_suffix('.svg')); fig3.savefig(sc_base.with_suffix('.pdf'))
+                plt.close(fig3)
+                print(f"Enhanced scatter saved: {sc_base.with_suffix('.svg')} and {sc_base.with_suffix('.pdf')}")
+
+                # Examples montage
+                k = int(min(args.top_k, sel_idx.size if sel_idx.size else 0))
+                if k > 0:
+                    fig4, axs4 = plt.subplots(nrows=k, ncols=2, figsize=(10, 2.6 * k), sharex=True)
+                    if k == 1:
+                        axs4 = np.array([axs4])
+                    for row_i in range(k):
+                        j = int(sel_idx[row_i])
+                        r = int(pts[j, 2]); ch = int(pts[j, 3]); pair_id = str(pts[j, 4])
+                        rowd = rows[r]
+                        tt = np.asarray(rowd['t'], dtype=float)
+                        yv = np.asarray(rowd['Yv'][ch], dtype=float)
+                        yc = np.asarray(rowd['Yc'][ch], dtype=float)
+                        # VEH
+                        axL = axs4[row_i, 0]
+                        e = rowd.get('early_veh'); l = rowd.get('late_veh')
+                        if e is not None:
+                            axL.axvspan(e[0], e[0]+e[1], color='0.92', zorder=0)
+                        if l is not None:
+                            l0, ldur = l; l1 = min(x1, l0 + (ldur if (ldur is not None and ldur > 0) else max(0.0, x1 - l0)))
+                            axL.axvspan(l0, l1, color='0.85', zorder=0)
+                        axL.plot(tt, yv, color='k', lw=1.0)
+                        axL.axvline(0.0, color='r', ls='--', lw=0.8); axL.axhline(0.0, color='0.3', lw=0.8)
+                        axL.set_xlim(x0, x1); axL.set_ylim(gmin, gmax); axL.set_title(f"VEH {pair_id} ch{ch}")
+                        # CTZ
+                        axR = axs4[row_i, 1]
+                        e = rowd.get('early_ctz'); l = rowd.get('late_ctz')
+                        if e is not None:
+                            axR.axvspan(e[0], e[0]+e[1], color='0.92', zorder=0)
+                        if l is not None:
+                            l0, ldur = l; l1 = min(x1, l0 + (ldur if (ldur is not None and ldur > 0) else max(0.0, x1 - l0)))
+                            axR.axvspan(l0, l1, color='0.85', zorder=0)
+                        axR.plot(tt, yc, color='tab:blue', lw=1.0)
+                        axR.axvline(0.0, color='r', ls='--', lw=0.8); axR.axhline(0.0, color='0.3', lw=0.8)
+                        axR.set_xlim(x0, x1); axR.set_ylim(gmin, gmax); axR.set_title(f"CTZ {pair_id} ch{ch}")
+                    ex_base = Path(
+                        str(base.with_suffix(''))
+                        + f"__enhanced_examples__top{int(args.top_k)}__metric-{str(args.metric)}__ctzmin-{float(args.ctz_min):.2f}__vehmax-{float(args.veh_max):.2f}"
+                    )
+                    fig4.tight_layout(); fig4.savefig(ex_base.with_suffix('.svg')); fig4.savefig(ex_base.with_suffix('.pdf'))
+                    plt.close(fig4)
+                    print(f"Enhanced examples ({k} rows) saved: {ex_base.with_suffix('.svg')} and {ex_base.with_suffix('.pdf')}")
+                else:
+                    print('Enhanced: no channels met criteria after thresholds; try relaxing --ctz-min or increasing --veh-max.')
+
     return 0
 
 
