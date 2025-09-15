@@ -291,6 +291,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         t_clip = np.asarray(t[m], dtype=float)
         Yv_clip = np.asarray(Yv[:, m], dtype=float)
         Yc_clip = np.asarray(Yc[:, m], dtype=float)
+        # Raw (unnormalized) for MUA scatter if available
+        Rv_clip = None
+        Rc_clip = None
+        try:
+            Rv_clip = np.asarray(np.asarray(raw_veh_all[i], dtype=float)[:, m], dtype=float) if 'raw_veh_all' in locals() and raw_veh_all is not None else None
+            Rc_clip = np.asarray(np.asarray(raw_ctz_all[i], dtype=float)[:, m], dtype=float) if 'raw_ctz_all' in locals() and raw_ctz_all is not None else None
+        except Exception:
+            Rv_clip = None
+            Rc_clip = None
         # Smoothing: Gaussian preferred if provided; else boxcar
         smooth_desc = "none"
         if (hasattr(args, 'smooth_gauss_ms') and args.smooth_gauss_ms is not None) or (hasattr(args, 'smooth_gauss_fwhm_ms') and args.smooth_gauss_fwhm_ms is not None):
@@ -315,11 +324,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return out
             Yv_clip = _apply_K(Yv_clip, K)
             Yc_clip = _apply_K(Yc_clip, K)
+            if Rv_clip is not None:
+                Rv_clip = _apply_K(Rv_clip, K)
+            if Rc_clip is not None:
+                Rc_clip = _apply_K(Rc_clip, K)
             smooth_desc = f"gauss_sigma={ms:.3f}ms"
         elif args.smooth_bins is not None and int(args.smooth_bins) > 1:
             Yv_clip = _boxcar_smooth(Yv_clip, int(args.smooth_bins))
             Yc_clip = _boxcar_smooth(Yc_clip, int(args.smooth_bins))
             smooth_desc = f"boxcar_bins={int(args.smooth_bins)}"
+            if Rv_clip is not None:
+                Rv_clip = _boxcar_smooth(Rv_clip, int(args.smooth_bins))
+            if Rc_clip is not None:
+                Rc_clip = _boxcar_smooth(Rc_clip, int(args.smooth_bins))
         # Early + Late window meta (clip not required for drawing)
         dur = float(_val_for_index(early_dur_pp, i))
         s_ctz_i = _val_for_index(starts_ctz, i)
@@ -384,6 +401,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             'Yc': Yc_clip,
             'Yv_nr': Yv_pre,
             'Yc_nr': Yc_pre,
+            'Yv_raw': Rv_clip,
+            'Yc_raw': Rc_clip,
             'early_veh': (s_veh, dur) if s_veh is not None else None,
             'early_ctz': (s_ctz, dur) if s_ctz is not None else None,
             'late_veh': late_veh,
