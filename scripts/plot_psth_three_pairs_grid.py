@@ -231,6 +231,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
     ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
     ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic to renormalize with (default: npz = use per-pair stat or global if present)')
+    # Optional: find enhanced channels (CTZ late high, VEH late low) and append plots
+    ap.add_argument('--find-enhanced', action='store_true', help='Identify channels with CTZ late enhancement but low VEH and append scatter + examples')
+    ap.add_argument('--metric', type=str, choices=['max','mean'], default='max', help='Late-phase metric per channel for selection (default: max)')
+    ap.add_argument('--ctz-min', type=float, default=1.5, help='Minimum CTZ late metric to qualify (default 1.5)')
+    ap.add_argument('--veh-max', type=float, default=1.1, help='Maximum VEH late metric to qualify (default 1.1)')
+    ap.add_argument('--top-k', type=int, default=6, help='Number of example channels to draw (default 6)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
