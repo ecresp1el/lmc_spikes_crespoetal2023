@@ -80,11 +80,18 @@ def parse_kv(items: List[str], sep: str) -> Dict[str, str]:
     return out
 
 
-def load_matching_tiff(folder: Path, file_id: str, channel_tag: str) -> np.ndarray:
+def load_matching_tiff(folder: Path, file_id: str, channel_tag: str, contains: List[str] | None = None) -> np.ndarray:
     pattern = str(folder / f"*{file_id}*_{channel_tag}*.tif*")
     matches = glob.glob(pattern)
+    # Optional filename substring filtering (case-insensitive)
+    if contains:
+        tokens = [t.lower() for t in contains if t]
+        matches = [m for m in matches if all(tok in os.path.basename(m).lower() for tok in tokens)]
     if not matches:
-        raise FileNotFoundError(f"No file found for id={file_id} chan={channel_tag} in {folder}")
+        raise FileNotFoundError(
+            f"No file found for id={file_id} chan={channel_tag} in {folder}"
+            + (f" with substrings {contains}" if contains else "")
+        )
     # Prefer shortest filename or most recent? Keep first for now
     img = tifffile.imread(matches[0])
     # Ensure 2D
@@ -109,6 +116,7 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--out', type=Path, default=Path('LMC4f_invivo_expression_grid'), help='Output base path (no suffix)')
     p.add_argument('--chan-tag', action='append', default=['C1:DAPI','C2:EYFP','C3:tdTom'], help='C:TAG labels (repeat)')
     p.add_argument('--chan-cmap', action='append', default=['C1:Blues','C2:Greens','C3:Reds'], help='C:CMAP colormap names (repeat)')
+    p.add_argument('--name-contains', action='append', default=[], help='Only use files whose names include these substrings (repeatable; case-insensitive)')
     a = p.parse_args()
     return a
 
@@ -154,7 +162,7 @@ def main() -> int:
         grouped[name] = {}
         shapes = []
         for ch in channels:
-            img = load_matching_tiff(folder, file_id, ch)
+            img = load_matching_tiff(folder, file_id, ch, contains=args.name_contains)
             grouped[name][ch] = img
             shapes.append(img.shape)
         if len({s for s in shapes}) != 1:
@@ -211,4 +219,3 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
