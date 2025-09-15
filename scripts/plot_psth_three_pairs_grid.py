@@ -224,6 +224,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--late-dur', type=float, default=None, help='Late window duration in seconds (default: to end of axis)')
     ap.add_argument('--xbar', type=float, default=0.2, help='Horizontal time scale bar length in seconds (default 0.2)')
     ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
+    ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -339,6 +340,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             ax.set_xlim(x0, x1)
             ax.set_ylim(gmin, gmax)
             ax.axis('off')
+            if args.label_windows:
+                # Compose labels for early/late
+                if c == 0:
+                    e = row.get('early_veh'); l = row.get('late_veh')
+                else:
+                    e = row.get('early_ctz'); l = row.get('late_ctz')
+                ytxt = gmax - 0.04 * (gmax - gmin)
+                xpad = x0 + 0.02 * (x1 - x0)
+                if e is not None:
+                    s0, dur = e
+                    ax.text(xpad, ytxt, f"early [{s0:.3f},{(s0+dur):.3f}] s", fontsize=8, color='0.25',
+                            va='top', ha='left', zorder=7, bbox=dict(facecolor='white', edgecolor='none', alpha=0.6))
+                    ytxt -= 0.06 * (gmax - gmin)
+                if l is not None:
+                    l0, ldur = l
+                    l1 = l0 + (ldur if (ldur is not None and ldur > 0) else (x1 - l0))
+                    l1 = min(l1, x1)
+                    ax.text(xpad, ytxt, f"late  [{l0:.3f},{l1:.3f}] s", fontsize=8, color='0.25',
+                            va='top', ha='left', zorder=7, bbox=dict(facecolor='white', edgecolor='none', alpha=0.6))
 
     # Bottom row: per-pair means (thin) + grand mean (thick)
     # Build a common time grid by using the smallest median dt across rows
