@@ -122,6 +122,43 @@ def try_physical_size_um(path: str, shape: Tuple[int, int]) -> Tuple[Optional[fl
         return (None, None)
 
 
+def read_tiff_resolution(path: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    try:
+        with tifffile.TiffFile(path) as tf:
+            page = tf.pages[0]
+            tags = page.tags
+            try:
+                unit_code = tags['ResolutionUnit'].value
+            except KeyError:
+                unit_code = None
+            try:
+                xres = _rational_to_float(tags['XResolution'].value)
+                yres = _rational_to_float(tags['YResolution'].value)
+            except KeyError:
+                xres = yres = None
+            if unit_code == 2:
+                unit = 'INCH'
+            elif unit_code == 3:
+                unit = 'CENTIMETER'
+            else:
+                unit = None
+            return xres, yres, unit
+    except Exception:
+        return (None, None, None)
+
+
+def write_tiff_preserve_resolution(path: Path, arr: np.ndarray, res: Tuple[Optional[float], Optional[float], Optional[str]]) -> None:
+    xres, yres, unit = res
+    kwargs = {}
+    if xres and yres and unit:
+        kwargs['resolution'] = (xres, yres)
+        kwargs['resolutionunit'] = unit
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        kwargs['photometric'] = 'rgb'
+    else:
+        kwargs['photometric'] = 'minisblack'
+    kwargs['metadata'] = None
+    tifffile.imwrite(path, arr, **kwargs)
 def try_pixel_size_um(path: str) -> Tuple[Optional[float], Optional[float]]:
     """Return (px_um_x, px_um_y) from TIFF tags if available; else (None, None)."""
     try:
@@ -267,6 +304,7 @@ def main() -> int:
     grouped: Dict[str, Dict[str, np.ndarray]] = {}
     chosen_files: Dict[str, Dict[str, str]] = {}
     cond_px_um: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    cond_res: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
     chosen_id: Dict[str, str] = {}
     for name, folder in cond_dirs.items():
         # pick ID: explicit map first, else first candidate that matches any channel
@@ -302,6 +340,7 @@ def main() -> int:
         # Pixel size (µm/px) per condition from C1 if available
         ref_path = chosen_files[name].get('C1') or next(iter(chosen_files[name].values()))
         cond_px_um[name] = try_pixel_size_um(ref_path)
+        cond_res[name] = read_tiff_resolution(ref_path)
         if len({s for s in shapes}) != 1:
             print(f"[warn] Images for {name} have different shapes {shapes}.")
             if args.align_mismatch == 'crop':
@@ -386,6 +425,7 @@ def main() -> int:
         axes = np.array([axes])
 
     for i, cond in enumerate(cond_names):
+        aligned_shape = None
         for j, ch in enumerate(channels):
             ax = axes[i, j]
             img_disp = disp[cond][ch]
@@ -463,11 +503,11 @@ def main() -> int:
                         label, color=args.scalebar_color, ha='center', va=va, fontsize=9, weight='bold')
 
         # Optionally save per-condition merged RGB TIFF (8-bit)
-        # Save merged RGB
+        # Save merged RGB with preserved resolution
         rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
         out_tif = merged_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_merged_rgb.tif"
         try:
-            tifffile.imwrite(out_tif, rgb8)
+            write_tiff_preserve_resolution(out_tif, rgb8, cond_res[cond])
             print(f"[save] Wrote merged RGB -> {out_tif}")
         except Exception as ex:
             print(f"[warn] Failed to write merged RGB TIFF for {cond}: {ex}")
@@ -477,7 +517,7 @@ def main() -> int:
             raw_arr = grouped[cond][ch]
             raw_path = channels_raw_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_raw.tif"
             try:
-                tifffile.imwrite(raw_path, raw_arr)
+                write_tiff_preserve_resolution(raw_path, raw_arr, cond_res[cond])
             except Exception as ex:
                 print(f"[warn] Failed to write raw channel {ch} for {cond}: {ex}")
 
@@ -485,9 +525,28 @@ def main() -> int:
             norm_arr = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
             norm_path = channels_norm_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_norm.tif"
             try:
-                tifffile.imwrite(norm_path, norm_arr)
+                write_tiff_preserve_resolution(norm_path, norm_arr, cond_res[cond])
             except Exception as ex:
                 print(f"[warn] Failed to write grayscale normalized channel {ch} for {cond}: {ex}")
+
+        # Verify shape and resolution preserved for merged vs display arrays
+        try:
+            with tifffile.TiffFile(str(out_tif)) as tf:
+                sh = tf.pages[0].shape
+            xres, yres, unit = read_tiff_resolution(str(out_tif))
+            px_um_x2, px_um_y2 = try_pixel_size_um(str(out_tif))
+            ok_shape = sh[:2] == rgb.shape[:2]
+            ok_res = (cond_px_um[cond] == (None, None)) or (
+                px_um_x2 is not None and px_um_y2 is not None and
+                abs(px_um_x2 - (cond_px_um[cond][0] or px_um_x2)) < 1e-6 and
+                abs(px_um_y2 - (cond_px_um[cond][1] or px_um_y2)) < 1e-6
+            )
+            if ok_shape and ok_res:
+                print(f"[check] {cond}: shape preserved {sh[:2]}, pixel size preserved {px_um_x2}×{px_um_y2} µm")
+            else:
+                print(f"[ERROR] {cond}: shape/resolution changed! shape_saved={sh[:2]} vs rgb={rgb.shape[:2]}, px_saved={px_um_x2, px_um_y2} vs base={cond_px_um[cond]}")
+        except Exception as ex:
+            print(f"[warn] Could not verify saved merged file shape/resolution for {cond}: {ex}")
 
             # Save RGB pseudocolor normalized
             pseudo_path = channels_pseudo_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_pseudo.tif"

@@ -80,6 +80,50 @@ def try_pixel_size_um(path: str) -> Tuple[Optional[float], Optional[float]]:
         return (None, None)
 
 
+def read_tiff_resolution(path: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """Return (xres, yres, unit_str) from TIFF tags if present.
+
+    xres/yres are pixels per unit; unit_str is 'INCH', 'CENTIMETER', or None.
+    """
+    try:
+        with tifffile.TiffFile(path) as tf:
+            page = tf.pages[0]
+            tags = page.tags
+            try:
+                unit_code = tags['ResolutionUnit'].value
+            except KeyError:
+                unit_code = None
+            try:
+                xres = _rational_to_float(tags['XResolution'].value)
+                yres = _rational_to_float(tags['YResolution'].value)
+            except KeyError:
+                xres = yres = None
+            if unit_code == 2:
+                unit = 'INCH'
+            elif unit_code == 3:
+                unit = 'CENTIMETER'
+            else:
+                unit = None
+            return xres, yres, unit
+    except Exception:
+        return (None, None, None)
+
+
+def write_tiff_preserve_resolution(path: Path, arr: np.ndarray, res: Tuple[Optional[float], Optional[float], Optional[str]]) -> None:
+    xres, yres, unit = res
+    kwargs = {}
+    if xres and yres and unit:
+        kwargs['resolution'] = (xres, yres)
+        kwargs['resolutionunit'] = unit
+    # Set photometric based on channels
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        kwargs['photometric'] = 'rgb'
+    else:
+        kwargs['photometric'] = 'minisblack'
+    # Avoid writing extra metadata
+    kwargs['metadata'] = None
+    tifffile.imwrite(path, arr, **kwargs)
+
 def compute_global_percentiles(imgs: List[np.ndarray], low: float, high: float) -> Tuple[float, float]:
     flat = np.concatenate([np.ravel(im) for im in imgs]).astype(float)
     return float(np.percentile(flat, low)), float(np.percentile(flat, high))
@@ -177,12 +221,16 @@ def main() -> int:
     # Load and extract channels
     raw: Dict[str, Dict[str, np.ndarray]] = {}
     px_um_map: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    res_map: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
+    base_shape: Dict[str, Tuple[int, int]] = {}
     for root, fpath in files.items():
         arr = tifffile.imread(str(fpath))
         dapi, eyfp, tdtom = extract_channels_from_image(arr)
         raw[root] = {'DAPI': np.asarray(dapi), 'EYFP': np.asarray(eyfp), 'tdTom': np.asarray(tdtom)}
         px_um_map[root] = try_pixel_size_um(str(fpath))
+        res_map[root] = read_tiff_resolution(str(fpath))
         shp = dapi.shape
+        base_shape[root] = shp
         print(f"  {root}: shape={shp}  px_size_um={px_um_map[root]}")
 
     # Build display arrays 0..1 per chosen normalization
@@ -329,7 +377,7 @@ def main() -> int:
             raw_arr = raw[r][ch]
             raw_path = channels_raw_dir / f"{r.replace('/', '_')}_{ch}_raw.tif"
             try:
-                tifffile.imwrite(raw_path, raw_arr)
+                write_tiff_preserve_resolution(raw_path, raw_arr, res_map[r])
             except Exception as ex:
                 print(f"[warn] Failed to write raw channel {ch} for {r}: {ex}")
         # Normalized 8-bit
@@ -337,7 +385,7 @@ def main() -> int:
             norm_arr = (np.clip(disp[r][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
             norm_path = channels_norm_dir / f"{r.replace('/', '_')}_{ch}_norm.tif"
             try:
-                tifffile.imwrite(norm_path, norm_arr)
+                write_tiff_preserve_resolution(norm_path, norm_arr, res_map[r])
             except Exception as ex:
                 print(f"[warn] Failed to write normalized channel {ch} for {r}: {ex}")
         # Pseudocolor RGB 8-bit per channel (match invivo merge style: pure R/G/B channel fill)
@@ -352,7 +400,7 @@ def main() -> int:
                 rgb8 = np.stack([z, z, v8], axis=-1)  # blue
             pseudo_path = channels_pseudo_dir / f"{r.replace('/', '_')}_{ch}_pseudo.tif"
             try:
-                tifffile.imwrite(pseudo_path, rgb8)
+                write_tiff_preserve_resolution(pseudo_path, rgb8, res_map[r])
             except Exception as ex:
                 print(f"[warn] Failed to write pseudocolor channel {ch} for {r}: {ex}")
 
@@ -360,10 +408,29 @@ def main() -> int:
         rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
         out_tif = merged_dir / f"{r.replace('/', '_')}_merged_rgb.tif"
         try:
-            tifffile.imwrite(out_tif, rgb8)
+            write_tiff_preserve_resolution(out_tif, rgb8, res_map[r])
             print(f"[save] Wrote merged RGB -> {out_tif}")
         except Exception as ex:
             print(f"[warn] Failed to write merged RGB TIFF for {r}: {ex}")
+
+        # Verify shape and resolution preserved across exports
+        try:
+            with tifffile.TiffFile(str(out_tif)) as tf:
+                sh = tf.pages[0].shape
+            xres, yres, unit = read_tiff_resolution(str(out_tif))
+            px_um_x2, px_um_y2 = try_pixel_size_um(str(out_tif))
+            ok_shape = sh[:2] == base_shape[r]
+            ok_res = (px_um_map[r] == (None, None)) or (
+                px_um_x2 is not None and px_um_y2 is not None and
+                abs(px_um_x2 - (px_um_map[r][0] or px_um_x2)) < 1e-6 and
+                abs(px_um_y2 - (px_um_map[r][1] or px_um_y2)) < 1e-6
+            )
+            if ok_shape and ok_res:
+                print(f"[check] {r}: shape preserved {sh[:2]}, pixel size preserved {px_um_x2}×{px_um_y2} µm")
+            else:
+                print(f"[ERROR] {r}: shape/resolution changed! shape_saved={sh[:2]} vs base={base_shape[r]}, px_saved={px_um_x2, px_um_y2} vs base={px_um_map[r]}")
+        except Exception as ex:
+            print(f"[warn] Could not verify saved merged file shape/resolution for {r}: {ex}")
 
     fig.tight_layout()
     out_svg = figures_dir / f"{args.out.name}.svg"
