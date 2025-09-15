@@ -58,13 +58,64 @@ import argparse
 import glob
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 import tifffile
+
+
+def _rational_to_float(val) -> float:
+    try:
+        # tifffile may return Rational, Fraction, tuple, or int
+        if hasattr(val, 'numerator') and hasattr(val, 'denominator'):
+            return float(val.numerator) / float(val.denominator)
+        if isinstance(val, (tuple, list)) and len(val) == 2:
+            return float(val[0]) / float(val[1])
+        return float(val)
+    except Exception:
+        return float('nan')
+
+
+def try_physical_size_um(path: str, shape: Tuple[int, int]) -> Tuple[Optional[float], Optional[float]]:
+    """Best-effort physical width/height in micrometers from TIFF tags.
+
+    Returns (width_um, height_um) or (None, None) if unavailable.
+    """
+    h, w = shape[:2]
+    try:
+        with tifffile.TiffFile(path) as tf:
+            page = tf.pages[0]
+            tags = page.tags
+            try:
+                unit_code = tags['ResolutionUnit'].value  # 1=None, 2=inch, 3=cm
+            except KeyError:
+                unit_code = None
+            try:
+                xres = _rational_to_float(tags['XResolution'].value)  # pixels per unit
+                yres = _rational_to_float(tags['YResolution'].value)
+            except KeyError:
+                xres = yres = float('nan')
+
+            if unit_code == 2:  # inch
+                unit_um = 25400.0
+            elif unit_code == 3:  # centimeter
+                unit_um = 10000.0
+            else:
+                unit_um = None
+
+            if unit_um is None or not np.isfinite(xres) or not np.isfinite(yres) or xres <= 0 or yres <= 0:
+                return (None, None)
+
+            px_size_x_um = unit_um / xres
+            px_size_y_um = unit_um / yres
+            width_um = w * px_size_x_um
+            height_um = h * px_size_y_um
+            return (width_um, height_um)
+    except Exception:
+        return (None, None)
 
 
 def parse_kv(items: List[str], sep: str) -> Dict[str, str]:
@@ -80,7 +131,7 @@ def parse_kv(items: List[str], sep: str) -> Dict[str, str]:
     return out
 
 
-def load_matching_tiff(folder: Path, file_id: str, channel_tag: str, contains: List[str] | None = None) -> np.ndarray:
+def load_matching_tiff(folder: Path, file_id: str, channel_tag: str, contains: Optional[List[str]] = None) -> Tuple[np.ndarray, str]:
     pattern = str(folder / f"*{file_id}*_{channel_tag}*.tif*")
     matches = glob.glob(pattern)
     # Optional filename substring filtering (case-insensitive)
@@ -93,12 +144,13 @@ def load_matching_tiff(folder: Path, file_id: str, channel_tag: str, contains: L
             + (f" with substrings {contains}" if contains else "")
         )
     # Prefer shortest filename or most recent? Keep first for now
-    img = tifffile.imread(matches[0])
+    chosen = matches[0]
+    img = tifffile.imread(chosen)
     # Ensure 2D
     if img.ndim > 2:
         # Take first plane if z-stack or multi-page
         img = np.asarray(img)[0]
-    return np.asarray(img)
+    return np.asarray(img), chosen
 
 
 def compute_global_percentiles(imgs: List[np.ndarray], low: float, high: float) -> Tuple[float, float]:
@@ -147,24 +199,37 @@ def main() -> int:
 
     # Step 1 — load and group images by condition
     grouped: Dict[str, Dict[str, np.ndarray]] = {}
+    chosen_files: Dict[str, Dict[str, str]] = {}
     for name, folder in cond_dirs.items():
         # pick ID: explicit map first, else first candidate that matches any channel
         file_id = id_map.get(name)
         if file_id is None:
-            # try given ids in order
+            # try given ids in order, honoring optional name filters
+            tokens = [t.lower() for t in (args.name_contains or []) if t]
             for cand in args.ids:
-                # probe channel C1 existence
-                if glob.glob(str(folder / f"*{cand}*_C1*.tif*")):
+                pattern = str(folder / f"*{cand}*_C1*.tif*")
+                matches = glob.glob(pattern)
+                if tokens:
+                    matches = [m for m in matches if all(tok in os.path.basename(m).lower() for tok in tokens)]
+                if matches:
                     file_id = cand; break
         if file_id is None:
             raise SystemExit(f'Could not determine an ID for condition {name}. Use --id-map {name}:ID or provide matching --ids.')
         # Load per channel
         grouped[name] = {}
+        chosen_files[name] = {}
         shapes = []
+        print(f"[pick] Condition={name}  folder={folder}  ID={file_id}")
         for ch in channels:
-            img = load_matching_tiff(folder, file_id, ch, contains=args.name_contains)
+            img, fpath = load_matching_tiff(folder, file_id, ch, contains=args.name_contains)
             grouped[name][ch] = img
+            chosen_files[name][ch] = fpath
             shapes.append(img.shape)
+            w_um, h_um = try_physical_size_um(fpath, img.shape)
+            if w_um is not None and h_um is not None:
+                print(f"  - {ch}: {fpath}  shape={img.shape}  size≈{w_um:.2f}×{h_um:.2f} µm")
+            else:
+                print(f"  - {ch}: {fpath}  shape={img.shape}")
         if len({s for s in shapes}) != 1:
             print(f'[warn] Images for {name} have different shapes {shapes}. RGB overlay may appear misaligned.')
 
@@ -203,7 +268,16 @@ def main() -> int:
         r = _norm('C3') if 'C3' in channels else np.zeros_like(grouped[cond][channels[0]])
         g = _norm('C2') if 'C2' in channels else np.zeros_like(r)
         b = _norm('C1') if 'C1' in channels else np.zeros_like(r)
-        rgb = np.stack([r, g, b], axis=-1)
+        try:
+            rgb = np.stack([r, g, b], axis=-1)
+        except ValueError as e:
+            print(f"[error] Cannot create RGB for condition '{cond}' due to shape mismatch: R{r.shape} G{g.shape} B{b.shape}.")
+            print("        Selected files:")
+            for ch in channels:
+                fpath = chosen_files.get(cond, {}).get(ch)
+                if fpath is not None:
+                    print(f"         {ch}: {fpath}  shape={grouped[cond][ch].shape}")
+            raise
         ax.imshow(rgb)
         ax.set_title(f"{cond} — RGB", fontsize=10)
         ax.axis('off')
