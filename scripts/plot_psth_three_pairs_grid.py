@@ -222,6 +222,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--smooth-bins', type=int, default=1, help='Boxcar smoothing width in bins (applied to all traces; default 1=none)')
     ap.add_argument('--late-gap', type=float, default=0.100, help='Seconds after early end before late starts (default 0.100 s)')
     ap.add_argument('--late-dur', type=float, default=None, help='Late window duration in seconds (default: to end of axis)')
+    ap.add_argument('--xbar', type=float, default=0.2, help='Horizontal time scale bar length in seconds (default 0.2)')
+    ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -321,13 +323,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         sb_val = _nice_scale(0.25 * (gmax - gmin))
 
-    # Prepare figure
+    # Prepare figure with an extra bottom row for per-pair means + grand mean
     n = len(rows)
-    fig, axes = plt.subplots(nrows=n, ncols=2, figsize=(12, max(6, 2 + 2.8 * n)), sharex=True, sharey=True)
-    if n == 1:
+    fig, axes = plt.subplots(nrows=n + 1, ncols=2, figsize=(12, max(6.5, 2 + 3.0 * (n + 1))), sharex=True, sharey=True)
+    if n + 1 == 1:
         axes = np.array([axes])
 
-    # Plot minimal data only
+    # Plot rows: individual pairs
     for r, row in enumerate(rows):
         _plot_pair(axes[r, 0], row['t'], row['Yv'], color_mean='k', early=row.get('early_veh'), late=row.get('late_veh'))
         _plot_pair(axes[r, 1], row['t'], row['Yc'], color_mean='C0', early=row.get('early_ctz'), late=row.get('late_ctz'))
@@ -336,6 +338,36 @@ def main(argv: Optional[List[str]] = None) -> int:
             ax.set_xlim(x0, x1)
             ax.set_ylim(gmin, gmax)
             ax.axis('off')
+
+    # Bottom row: per-pair means (thin) + grand mean (thick)
+    # Build a common time grid by using the smallest median dt across rows
+    dts = []
+    for row in rows:
+        if row['t'].size > 1:
+            dts.append(float(np.median(np.diff(row['t']))))
+    dt_ref = min(dts) if dts else (x1 - x0) / 100.0
+    t_ref = np.arange(x0, x1 + 1e-12, dt_ref)
+    # Collect per-pair means, interpolated to t_ref if needed
+    Yv_means = []
+    Yc_means = []
+    for row in rows:
+        yv_m = np.nanmean(row['Yv'], axis=0)
+        yc_m = np.nanmean(row['Yc'], axis=0)
+        if not (row['t'].size == t_ref.size and np.allclose(row['t'], t_ref)):
+            yv_m = np.interp(t_ref, row['t'], yv_m)
+            yc_m = np.interp(t_ref, row['t'], yc_m)
+        Yv_means.append(yv_m)
+        Yc_means.append(yc_m)
+    Yv_stack = np.vstack(Yv_means) if Yv_means else np.zeros((1, t_ref.size))
+    Yc_stack = np.vstack(Yc_means) if Yc_means else np.zeros((1, t_ref.size))
+    # Plot using the same helper (will draw thin grey per-pair means + thick colored grand mean)
+    _plot_pair(axes[n, 0], t_ref, Yv_stack, color_mean='k')
+    _plot_pair(axes[n, 1], t_ref, Yc_stack, color_mean='C0')
+    for c in (0, 1):
+        ax = axes[n, c]
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(gmin, gmax)
+        ax.axis('off')
 
     # Single global vertical scale bar inside the top-left axes (data units)
     ax0 = axes[0, 0]
@@ -346,6 +378,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     ax0.text(xb + 0.01 * (x1 - x0), (yb0 + yb1) * 0.5, f"{sb_val:.3g} {args.scale_label}",
              ha='left', va='center', fontsize=10, color='k',
              bbox=dict(facecolor='white', edgecolor='none', alpha=0.85), zorder=6)
+
+    # Horizontal (time) scale bar inside bottom-left axes
+    ax_bl = axes[n, 0]
+    xbl0 = x0 + 0.06 * (x1 - x0)
+    xbl1 = min(x1 - 0.02 * (x1 - x0), xbl0 + float(args.xbar))
+    ybl = gmin + 0.12 * (gmax - gmin)
+    ax_bl.plot([xbl0, xbl1], [ybl, ybl], color='k', lw=2.0, zorder=6)
+    ax_bl.text((xbl0 + xbl1) * 0.5, ybl + 0.02 * (gmax - gmin), f"{(xbl1 - xbl0):.3g} {args.xbar_label}",
+               ha='center', va='bottom', fontsize=10, color='k',
+               bbox=dict(facecolor='white', edgecolor='none', alpha=0.85), zorder=6)
 
     plt.subplots_adjust(left=0.03, right=0.99, top=0.99, bottom=0.03, wspace=0.02, hspace=0.02)
 
