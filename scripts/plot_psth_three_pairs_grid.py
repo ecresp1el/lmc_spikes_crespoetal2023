@@ -141,18 +141,41 @@ def _pair_indices_for_plates(pairs: np.ndarray, plates: List[int]) -> List[int]:
     return out
 
 
-def _plot_pair(ax, t: np.ndarray, Y: np.ndarray, color_mean: str) -> None:
-    """Plot grey all‑traces + colored mean on given axes with no adornments.
+def _plot_pair(
+    ax,
+    t: np.ndarray,
+    Y: np.ndarray,
+    color_mean: str,
+    *,
+    show_chem: bool = True,
+    early: Optional[Tuple[float, float]] = None,
+    late: Optional[Tuple[float, Optional[float]]] = None,
+    show_y0: bool = True,
+) -> None:
+    """Plot grey all‑traces + colored mean with chem line, early shading, and y=0 baseline.
 
-    Assumes caller sets limits and hides axes.
+    The caller should set axis limits and visibility (axes on/off) as desired.
     """
     Y = np.asarray(Y)
     if Y.ndim == 1:
         Y = Y[None, :]
+    # Shading and reference lines
+    if early is not None:
+        s0, dur = early
+        ax.axvspan(float(s0), float(s0 + dur), color='0.92', zorder=0)
+    if late is not None:
+        l0, ldur = late
+        l1 = float(l0 + ldur) if (ldur is not None and ldur > 0) else ax.get_xlim()[1]
+        ax.axvspan(float(l0), float(l1), color='0.85', zorder=0)
+    if show_y0:
+        ax.axhline(0.0, color='0.3', lw=0.8, zorder=3)
+    if show_chem:
+        ax.axvline(0.0, color='r', ls='--', lw=0.8, zorder=4)
+    # Data
     for row in Y:
-        ax.plot(t, row, color=(0.5, 0.5, 0.5, 0.35), lw=0.6)
+        ax.plot(t, row, color=(0.5, 0.5, 0.5, 0.35), lw=0.6, zorder=2)
     mean = np.nanmean(Y, axis=0)
-    ax.plot(t, mean, color=color_mean, lw=1.6)
+    ax.plot(t, mean, color=color_mean, lw=1.6, zorder=5)
 
 
 def _nice_scale(v: float) -> float:
@@ -171,8 +194,24 @@ def _nice_scale(v: float) -> float:
     return nb * (10 ** exp)
 
 
+def _boxcar_smooth(Y: np.ndarray, taps: int) -> np.ndarray:
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim == 1:
+        Y = Y[None, :]
+    k = int(max(1, taps))
+    if k % 2 == 0:
+        k += 1
+    if k == 1:
+        return Y
+    K = np.ones(k, dtype=float) / float(k)
+    out = np.empty_like(Y)
+    for i in range(Y.shape[0]):
+        out[i] = np.convolve(Y[i], K, mode='same')
+    return out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description='Three pairs normalized PSTH grid (3×2), minimalist')
+    ap = argparse.ArgumentParser(description='Three pairs normalized PSTH grid (3×2), minimalist with early/late shading')
     ap.add_argument('--group-npz', type=Path, default=None, help='Path to pooled group NPZ (psth_group_data__N.npz or ..._latest.npz)')
     ap.add_argument('--plates', type=int, nargs='+', default=[2, 4, 5], help='Plate numbers to include as rows (default: 2 4 5)')
     ap.add_argument('--out', type=Path, default=None, help='Output path base (writes .svg and .pdf)')
@@ -180,6 +219,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--x-max', type=float, default=1.0, help='Right x-limit in seconds (default 1.0)')
     ap.add_argument('--scalebar', type=float, default=None, help='Vertical scale bar value (normalized units). If omitted, auto-chosen')
     ap.add_argument('--scale-label', type=str, default='norm', help='Scale bar label text (default: norm)')
+    ap.add_argument('--smooth-bins', type=int, default=1, help='Boxcar smoothing width in bins (applied to all traces; default 1=none)')
+    ap.add_argument('--late-gap', type=float, default=0.100, help='Seconds after early end before late starts (default 0.100 s)')
+    ap.add_argument('--late-dur', type=float, default=None, help='Late window duration in seconds (default: to end of axis)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -229,13 +271,46 @@ def main(argv: Optional[List[str]] = None) -> int:
         t_clip = t[m]
         Yv_clip = Yv[:, m]
         Yc_clip = Yc[:, m]
+        # Smoothing
+        if args.smooth_bins is not None and int(args.smooth_bins) > 1:
+            Yv_clip = _boxcar_smooth(Yv_clip, int(args.smooth_bins))
+            Yc_clip = _boxcar_smooth(Yc_clip, int(args.smooth_bins))
         if Yv_clip.size:
             gmin = min(gmin, float(np.nanmin(Yv_clip)))
             gmax = max(gmax, float(np.nanmax(Yv_clip)))
         if Yc_clip.size:
             gmin = min(gmin, float(np.nanmin(Yc_clip)))
             gmax = max(gmax, float(np.nanmax(Yc_clip)))
-        rows.append({'pid': pid, 't': t_clip, 'Yv': Yv_clip, 'Yc': Yc_clip})
+        # Early + Late window meta (clip not required for drawing)
+        dur = float(_val_for_index(early_dur_pp, i))
+        s_ctz_i = _val_for_index(starts_ctz, i)
+        s_veh_i = _val_for_index(starts_veh, i)
+        s_ctz = float(s_ctz_i) if np.isfinite(s_ctz_i) else None
+        s_veh = float(s_veh_i) if np.isfinite(s_veh_i) else None
+        eff_ms = float(_val_for_index(eff_bin_ms_pp, i))
+        dt = eff_ms * 1e-3
+        late_ctz = None
+        late_veh = None
+        if s_ctz is not None:
+            l0 = s_ctz + dur + float(args.late_gap) + dt
+            ldur = float(args.late_dur) if (args.late_dur is not None and args.late_dur > 0) else max(0.0, x1 - l0)
+            late_ctz = (l0, ldur)
+        if s_veh is not None:
+            l0 = s_veh + dur + float(args.late_gap) + dt
+            ldur = float(args.late_dur) if (args.late_dur is not None and args.late_dur > 0) else max(0.0, x1 - l0)
+            late_veh = (l0, ldur)
+        # Console log the masks used for late phase
+        print(f"pair={pid} early_dur={dur:.3f}s starts_ctz={s_ctz} starts_veh={s_veh} late_ctz={late_ctz} late_veh={late_veh} smooth_bins={int(args.smooth_bins)}")
+        rows.append({
+            'pid': pid,
+            't': t_clip,
+            'Yv': Yv_clip,
+            'Yc': Yc_clip,
+            'early_veh': (s_veh, dur) if s_veh is not None else None,
+            'early_ctz': (s_ctz, dur) if s_ctz is not None else None,
+            'late_veh': late_veh,
+            'late_ctz': late_ctz,
+        })
 
     if not np.isfinite(gmin) or not np.isfinite(gmax) or gmin == gmax:
         gmin, gmax = 0.0, 1.0
@@ -254,24 +329,23 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Plot minimal data only
     for r, row in enumerate(rows):
-        _plot_pair(axes[r, 0], row['t'], row['Yv'], color_mean='k')
-        _plot_pair(axes[r, 1], row['t'], row['Yc'], color_mean='C0')
+        _plot_pair(axes[r, 0], row['t'], row['Yv'], color_mean='k', early=row.get('early_veh'), late=row.get('late_veh'))
+        _plot_pair(axes[r, 1], row['t'], row['Yc'], color_mean='C0', early=row.get('early_ctz'), late=row.get('late_ctz'))
         for c in (0, 1):
             ax = axes[r, c]
             ax.set_xlim(x0, x1)
             ax.set_ylim(gmin, gmax)
             ax.axis('off')
 
-    # Single global vertical scale bar (figure overlay)
-    overlay = fig.add_axes([0, 0, 1, 1], frameon=False)
-    overlay.set_axis_off()
-    x_fig = 0.06
-    y0_fig = 0.12
-    y1_fig = 0.32
-    overlay.plot([x_fig, x_fig], [y0_fig, y1_fig], color='k', lw=2)
-    overlay.text(x_fig + 0.01, (y0_fig + y1_fig) * 0.5, f"{sb_val:.3g} {args.scale_label}",
-                 ha='left', va='center', fontsize=10, color='k',
-                 bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+    # Single global vertical scale bar inside the top-left axes (data units)
+    ax0 = axes[0, 0]
+    xb = x0 + 0.05 * (x1 - x0)
+    yb0 = gmin + 0.10 * (gmax - gmin)
+    yb1 = yb0 + sb_val
+    ax0.plot([xb, xb], [yb0, yb1], color='k', lw=2.0, zorder=6)
+    ax0.text(xb + 0.01 * (x1 - x0), (yb0 + yb1) * 0.5, f"{sb_val:.3g} {args.scale_label}",
+             ha='left', va='center', fontsize=10, color='k',
+             bbox=dict(facecolor='white', edgecolor='none', alpha=0.85), zorder=6)
 
     plt.subplots_adjust(left=0.03, right=0.99, top=0.99, bottom=0.03, wspace=0.02, hspace=0.02)
 
