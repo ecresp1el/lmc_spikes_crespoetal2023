@@ -229,6 +229,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
     ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
+    ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
+    ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic to renormalize with (default: npz = use per-pair stat or global if present)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -308,12 +310,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             Yv_clip = _boxcar_smooth(Yv_clip, int(args.smooth_bins))
             Yc_clip = _boxcar_smooth(Yc_clip, int(args.smooth_bins))
             smooth_desc = f"boxcar_bins={int(args.smooth_bins)}"
-        if Yv_clip.size:
-            gmin = min(gmin, float(np.nanmin(Yv_clip)))
-            gmax = max(gmax, float(np.nanmax(Yv_clip)))
-        if Yc_clip.size:
-            gmin = min(gmin, float(np.nanmin(Yc_clip)))
-            gmax = max(gmax, float(np.nanmax(Yc_clip)))
         # Early + Late window meta (clip not required for drawing)
         dur = float(_val_for_index(early_dur_pp, i))
         s_ctz_i = _val_for_index(starts_ctz, i)
@@ -332,6 +328,39 @@ def main(argv: Optional[List[str]] = None) -> int:
             l0 = s_veh + dur + float(args.late_gap) + dt
             ldur = float(args.late_dur) if (args.late_dur is not None and args.late_dur > 0) else max(0.0, x1 - l0)
             late_veh = (l0, ldur)
+
+        # Optional re-normalization to early window on the smoothed, clipped data
+        if not getattr(args, 'no-renorm', False):
+            def _renorm_side(Y: np.ndarray, start: Optional[float]) -> np.ndarray:
+                if Y.size == 0 or start is None:
+                    return Y
+                m_e = (t_clip >= start) & (t_clip <= (start + dur))
+                if not np.any(m_e):
+                    return Y
+                if args.renorm_stat == 'median':
+                    b = np.nanmedian(Y[:, m_e], axis=1)
+                elif args.renorm_stat == 'npz':
+                    # use per-pair stat if available, else fall back to mean
+                    stat_name = str(_val_for_index(stat_pp, i)).lower() if 'stat_pp' in locals() else 'mean'
+                    if stat_name.startswith('med'):
+                        b = np.nanmedian(Y[:, m_e], axis=1)
+                    else:
+                        b = np.nanmean(Y[:, m_e], axis=1)
+                else:
+                    b = np.nanmean(Y[:, m_e], axis=1)
+                b[~np.isfinite(b)] = 1.0
+                b[b == 0.0] = 1.0
+                return Y / b[:, None]
+            Yv_clip = _renorm_side(Yv_clip, s_veh)
+            Yc_clip = _renorm_side(Yc_clip, s_ctz)
+
+        # Update global y-range after renormalization and smoothing
+        if Yv_clip.size:
+            gmin = min(gmin, float(np.nanmin(Yv_clip)))
+            gmax = max(gmax, float(np.nanmax(Yv_clip)))
+        if Yc_clip.size:
+            gmin = min(gmin, float(np.nanmin(Yc_clip)))
+            gmax = max(gmax, float(np.nanmax(Yc_clip)))
         # Console log the masks used for late phase
         print(f"pair={pid} early_dur={dur:.3f}s starts_ctz={s_ctz} starts_veh={s_veh} late_ctz={late_ctz} late_veh={late_veh} smoothing={smooth_desc}")
         rows.append({
