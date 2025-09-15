@@ -70,6 +70,10 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--smooth-gauss-ms', type=float, default=None, help='Gaussian smoothing sigma in milliseconds (overrides FWHM if set)')
     p.add_argument('--smooth-gauss-fwhm-ms', type=float, default=None, help='Gaussian smoothing FWHM in milliseconds (alternative to sigma)')
     p.add_argument('--gauss-truncate', type=float, default=3.0, help='Gaussian kernel half-width in sigmas (default 3.0)')
+    # Optional: also render the 5×2 PSTH grid at the end (calls scripts.plot_psth_three_pairs_grid)
+    p.add_argument('--append-grid', action='store_true', help='Also render the 5×2 PSTH grid using the same smoothing settings')
+    p.add_argument('--grid-x-min', type=float, default=-0.2, help='Grid x-min (default -0.2)')
+    p.add_argument('--grid-x-max', type=float, default=0.8, help='Grid x-max (default 0.8)')
     a = p.parse_args(argv)
     return Args(group_npz=a.group_npz, output_root=a.output_root, spike_dir=a.spike_dir, post_start=a.post_start, post_dur=a.post_dur)
 
@@ -471,6 +475,41 @@ def _save_boxplot(fig_base: Path, ctz: np.ndarray, veh: np.ndarray, window_info:
     plt.close(fig)
 
 
+def _append_psth_grid(grp_path: Path, args: Args) -> None:
+    """Invoke scripts.plot_psth_three_pairs_grid with consistent smoothing to render the 5×2 grid.
+
+    Saves next to the group NPZ with a derived name.
+    """
+    try:
+        # Lazy import to avoid circulars
+        from scripts import plot_psth_three_pairs_grid as grid
+    except Exception:
+        # Fallback: do nothing if module cannot be imported in this environment
+        return
+    out_base = grp_path.parent / (grp_path.stem + '__psth_grid')
+    argv: list[str] = [
+        '--group-npz', str(grp_path),
+        '--out', str(out_base),
+        '--x-min', str(getattr(args, 'grid_x_min', -0.2)),
+        '--x-max', str(getattr(args, 'grid_x_max', 0.8)),
+        '--label-windows',
+    ]
+    # Forward smoothing options
+    if args.smooth_gauss_ms is not None:
+        argv += ['--smooth-gauss-ms', str(float(args.smooth_gauss_ms))]
+    elif args.smooth_gauss_fwhm_ms is not None:
+        argv += ['--smooth-gauss-fwhm-ms', str(float(args.smooth_gauss_fwhm_ms))]
+    if args.gauss_truncate is not None:
+        argv += ['--gauss-truncate', str(float(args.gauss_truncate))]
+    if args.smooth_bins is not None and int(args.smooth_bins) > 1:
+        argv += ['--smooth-bins', str(int(args.smooth_bins))]
+    try:
+        grid.main(argv)
+    except SystemExit:
+        # grid.main may call SystemExit; ignore to continue
+        pass
+
+
 def _export_stats(csv_path: Path, ctz: np.ndarray, veh: np.ndarray, pair_stats: Optional[list[dict]] = None) -> None:
     import csv
     ctz = ctz[np.isfinite(ctz)]
@@ -556,6 +595,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     _save_boxplot(fig_base, ctz, veh, window_info=winfo, rule_text=rule)
     # Also save a composite figure (means overlay + the same box plot)
     _save_composite(save_dir / (grp_path.stem + '__postmax_composite'), Z, args, window_info=winfo, rule_text=rule)
+    # Optionally render and save the 5×2 PSTH grid using the same smoothing settings
+    if getattr(args, 'append_grid', False):
+        _append_psth_grid(grp_path, args)
     # Export stats CSV (overall + per-pair with FDR)
     csv_path = save_dir / (grp_path.stem + '__postmax_stats.csv')
     _export_stats(csv_path, ctz, veh, pair_stats=pair_rows)
