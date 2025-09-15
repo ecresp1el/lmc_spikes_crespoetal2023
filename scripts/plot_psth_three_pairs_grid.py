@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 """
-Three Pairs — Normalized PSTH (3×2 grid)
-========================================
+Three Pairs — Normalized PSTH (3×2 grid, minimalist)
+====================================================
 
 Purpose
 -------
@@ -32,8 +32,11 @@ What it draws
 - For each selected pair (three rows):
   - Left (VEH): all per‑channel normalized traces in grey + black mean.
   - Right (CTZ): all per‑channel normalized traces in grey + blue mean.
-  - Chem at t=0; optional shaded early window if early start + duration exist.
-  - Title per panel includes effective bin, taps, and stat used for that pair.
+- Minimalist output for Illustrator:
+  - Uniform y‑axis limits across all subplots (CTZ and VEH share the same range).
+  - Uniform x‑limits clipped to [−0.2, 1.0] by default (configurable).
+  - No axes, ticks, labels, titles, shaded windows, or chem lines — only the data.
+  - One single global vertical scale bar for the whole figure (optional label).
 
 Usage (examples)
 ----------------
@@ -41,6 +44,12 @@ python -m scripts.plot_psth_three_pairs_grid \
   --group-npz /path/to/psth_group_latest.npz \
   --plates 2 4 5 \
   --out /tmp/psth_three_pairs
+
+With minimalist constraints and custom scale bar:
+
+python -m scripts.plot_psth_three_pairs_grid \
+  --x-min -0.2 --x-max 1.0 --scalebar 0.5 --scale-label "norm" \
+  --out /tmp/psth_three_pairs_min
 
 No arguments: autodiscovers latest group NPZ under CONFIG.output_root and
 selects first matches for plates 2,4,5.
@@ -132,30 +141,45 @@ def _pair_indices_for_plates(pairs: np.ndarray, plates: List[int]) -> List[int]:
     return out
 
 
-def _plot_pair(ax, t: np.ndarray, Y: np.ndarray, color_mean: str, title: str, shade: Optional[Tuple[float, float]] = None) -> None:
-    # Y: (C, T) normalized per‑channel
-    if Y.ndim != 2:
-        Y = np.asarray(Y)
-    # all traces in grey
+def _plot_pair(ax, t: np.ndarray, Y: np.ndarray, color_mean: str) -> None:
+    """Plot grey all‑traces + colored mean on given axes with no adornments.
+
+    Assumes caller sets limits and hides axes.
+    """
+    Y = np.asarray(Y)
+    if Y.ndim == 1:
+        Y = Y[None, :]
     for row in Y:
         ax.plot(t, row, color=(0.5, 0.5, 0.5, 0.35), lw=0.6)
-    # mean in requested color
     mean = np.nanmean(Y, axis=0)
     ax.plot(t, mean, color=color_mean, lw=1.6)
-    # chem at 0
-    ax.axvline(0.0, color='r', ls='--', lw=0.8)
-    # shade early window if provided
-    if shade is not None:
-        s0, dur = shade
-        ax.axvspan(s0, s0 + dur, color='0.9', zorder=0)
-    ax.set_title(title)
+
+
+def _nice_scale(v: float) -> float:
+    if not np.isfinite(v) or v <= 0:
+        return 1.0
+    exp = int(np.floor(np.log10(v)))
+    b = v / (10 ** exp)
+    if b < 1.5:
+        nb = 1.0
+    elif b < 3.5:
+        nb = 2.0
+    elif b < 7.5:
+        nb = 5.0
+    else:
+        nb = 10.0
+    return nb * (10 ** exp)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description='Three pairs normalized PSTH grid (3×2)')
+    ap = argparse.ArgumentParser(description='Three pairs normalized PSTH grid (3×2), minimalist')
     ap.add_argument('--group-npz', type=Path, default=None, help='Path to pooled group NPZ (psth_group_data__N.npz or ..._latest.npz)')
     ap.add_argument('--plates', type=int, nargs='+', default=[2, 4, 5], help='Plate numbers to include as rows (default: 2 4 5)')
     ap.add_argument('--out', type=Path, default=None, help='Output path base (writes .svg and .pdf)')
+    ap.add_argument('--x-min', type=float, default=-0.2, help='Left x-limit in seconds (default -0.2)')
+    ap.add_argument('--x-max', type=float, default=1.0, help='Right x-limit in seconds (default 1.0)')
+    ap.add_argument('--scalebar', type=float, default=None, help='Vertical scale bar value (normalized units). If omitted, auto-chosen')
+    ap.add_argument('--scale-label', type=str, default='norm', help='Scale bar label text (default: norm)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -184,12 +208,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print('No pairs matched the requested plates.')
         return 3
 
-    # Prepare figure
-    n = len(idxs)
-    fig, axes = plt.subplots(nrows=n, ncols=2, figsize=(12, max(6, 2 + 2.8 * n)), sharex=False)
-    if n == 1:
-        axes = np.array([axes])
-
+    # Load + clip first to compute global y-range
+    x0, x1 = float(args.x_min), float(args.x_max)
+    rows: list[dict] = []
+    gmin, gmax = np.inf, -np.inf
     for r, i in enumerate(idxs):
         pid = str(pairs[i])
         Yc = np.asarray(ctz_all[i])  # (C, T)
@@ -201,33 +223,57 @@ def main(argv: Optional[List[str]] = None) -> int:
             T = int(Yc.shape[1])
             bw = float(_val_for_index(eff_bin_ms_pp, i)) * 1e-3
             t = (np.arange(T) - T // 2) * bw
-            pre, post = t[0], t[-1]
         else:
-            t, bw, pre, post = _time_from_binary(bnpz)
-        # Early window shading
-        dur = float(_val_for_index(early_dur_pp, i))
-        s_ctz_i = _val_for_index(starts_ctz, i)
-        s_veh_i = _val_for_index(starts_veh, i)
-        s_ctz = float(s_ctz_i) if np.isfinite(s_ctz_i) else None
-        s_veh = float(s_veh_i) if np.isfinite(s_veh_i) else None
-        # Titles include bin, taps, stat
-        eff_ms = float(_val_for_index(eff_bin_ms_pp, i))
-        taps = int(_val_for_index(taps_pp, i))
-        stat = str(_val_for_index(stat_pp, i))
+            t, _, _, _ = _time_from_binary(bnpz)
+        m = (t >= x0) & (t <= x1)
+        t_clip = t[m]
+        Yv_clip = Yv[:, m]
+        Yc_clip = Yc[:, m]
+        if Yv_clip.size:
+            gmin = min(gmin, float(np.nanmin(Yv_clip)))
+            gmax = max(gmax, float(np.nanmax(Yv_clip)))
+        if Yc_clip.size:
+            gmin = min(gmin, float(np.nanmin(Yc_clip)))
+            gmax = max(gmax, float(np.nanmax(Yc_clip)))
+        rows.append({'pid': pid, 't': t_clip, 'Yv': Yv_clip, 'Yc': Yc_clip})
 
-        ttl_v = f"VEH — {pid}\nΔt={eff_ms:.1f} ms; taps={taps}; stat={stat}"
-        ttl_c = f"CTZ — {pid}\nΔt={eff_ms:.1f} ms; taps={taps}; stat={stat}"
+    if not np.isfinite(gmin) or not np.isfinite(gmax) or gmin == gmax:
+        gmin, gmax = 0.0, 1.0
 
-        _plot_pair(axes[r, 0], t, Yv, color_mean='k', title=ttl_v, shade=(s_veh, dur) if s_veh is not None else None)
-        _plot_pair(axes[r, 1], t, Yc, color_mean='C0', title=ttl_c, shade=(s_ctz, dur) if s_ctz is not None else None)
+    # Decide global scale bar
+    if args.scalebar is not None and args.scalebar > 0:
+        sb_val = float(args.scalebar)
+    else:
+        sb_val = _nice_scale(0.25 * (gmax - gmin))
 
-        if r == n - 1:
-            axes[r, 0].set_xlabel('Time (s)')
-            axes[r, 1].set_xlabel('Time (s)')
-        axes[r, 0].set_ylabel('Normalized rate')
-        axes[r, 1].set_ylabel('Normalized rate')
+    # Prepare figure
+    n = len(rows)
+    fig, axes = plt.subplots(nrows=n, ncols=2, figsize=(12, max(6, 2 + 2.8 * n)), sharex=True, sharey=True)
+    if n == 1:
+        axes = np.array([axes])
 
-    fig.tight_layout()
+    # Plot minimal data only
+    for r, row in enumerate(rows):
+        _plot_pair(axes[r, 0], row['t'], row['Yv'], color_mean='k')
+        _plot_pair(axes[r, 1], row['t'], row['Yc'], color_mean='C0')
+        for c in (0, 1):
+            ax = axes[r, c]
+            ax.set_xlim(x0, x1)
+            ax.set_ylim(gmin, gmax)
+            ax.axis('off')
+
+    # Single global vertical scale bar (figure overlay)
+    overlay = fig.add_axes([0, 0, 1, 1], frameon=False)
+    overlay.set_axis_off()
+    x_fig = 0.06
+    y0_fig = 0.12
+    y1_fig = 0.32
+    overlay.plot([x_fig, x_fig], [y0_fig, y1_fig], color='k', lw=2)
+    overlay.text(x_fig + 0.01, (y0_fig + y1_fig) * 0.5, f"{sb_val:.3g} {args.scale_label}",
+                 ha='left', va='center', fontsize=10, color='k',
+                 bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+    plt.subplots_adjust(left=0.03, right=0.99, top=0.99, bottom=0.03, wspace=0.02, hspace=0.02)
 
     # Outputs
     if args.out is not None:
