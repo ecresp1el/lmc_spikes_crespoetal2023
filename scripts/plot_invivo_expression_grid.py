@@ -258,8 +258,9 @@ def main() -> int:
     figures_dir = out_root / 'figures'
     channels_raw_dir = out_root / 'channels' / 'raw'
     channels_norm_dir = out_root / 'channels' / 'norm'
+    channels_pseudo_dir = out_root / 'channels' / 'pseudocolor'
     merged_dir = args.save_merged if args.save_merged is not None else (out_root / 'merged')
-    for d in (figures_dir, channels_raw_dir, channels_norm_dir, merged_dir):
+    for d in (figures_dir, channels_raw_dir, channels_norm_dir, channels_pseudo_dir, merged_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # Step 1 — load and group images by condition
@@ -471,7 +472,7 @@ def main() -> int:
         except Exception as ex:
             print(f"[warn] Failed to write merged RGB TIFF for {cond}: {ex}")
 
-        # Save raw and normalized per-channel grayscale
+        # Save raw, normalized grayscale, and pseudocolor per-channel images
         for ch in channels:
             raw_arr = grouped[cond][ch]
             raw_path = channels_raw_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_raw.tif"
@@ -479,12 +480,30 @@ def main() -> int:
                 tifffile.imwrite(raw_path, raw_arr)
             except Exception as ex:
                 print(f"[warn] Failed to write raw channel {ch} for {cond}: {ex}")
+
+            # Save grayscale normalized
             norm_arr = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
             norm_path = channels_norm_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_norm.tif"
             try:
                 tifffile.imwrite(norm_path, norm_arr)
             except Exception as ex:
-                print(f"[warn] Failed to write normalized channel {ch} for {cond}: {ex}")
+                print(f"[warn] Failed to write grayscale normalized channel {ch} for {cond}: {ex}")
+
+            # Save RGB pseudocolor normalized
+            pseudo_path = channels_pseudo_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_pseudo.tif"
+            rgb_tints = {
+                "C1": (0.2, 0.4, 1.0),  # soft blue for DAPI
+                "C2": (0.3, 1.0, 0.3),  # soft green for EYFP
+                "C3": (1.0, 0.3, 0.3),  # soft red for tdTom
+            }
+            norm_rgb = np.zeros((*disp[cond][ch].shape, 3), dtype=np.uint8)
+            tint = rgb_tints.get(ch, (1.0, 1.0, 1.0))
+            for i in range(3):
+                norm_rgb[..., i] = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 * tint[i] + 0.5).astype(np.uint8)
+            try:
+                tifffile.imwrite(pseudo_path, norm_rgb)
+            except Exception as ex:
+                print(f"[warn] Failed to write pseudocolor normalized channel {ch} for {cond}: {ex}")
 
     fig.tight_layout()
     out_svg = figures_dir / f"{args.out.name}.svg"
