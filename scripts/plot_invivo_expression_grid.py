@@ -46,6 +46,8 @@ Flags
 - --out PATH              Output path base (writes .svg and .pdf)
 - --chan-tag C:NAME       Human tag per channel key (defaults: C1:DAPI C2:EYFP C3:tdTom)
 - --chan-cmap C:CMAP      Colormap name per channel (defaults: C1:Blues C2:Greens C3:Reds)
+- --name-contains SUBSTR  Only use files whose names include these substrings
+                          (repeatable; case-insensitive). Default filters: "zoomed", "step2".
 
 Troubleshooting
 ---------------
@@ -168,8 +170,11 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--out', type=Path, default=Path('LMC4f_invivo_expression_grid'), help='Output base path (no suffix)')
     p.add_argument('--chan-tag', action='append', default=['C1:DAPI','C2:EYFP','C3:tdTom'], help='C:TAG labels (repeat)')
     p.add_argument('--chan-cmap', action='append', default=['C1:Blues','C2:Greens','C3:Reds'], help='C:CMAP colormap names (repeat)')
-    p.add_argument('--name-contains', action='append', default=[], help='Only use files whose names include these substrings (repeatable; case-insensitive)')
+    p.add_argument('--name-contains', action='append', default=None, help='Only use files whose names include these substrings (repeatable; case-insensitive). Default: zoomed, step2')
     a = p.parse_args()
+    # Default to requiring both 'zoomed' and 'step2' unless user provided filters
+    if a.name_contains is None:
+        a.name_contains = ['zoomed', 'step2']
     return a
 
 
