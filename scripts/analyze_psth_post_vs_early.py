@@ -65,6 +65,11 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--spike-dir', type=Path, default=None, help='Override spike matrices dir under output_root')
     p.add_argument('--post-start', type=float, default=None, help='Post window start (s) relative to chem=0; default uses early_end per pair')
     p.add_argument('--post-dur', type=float, default=None, help='Post window duration (s); default uses to end of trace')
+    # Smoothing (optional)
+    p.add_argument('--smooth-bins', type=int, default=1, help='Boxcar smoothing width in bins (default 1=none)')
+    p.add_argument('--smooth-gauss-ms', type=float, default=None, help='Gaussian smoothing sigma in milliseconds (overrides FWHM if set)')
+    p.add_argument('--smooth-gauss-fwhm-ms', type=float, default=None, help='Gaussian smoothing FWHM in milliseconds (alternative to sigma)')
+    p.add_argument('--gauss-truncate', type=float, default=3.0, help='Gaussian kernel half-width in sigmas (default 3.0)')
     a = p.parse_args(argv)
     return Args(group_npz=a.group_npz, output_root=a.output_root, spike_dir=a.spike_dir, post_start=a.post_start, post_dur=a.post_dur)
 
@@ -200,9 +205,42 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
             m = _window_mask(t, ps, pe)
             if not np.any(m):
                 continue
-            # per-channel max within post window
+            # Optional smoothing on A over time before summarizing
+            A_sm = A
             try:
-                vmax = np.nanmax(A[:, m], axis=1)
+                if args.smooth_gauss_ms is not None or args.smooth_gauss_fwhm_ms is not None:
+                    # Build Gaussian kernel on this t grid
+                    ms = float(args.smooth_gauss_ms) if args.smooth_gauss_ms is not None else float(args.smooth_gauss_fwhm_ms)
+                    # If FWHM was provided, convert to sigma
+                    if args.smooth_gauss_ms is None and args.smooth_gauss_fwhm_ms is not None:
+                        ms = ms / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+                    sigma_s = ms * 1e-3
+                    dt = float(np.median(np.diff(t))) if t.size > 1 else 1.0
+                    sigma_bins = float(sigma_s) / float(max(dt, 1e-12))
+                    radius = int(np.ceil(args.gauss_truncate * max(sigma_bins, 1e-6)))
+                    x = np.arange(-radius, radius + 1, dtype=float)
+                    if sigma_bins <= 0:
+                        K = np.array([1.0], dtype=float)
+                    else:
+                        K = np.exp(-0.5 * (x / sigma_bins) ** 2)
+                    K /= np.sum(K) if np.sum(K) != 0 else 1.0
+                    # Convolve per-channel
+                    A_sm = np.empty_like(A)
+                    for rch in range(A.shape[0]):
+                        A_sm[rch] = np.convolve(A[rch], K, mode='same')
+                elif args.smooth_bins is not None and int(args.smooth_bins) > 1:
+                    k = int(max(1, args.smooth_bins))
+                    if k % 2 == 0:
+                        k += 1
+                    Kb = np.ones(k, dtype=float) / float(k)
+                    A_sm = np.empty_like(A)
+                    for rch in range(A.shape[0]):
+                        A_sm[rch] = np.convolve(A[rch], Kb, mode='same')
+            except Exception:
+                A_sm = A
+            # per-channel max within post window on smoothed array
+            try:
+                vmax = np.nanmax(A_sm[:, m], axis=1)
             except Exception:
                 # shape mismatch or non-numeric; skip
                 continue
