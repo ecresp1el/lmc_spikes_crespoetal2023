@@ -325,10 +325,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         sb_val = _nice_scale(0.25 * (gmax - gmin))
 
-    # Prepare figure with an extra bottom row for per-pair means + grand mean
+    # Prepare figure with two extra bottom rows:
+    #  - row n     : per-pair means (thin) + grand mean (thick)
+    #  - row n + 1: all traces combined across pairs + global mean
     n = len(rows)
-    fig, axes = plt.subplots(nrows=n + 1, ncols=2, figsize=(12, max(6.5, 2 + 3.0 * (n + 1))), sharex=True, sharey=True)
-    if n + 1 == 1:
+    fig, axes = plt.subplots(nrows=n + 2, ncols=2, figsize=(12, max(7.5, 2 + 3.2 * (n + 2))), sharex=True, sharey=True)
+    if n + 2 == 1:
         axes = np.array([axes])
 
     # Plot rows: individual pairs
@@ -360,7 +362,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     ax.text(xpad, ytxt, f"late  [{l0:.3f},{l1:.3f}] s", fontsize=8, color='0.25',
                             va='top', ha='left', zorder=7, bbox=dict(facecolor='white', edgecolor='none', alpha=0.6))
 
-    # Bottom row: per-pair means (thin) + grand mean (thick)
+    # Row n: per-pair means (thin) + grand mean (thick)
     # Build a common time grid by using the smallest median dt across rows
     dts = []
     for row in rows:
@@ -392,6 +394,36 @@ def main(argv: Optional[List[str]] = None) -> int:
         ax.set_ylim(gmin, gmax)
         ax.axis('off')
 
+    # Helper to interpolate a (C,T) matrix to common t_ref
+    def _interp_rows_to(t_src: np.ndarray, Y_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
+        t_src = np.asarray(t_src, dtype=float)
+        Y_src = np.asarray(Y_src, dtype=float)
+        if t_src.size == t_dst.size and np.allclose(t_src, t_dst):
+            return Y_src
+        out = np.empty((Y_src.shape[0], t_dst.size), dtype=float)
+        for i in range(Y_src.shape[0]):
+            out[i] = np.interp(t_dst, t_src, Y_src[i])
+        return out
+
+    # Row n+1: all traces combined across pairs + global mean
+    Yv_all_list = []
+    Yc_all_list = []
+    for row in rows:
+        if row['Yv'].size:
+            Yv_all_list.append(_interp_rows_to(row['t'], row['Yv'], t_ref))
+        if row['Yc'].size:
+            Yc_all_list.append(_interp_rows_to(row['t'], row['Yc'], t_ref))
+    Yv_all = np.vstack(Yv_all_list) if Yv_all_list else np.zeros((1, t_ref.size))
+    Yc_all = np.vstack(Yc_all_list) if Yc_all_list else np.zeros((1, t_ref.size))
+
+    _plot_pair(axes[n + 1, 0], t_ref, Yv_all, color_mean='k')
+    _plot_pair(axes[n + 1, 1], t_ref, Yc_all, color_mean='C0')
+    for c in (0, 1):
+        ax = axes[n + 1, c]
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(gmin, gmax)
+        ax.axis('off')
+
     # Single global vertical scale bar inside the top-left axes (data units)
     ax0 = axes[0, 0]
     xb = x0 + 0.05 * (x1 - x0)
@@ -403,7 +435,7 @@ def main(argv: Optional[List[str]] = None) -> int:
              bbox=dict(facecolor='white', edgecolor='none', alpha=0.85), zorder=6)
 
     # Horizontal (time) scale bar inside bottom-left axes
-    ax_bl = axes[n, 0]
+    ax_bl = axes[n + 1, 0]
     xbl0 = x0 + 0.06 * (x1 - x0)
     xbl1 = min(x1 - 0.02 * (x1 - x0), xbl0 + float(args.xbar))
     ybl = gmin + 0.12 * (gmax - gmin)
