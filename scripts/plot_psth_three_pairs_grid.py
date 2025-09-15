@@ -755,7 +755,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 else:
                     print('Enhanced: no channels met criteria after thresholds; try relaxing --ctz-min or increasing --veh-max.')
 
-    # Optional: MUA percent-change scatter (pre-renorm, smoothed)
+    # Optional: MUA percent-change scatter (pre-renorm or raw if available, smoothed)
     if getattr(args, 'save_mua_scatter', False):
         from pathlib import Path as _Path
         recs = []  # rows of dicts for CSV
@@ -763,10 +763,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         y_pct = []
         for r, row in enumerate(rows):
             t_r = np.asarray(row['t'], dtype=float)
-            if row.get('Yv_nr') is None or row.get('Yc_nr') is None:
+            # Prefer raw if available; otherwise fallback to pre-renorm normalized
+            Yv_src = row.get('Yv_raw') if row.get('Yv_raw') is not None else row.get('Yv_nr')
+            Yc_src = row.get('Yc_raw') if row.get('Yc_raw') is not None else row.get('Yc_nr')
+            if Yv_src is None or Yc_src is None:
                 continue
-            Yv_nr = np.asarray(row['Yv_nr'], dtype=float)
-            Yc_nr = np.asarray(row['Yc_nr'], dtype=float)
+            Yv_nr = np.asarray(Yv_src, dtype=float)
+            Yc_nr = np.asarray(Yc_src, dtype=float)
             e = row.get('early_veh')
             l_v = row.get('late_veh'); l_c = row.get('late_ctz')
             if e is None or l_v is None or l_c is None:
@@ -813,7 +816,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             ax5 = fig5.add_subplot(1, 1, 1)
             ax5.scatter(np.asarray(x_baseline, dtype=float), np.asarray(y_pct, dtype=float), s=12, color='tab:purple', alpha=0.7)
             ax5.axhline(0.0, color='0.5', ls='--', lw=0.8)
-            ax5.set_xlabel('VEH baseline (early, pre-renorm)')
+            ax5.set_xlabel('VEH baseline (early, raw if available)')
             ax5.set_ylabel('Percent change in MUA (CTZ−VEH)/VEH_baseline × 100')
             fig5.tight_layout()
             mua_base = _Path(str(base.with_suffix('')) + f"__mua_pct_vs_veh_baseline__late-{str(args.mua_late_metric)}__early-{str(args.mua_early_stat)}")
