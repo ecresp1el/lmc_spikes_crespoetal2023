@@ -33,6 +33,7 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.cm import ScalarMappable
+from matplotlib import cm as mplcm
 from matplotlib.colors import Normalize
 from matplotlib.ticker import FuncFormatter
 from matplotlib import patches
@@ -152,8 +153,9 @@ def main() -> int:
     figures_dir = out_root / 'figures'
     channels_raw_dir = out_root / 'channels' / 'raw'
     channels_norm_dir = out_root / 'channels' / 'norm'
+    channels_pseudo_dir = out_root / 'channels' / 'pseudo'
     merged_dir = out_root / 'merged'
-    for d in (figures_dir, channels_raw_dir, channels_norm_dir, merged_dir):
+    for d in (figures_dir, channels_raw_dir, channels_norm_dir, channels_pseudo_dir, merged_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # Locate files per root
@@ -317,6 +319,17 @@ def main() -> int:
                 tifffile.imwrite(norm_path, norm_arr)
             except Exception as ex:
                 print(f"[warn] Failed to write normalized channel {ch} for {r}: {ex}")
+        # Pseudocolor RGB 8-bit per channel (Blues/Greens/Reds)
+        for ch in channels:
+            cmap = mplcm.get_cmap(cmaps[ch])
+            rgba = cmap(np.clip(disp[r][ch], 0.0, 1.0))  # HxWx4 floats 0..1
+            rgb8 = (rgba[..., :3] * 255.0 + 0.5).astype(np.uint8)
+            pseudo_path = channels_pseudo_dir / f"{r.replace('/', '_')}_{ch}_pseudo.tif"
+            try:
+                tifffile.imwrite(pseudo_path, rgb8)
+            except Exception as ex:
+                print(f"[warn] Failed to write pseudocolor channel {ch} for {r}: {ex}")
+
         # Merged
         rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
         out_tif = merged_dir / f"{r.replace('/', '_')}_merged_rgb.tif"
@@ -337,4 +350,3 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
