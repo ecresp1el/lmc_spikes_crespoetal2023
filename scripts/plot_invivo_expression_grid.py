@@ -204,15 +204,16 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--chan-cmap', action='append', default=['C1:Blues','C2:Greens','C3:Reds'], help='C:CMAP colormap names (repeat)')
     p.add_argument('--name-contains', action='append', default=None, help='Only use files whose names include these substrings (repeatable; case-insensitive). Default: zoomed, step2')
     p.add_argument('--align-mismatch', choices=['none','crop'], default='crop', help='If channel shapes differ within a condition: center-crop to smallest or do nothing (may error). Default: crop')
-    p.add_argument('--save-merged', type=Path, default=None, help='Directory to save per-condition merged RGB TIFFs (8-bit). If not set, no per-condition TIFFs are saved')
-    p.add_argument('--norm-mode', choices=['global','per_condition','match_ref'], default='global', help='Normalization across conditions: global percentiles, per-condition percentiles, or match to a reference condition by quantile scaling')
+    p.add_argument('--save-merged', type=Path, default=None, help='Directory to save per-condition merged RGB TIFFs (8-bit). If not set, saves under out-root/merged')
+    p.add_argument('--norm-mode', choices=['global','per_condition','match_ref'], default='match_ref', help='Normalization across conditions: global percentiles, per-condition percentiles, or match to a reference condition by quantile scaling')
     p.add_argument('--norm-quantile', type=float, default=99.0, help='Quantile (0-100) used for matching when norm-mode=match_ref (default 99)')
-    p.add_argument('--ref-condition', type=str, default=None, help='Reference condition name for norm-mode=match_ref; default is the first condition listed')
+    p.add_argument('--ref-condition', type=str, default='Luciferin+NMDA', help='Reference condition name for norm-mode=match_ref; if not present, falls back to first condition')
     p.add_argument('--gamma', type=float, default=1.0, help='Gamma adjustment applied after normalization (>=0). 1.0 means no change')
     p.add_argument('--colorbar-mode', choices=['normalized','raw','none'], default='normalized', help='Show colorbars in normalized a.u., raw intensity labels, or hide them')
-    p.add_argument('--scalebar-um', type=float, default=0.0, help='Scalebar length in µm on RGB panel. 0 means auto-pick; negative disables')
+    p.add_argument('--scalebar-um', type=float, default=100.0, help='Scalebar length in µm on RGB panel. 0 means auto-pick; negative disables')
     p.add_argument('--scalebar-pos', choices=['lower left','lower right','upper left','upper right'], default='lower right', help='Scalebar anchor position on RGB panel')
     p.add_argument('--scalebar-color', type=str, default='white', help='Scalebar and label color')
+    p.add_argument('--out-root', type=Path, default=None, help='Root output directory where all exports are collated. Default: common parent of condition dirs + /<out base>')
     a = p.parse_args()
     # Default to requiring both 'zoomed' and 'step2' unless user provided filters
     if a.name_contains is None:
@@ -243,6 +244,19 @@ def main() -> int:
         if not p.exists():
             raise SystemExit(f'Condition folder not found: {name} -> {p}')
         cond_dirs[name] = p
+
+    # Derive a common output root if not provided
+    if args.out_root is None:
+        common_parent = Path(os.path.commonpath([str(p) for p in cond_dirs.values()]))
+        out_root = common_parent / args.out.name
+    else:
+        out_root = args.out_root
+    figures_dir = out_root / 'figures'
+    channels_raw_dir = out_root / 'channels' / 'raw'
+    channels_norm_dir = out_root / 'channels' / 'norm'
+    merged_dir = args.save_merged if args.save_merged is not None else (out_root / 'merged')
+    for d in (figures_dir, channels_raw_dir, channels_norm_dir, merged_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
     # Step 1 — load and group images by condition
     grouped: Dict[str, Dict[str, np.ndarray]] = {}
@@ -335,7 +349,8 @@ def main() -> int:
     else:  # match_ref
         ref = args.ref_condition or cond_names[0]
         if ref not in grouped:
-            raise SystemExit(f"Reference condition '{ref}' not among conditions: {cond_names}")
+            print(f"[warn] Reference condition '{ref}' not found. Falling back to '{cond_names[0]}'")
+            ref = cond_names[0]
         q = float(args.norm_quantile)
         # scale each condition to match the reference quantile per channel
         scaled: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in cond_names}
@@ -443,20 +458,33 @@ def main() -> int:
                         label, color=args.scalebar_color, ha='center', va=va, fontsize=9, weight='bold')
 
         # Optionally save per-condition merged RGB TIFF (8-bit)
-        if args.save_merged is not None:
-            outdir = Path(args.save_merged)
-            outdir.mkdir(parents=True, exist_ok=True)
-            rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-            out_tif = outdir / f"{cond}_{chosen_id.get(cond, 'unknown')}_merged_rgb.tif"
+        # Save merged RGB
+        rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        out_tif = merged_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_merged_rgb.tif"
+        try:
+            tifffile.imwrite(out_tif, rgb8)
+            print(f"[save] Wrote merged RGB -> {out_tif}")
+        except Exception as ex:
+            print(f"[warn] Failed to write merged RGB TIFF for {cond}: {ex}")
+
+        # Save raw and normalized per-channel grayscale
+        for ch in channels:
+            raw_arr = grouped[cond][ch]
+            raw_path = channels_raw_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_raw.tif"
             try:
-                tifffile.imwrite(out_tif, rgb8)
-                print(f"[save] Wrote merged RGB -> {out_tif}")
+                tifffile.imwrite(raw_path, raw_arr)
             except Exception as ex:
-                print(f"[warn] Failed to write merged RGB TIFF for {cond}: {ex}")
+                print(f"[warn] Failed to write raw channel {ch} for {cond}: {ex}")
+            norm_arr = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+            norm_path = channels_norm_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_norm.tif"
+            try:
+                tifffile.imwrite(norm_path, norm_arr)
+            except Exception as ex:
+                print(f"[warn] Failed to write normalized channel {ch} for {cond}: {ex}")
 
     fig.tight_layout()
-    out_svg = args.out.with_suffix('.svg')
-    out_pdf = args.out.with_suffix('.pdf')
+    out_svg = figures_dir / f"{args.out.name}.svg"
+    out_pdf = figures_dir / f"{args.out.name}.pdf"
     fig.savefig(out_svg)
     fig.savefig(out_pdf)
     print(f"Wrote -> {out_svg} and {out_pdf}")
