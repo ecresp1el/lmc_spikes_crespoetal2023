@@ -241,6 +241,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--save-mua-scatter', action='store_true', help='Also save MUA percent-change vs VEH baseline scatter + CSV from plotted (smoothed, clipped) data (pre-renorm)')
     ap.add_argument('--mua-early-stat', type=str, choices=['mean','median'], default='mean', help='Early statistic for VEH baseline (default: mean)')
     ap.add_argument('--mua-late-metric', type=str, choices=['mean','max'], default='mean', help='Late metric (mean or max) for percent-change (default: mean)')
+    ap.add_argument('--mua-source', type=str, choices=['auto','raw','norm'], default='auto', help='Arrays for MUA scatter: raw (requires raw in NPZ), norm (pre-renorm smoothed), or auto (prefer raw)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -763,9 +764,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         y_pct = []
         for r, row in enumerate(rows):
             t_r = np.asarray(row['t'], dtype=float)
-            # Prefer raw if available; otherwise fallback to pre-renorm normalized
-            Yv_src = row.get('Yv_raw') if row.get('Yv_raw') is not None else row.get('Yv_nr')
-            Yc_src = row.get('Yc_raw') if row.get('Yc_raw') is not None else row.get('Yc_nr')
+            # Choose source arrays for MUA scatter
+            if str(args.mua_source) == 'raw':
+                Yv_src = row.get('Yv_raw')
+                Yc_src = row.get('Yc_raw')
+            elif str(args.mua_source) == 'norm':
+                Yv_src = row.get('Yv_nr')
+                Yc_src = row.get('Yc_nr')
+            else:  # auto: prefer raw if available
+                Yv_src = row.get('Yv_raw') if row.get('Yv_raw') is not None else row.get('Yv_nr')
+                Yc_src = row.get('Yc_raw') if row.get('Yc_raw') is not None else row.get('Yc_nr')
             if Yv_src is None or Yc_src is None:
                 continue
             Yv_nr = np.asarray(Yv_src, dtype=float)
@@ -801,9 +809,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 pc = (c_late - v_late) / b * 100.0
             ok = np.isfinite(pc) & np.isfinite(b) & (b > 0)
             if np.any(ok):
+                # derive plate from pair id 'plate_XX_...'
+                def _plate_of(pid: str) -> int:
+                    try:
+                        if pid.startswith('plate_'):
+                            return int(pid.split('_')[1])
+                    except Exception:
+                        pass
+                    return -1
+                plate_i = _plate_of(row['pid'])
                 for ch in np.where(ok)[0]:
                     recs.append({
-                        'pair': row['pid'], 'row': r, 'ch': int(ch),
+                        'pair': row['pid'], 'plate': plate_i, 'row': r, 'ch': int(ch),
                         'veh_baseline': float(b[ch]), 'veh_late': float(v_late[ch]), 'ctz_late': float(c_late[ch]),
                         'pct_change': float(pc[ch]),
                     })
@@ -811,24 +828,48 @@ def main(argv: Optional[List[str]] = None) -> int:
                 y_pct.extend(pc[ok].tolist())
 
         if x_baseline and y_pct:
-            # Scatter
-            fig5 = plt.figure(figsize=(6, 5), dpi=150)
+            # Scatter colored by plate + per-plate mean±SEM + grand mean±SEM
+            fig5 = plt.figure(figsize=(7.0, 5.6), dpi=150)
             ax5 = fig5.add_subplot(1, 1, 1)
-            ax5.scatter(np.asarray(x_baseline, dtype=float), np.asarray(y_pct, dtype=float), s=12, color='tab:purple', alpha=0.7)
+            import numpy as _np
+            X = _np.asarray(x_baseline, dtype=float)
+            Y = _np.asarray(y_pct, dtype=float)
+            plates = sorted({d.get('plate', -1) for d in recs if isinstance(d.get('plate'), (int, float)) and d.get('plate', -1) >= 0})
+            colors = ['tab:blue','tab:orange','tab:green','tab:red','tab:purple','tab:brown']
+            col_map = {pl: colors[i % len(colors)] for i, pl in enumerate(plates)}
+            for pl in plates:
+                xs = _np.asarray([d['veh_baseline'] for d in recs if d.get('plate') == pl], dtype=float)
+                ys = _np.asarray([d['pct_change']   for d in recs if d.get('plate') == pl], dtype=float)
+                if xs.size == 0:
+                    continue
+                c = col_map[pl]
+                ax5.scatter(xs, ys, s=12, color=c, alpha=0.65, label=f'plate {pl}')
+                xm = float(_np.nanmean(xs)); ym = float(_np.nanmean(ys))
+                xsem = float(_np.nanstd(xs, ddof=1)/_np.sqrt(max(1, xs.size))) if xs.size > 1 else 0.0
+                ysem = float(_np.nanstd(ys, ddof=1)/_np.sqrt(max(1, ys.size))) if ys.size > 1 else 0.0
+                ax5.errorbar(xm, ym, xerr=xsem, yerr=ysem, fmt='o', color=c, ecolor=c, elinewidth=1.2, capsize=3, markersize=6, markeredgecolor='k', markeredgewidth=0.6)
+            # grand mean ± SEM
+            if X.size:
+                xm = float(_np.nanmean(X)); ym = float(_np.nanmean(Y))
+                xsem = float(_np.nanstd(X, ddof=1)/_np.sqrt(max(1, X.size))) if X.size > 1 else 0.0
+                ysem = float(_np.nanstd(Y, ddof=1)/_np.sqrt(max(1, Y.size))) if Y.size > 1 else 0.0
+                ax5.errorbar(xm, ym, xerr=xsem, yerr=ysem, fmt='D', color='k', ecolor='k', elinewidth=1.4, capsize=3, markersize=7, markerfacecolor='white', label='grand mean ± SEM')
             ax5.axhline(0.0, color='0.5', ls='--', lw=0.8)
-            ax5.set_xlabel('VEH baseline (early, raw if available)')
+            src_lbl = 'raw' if str(args.mua_source) == 'raw' else ('normalized' if str(args.mua_source) == 'norm' else 'auto')
+            ax5.set_xlabel(f'VEH baseline (early, {src_lbl})')
             ax5.set_ylabel('Percent change in MUA (CTZ−VEH)/VEH_baseline × 100')
+            ax5.legend(frameon=False, fontsize=8, ncol=2)
             fig5.tight_layout()
-            mua_base = _Path(str(base.with_suffix('')) + f"__mua_pct_vs_veh_baseline__late-{str(args.mua_late_metric)}__early-{str(args.mua_early_stat)}")
+            mua_base = _Path(str(base.with_suffix('')) + f"__mua_pct_vs_veh_baseline__late-{str(args.mua_late_metric)}__early-{str(args.mua_early_stat)}__byplate_meanSEM_grand")
             fig5.savefig(mua_base.with_suffix('.svg'))
             fig5.savefig(mua_base.with_suffix('.pdf'))
             plt.close(fig5)
             print(f"MUA percent-change scatter saved: {mua_base.with_suffix('.svg')} and {mua_base.with_suffix('.pdf')}")
             # CSV
             import csv as _csv
-            csv_path = _Path(str(base.with_suffix('')) + '__mua_pct_vs_veh_baseline.csv')
+            csv_path = _Path(str(base.with_suffix('')) + '__mua_pct_vs_veh_baseline__byplate.csv')
             with csv_path.open('w', newline='') as f:
-                w = _csv.DictWriter(f, fieldnames=['pair','row','ch','veh_baseline','veh_late','ctz_late','pct_change'])
+                w = _csv.DictWriter(f, fieldnames=['pair','plate','row','ch','veh_baseline','veh_late','ctz_late','pct_change'])
                 w.writeheader(); w.writerows(recs)
             print(f"MUA scatter data saved: {csv_path}")
         else:
