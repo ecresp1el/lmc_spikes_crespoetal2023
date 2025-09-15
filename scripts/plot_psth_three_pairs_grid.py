@@ -258,8 +258,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     gmin, gmax = np.inf, -np.inf
     for r, i in enumerate(idxs):
         pid = str(pairs[i])
-        Yc = np.asarray(ctz_all[i])  # (C, T)
-        Yv = np.asarray(veh_all[i])
+        # Ensure numeric dtype for downstream ops
+        Yc = np.asarray(ctz_all[i], dtype=float)  # (C, T)
+        Yv = np.asarray(veh_all[i], dtype=float)
         # Time axis from binary spikes meta
         bnpz = _discover_binary_for_pair(group_npz, pid)
         if bnpz is None:
@@ -270,9 +271,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             t, _, _, _ = _time_from_binary(bnpz)
         m = (t >= x0) & (t <= x1)
-        t_clip = t[m]
-        Yv_clip = Yv[:, m]
-        Yc_clip = Yc[:, m]
+        t_clip = np.asarray(t[m], dtype=float)
+        Yv_clip = np.asarray(Yv[:, m], dtype=float)
+        Yc_clip = np.asarray(Yc[:, m], dtype=float)
         # Smoothing
         if args.smooth_bins is not None and int(args.smooth_bins) > 1:
             Yv_clip = _boxcar_smooth(Yv_clip, int(args.smooth_bins))
@@ -351,11 +352,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     Yv_means = []
     Yc_means = []
     for row in rows:
-        yv_m = np.nanmean(row['Yv'], axis=0)
-        yc_m = np.nanmean(row['Yc'], axis=0)
-        if not (row['t'].size == t_ref.size and np.allclose(row['t'], t_ref)):
-            yv_m = np.interp(t_ref, row['t'], yv_m)
-            yc_m = np.interp(t_ref, row['t'], yc_m)
+        # Compute per-pair means as float arrays
+        yv_m = np.nanmean(np.asarray(row['Yv'], dtype=float), axis=0)
+        yc_m = np.nanmean(np.asarray(row['Yc'], dtype=float), axis=0)
+        rt = np.asarray(row['t'], dtype=float)
+        if rt.size and not (rt.size == t_ref.size and np.allclose(rt, t_ref)):
+            yv_m = np.interp(t_ref, rt, np.asarray(yv_m, dtype=float))
+            yc_m = np.interp(t_ref, rt, np.asarray(yc_m, dtype=float))
         Yv_means.append(yv_m)
         Yc_means.append(yc_m)
     Yv_stack = np.vstack(Yv_means) if Yv_means else np.zeros((1, t_ref.size))
