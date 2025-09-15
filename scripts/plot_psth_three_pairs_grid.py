@@ -106,6 +106,20 @@ def _discover_binary_for_pair(group_npz: Path, pair_id: str) -> Optional[Path]:
     return None
 
 
+def _val_for_index(arr, i: int):
+    """Return arr[i] if arr is indexable; otherwise return scalar arr.
+
+    Handles 0-d numpy arrays or Python scalars gracefully.
+    """
+    a = np.asarray(arr)
+    if getattr(a, 'ndim', 0) == 0:
+        try:
+            return a.item()
+        except Exception:
+            return a
+    return a[int(i)]
+
+
 def _pair_indices_for_plates(pairs: np.ndarray, plates: List[int]) -> List[int]:
     out: List[int] = []
     for pl in plates:
@@ -154,12 +168,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         pairs = np.asarray(Z['pairs']).astype(object)
         ctz_all = np.asarray(Z['ctz_norm_all'], dtype=object)
         veh_all = np.asarray(Z['veh_norm_all'], dtype=object)
-        eff_bin_ms_pp = np.asarray(Z.get('eff_bin_ms_per_pair', Z.get('eff_bin_ms', 1.0)))
-        taps_pp = np.asarray(Z.get('taps_per_pair', Z.get('taps', 1)))
-        stat_pp = np.asarray(Z.get('stat_per_pair', Z.get('stat', 'mean')), dtype=object)
-        early_dur_pp = np.asarray(Z.get('early_dur_per_pair', Z.get('early_dur', 0.1)))
-        starts_ctz = np.asarray(Z.get('starts_ctz', np.full(len(pairs), np.nan)))
-        starts_veh = np.asarray(Z.get('starts_veh', np.full(len(pairs), np.nan)))
+        eff_bin_ms_pp = Z.get('eff_bin_ms_per_pair', Z.get('eff_bin_ms', 1.0))
+        taps_pp = Z.get('taps_per_pair', Z.get('taps', 1))
+        stat_pp = Z.get('stat_per_pair', Z.get('stat', 'mean'))
+        early_dur_pp = Z.get('early_dur_per_pair', Z.get('early_dur', 0.1))
+        starts_ctz = Z.get('starts_ctz', np.full(len(pairs), np.nan))
+        starts_veh = Z.get('starts_veh', np.full(len(pairs), np.nan))
     finally:
         Z.close()
 
@@ -185,19 +199,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         if bnpz is None:
             # Fallback: use eff_bin_ms and assume symmetric around 0
             T = int(Yc.shape[1])
-            bw = float(eff_bin_ms_pp[i if np.ndim(eff_bin_ms_pp) else 0]) * 1e-3
+            bw = float(_val_for_index(eff_bin_ms_pp, i)) * 1e-3
             t = (np.arange(T) - T // 2) * bw
             pre, post = t[0], t[-1]
         else:
             t, bw, pre, post = _time_from_binary(bnpz)
         # Early window shading
-        dur = float(early_dur_pp[i if np.ndim(early_dur_pp) else 0])
-        s_ctz = float(starts_ctz[i]) if np.isfinite(starts_ctz[i]) else None
-        s_veh = float(starts_veh[i]) if np.isfinite(starts_veh[i]) else None
+        dur = float(_val_for_index(early_dur_pp, i))
+        s_ctz_i = _val_for_index(starts_ctz, i)
+        s_veh_i = _val_for_index(starts_veh, i)
+        s_ctz = float(s_ctz_i) if np.isfinite(s_ctz_i) else None
+        s_veh = float(s_veh_i) if np.isfinite(s_veh_i) else None
         # Titles include bin, taps, stat
-        eff_ms = float(eff_bin_ms_pp[i if np.ndim(eff_bin_ms_pp) else 0])
-        taps = int(taps_pp[i if np.ndim(taps_pp) else 0])
-        stat = str(stat_pp[i if np.ndim(stat_pp) else 0])
+        eff_ms = float(_val_for_index(eff_bin_ms_pp, i))
+        taps = int(_val_for_index(taps_pp, i))
+        stat = str(_val_for_index(stat_pp, i))
 
         ttl_v = f"VEH — {pid}\nΔt={eff_ms:.1f} ms; taps={taps}; stat={stat}"
         ttl_c = f"CTZ — {pid}\nΔt={eff_ms:.1f} ms; taps={taps}; stat={stat}"
@@ -229,4 +245,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
