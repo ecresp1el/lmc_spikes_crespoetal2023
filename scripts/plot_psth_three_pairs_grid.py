@@ -275,10 +275,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         t_clip = np.asarray(t[m], dtype=float)
         Yv_clip = np.asarray(Yv[:, m], dtype=float)
         Yc_clip = np.asarray(Yc[:, m], dtype=float)
-        # Smoothing
-        if args.smooth_bins is not None and int(args.smooth_bins) > 1:
+        # Smoothing: Gaussian preferred if provided; else boxcar
+        smooth_desc = "none"
+        if (hasattr(args, 'smooth_gauss_ms') and args.smooth_gauss_ms is not None) or (hasattr(args, 'smooth_gauss_fwhm_ms') and args.smooth_gauss_fwhm_ms is not None):
+            ms = float(args.smooth_gauss_ms) if getattr(args, 'smooth_gauss_ms', None) is not None else float(args.smooth_gauss_fwhm_ms) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            sigma_s = ms * 1e-3
+            def _gaussian_kernel(dt_s: float, sigma_s: float, truncate: float = 3.0) -> np.ndarray:
+                sigma_bins = float(sigma_s) / float(max(dt_s, 1e-12))
+                radius = int(np.ceil(truncate * max(sigma_bins, 1e-6)))
+                x = np.arange(-radius, radius + 1, dtype=float)
+                if sigma_bins <= 0:
+                    k = np.array([1.0], dtype=float)
+                else:
+                    k = np.exp(-0.5 * (x / sigma_bins) ** 2)
+                k /= np.sum(k) if np.sum(k) != 0 else 1.0
+                return k
+            dt_here = float(np.median(np.diff(t_clip))) if t_clip.size > 1 else 1.0
+            K = _gaussian_kernel(dt_here, sigma_s, truncate=float(getattr(args, 'gauss_truncate', 3.0)))
+            def _apply_K(M: np.ndarray, K: np.ndarray) -> np.ndarray:
+                out = np.empty_like(M)
+                for i in range(M.shape[0]):
+                    out[i] = np.convolve(M[i], K, mode='same')
+                return out
+            Yv_clip = _apply_K(Yv_clip, K)
+            Yc_clip = _apply_K(Yc_clip, K)
+            smooth_desc = f"gauss_sigma={ms:.3f}ms"
+        elif args.smooth_bins is not None and int(args.smooth_bins) > 1:
             Yv_clip = _boxcar_smooth(Yv_clip, int(args.smooth_bins))
             Yc_clip = _boxcar_smooth(Yc_clip, int(args.smooth_bins))
+            smooth_desc = f"boxcar_bins={int(args.smooth_bins)}"
         if Yv_clip.size:
             gmin = min(gmin, float(np.nanmin(Yv_clip)))
             gmax = max(gmax, float(np.nanmax(Yv_clip)))
@@ -304,7 +329,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             ldur = float(args.late_dur) if (args.late_dur is not None and args.late_dur > 0) else max(0.0, x1 - l0)
             late_veh = (l0, ldur)
         # Console log the masks used for late phase
-        print(f"pair={pid} early_dur={dur:.3f}s starts_ctz={s_ctz} starts_veh={s_veh} late_ctz={late_ctz} late_veh={late_veh} smooth_bins={int(args.smooth_bins)}")
+        print(f"pair={pid} early_dur={dur:.3f}s starts_ctz={s_ctz} starts_veh={s_veh} late_ctz={late_ctz} late_veh={late_veh} smoothing={smooth_desc}")
         rows.append({
             'pid': pid,
             't': t_clip,
