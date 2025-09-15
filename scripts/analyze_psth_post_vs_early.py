@@ -279,6 +279,140 @@ def _collect_post_max(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list
     return np.asarray(post_max_ctz, dtype=float), np.asarray(post_max_veh, dtype=float), per_pair_rows, info
 
 
+def _apply_smoothing_1d(y: np.ndarray, t: np.ndarray, args: Args) -> np.ndarray:
+    y = np.asarray(y, dtype=float)
+    if y.ndim != 1:
+        return y
+    try:
+        if args.smooth_gauss_ms is not None or args.smooth_gauss_fwhm_ms is not None:
+            ms = float(args.smooth_gauss_ms) if args.smooth_gauss_ms is not None else float(args.smooth_gauss_fwhm_ms)
+            if args.smooth_gauss_ms is None and args.smooth_gauss_fwhm_ms is not None:
+                ms = ms / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            sigma_s = ms * 1e-3
+            dt = float(np.median(np.diff(t))) if t.size > 1 else 1.0
+            sigma_bins = float(sigma_s) / float(max(dt, 1e-12))
+            radius = int(np.ceil(args.gauss_truncate * max(sigma_bins, 1e-6)))
+            x = np.arange(-radius, radius + 1, dtype=float)
+            if sigma_bins <= 0:
+                K = np.array([1.0], dtype=float)
+            else:
+                K = np.exp(-0.5 * (x / sigma_bins) ** 2)
+            K /= np.sum(K) if np.sum(K) != 0 else 1.0
+            return np.convolve(y, K, mode='same')
+        elif args.smooth_bins is not None and int(args.smooth_bins) > 1:
+            k = int(max(1, args.smooth_bins))
+            if k % 2 == 0:
+                k += 1
+            Kb = np.ones(k, dtype=float) / float(k)
+            return np.convolve(y, Kb, mode='same')
+    except Exception:
+        return y
+    return y
+
+
+def _save_composite(fig_base: Path, Z: dict, args: Args, window_info: Optional[dict], rule_text: Optional[str]) -> None:
+    """Save a 1×2 composite: left = CTZ/VEH means overlay; right = box plot.
+
+    Uses the same smoothing and window rules as stats.
+    """
+    t = np.asarray(Z.get('t'), dtype=float)
+    ctz_mean = None
+    veh_mean = None
+    # Prefer pair-level means stacks if present, otherwise fallback to grand means over all traces
+    if 'ctz_norm' in Z and 'veh_norm' in Z and np.asarray(Z['ctz_norm']).size and np.asarray(Z['veh_norm']).size:
+        ctz_mean = np.nanmean(np.asarray(Z['ctz_norm'], dtype=float), axis=0)
+        veh_mean = np.nanmean(np.asarray(Z['veh_norm'], dtype=float), axis=0)
+    else:
+        ca = Z.get('ctz_norm_all'); va = Z.get('veh_norm_all')
+        if ca is not None and np.asarray(ca).size:
+            ctz_mean = np.nanmean(np.vstack([np.asarray(m, dtype=float) for m in ca]), axis=0)
+        if va is not None and np.asarray(va).size:
+            veh_mean = np.nanmean(np.vstack([np.asarray(m, dtype=float) for m in va]), axis=0)
+    if ctz_mean is None or veh_mean is None:
+        return
+    ctz_mean_s = _apply_smoothing_1d(ctz_mean, t, args)
+    veh_mean_s = _apply_smoothing_1d(veh_mean, t, args)
+
+    # Early/late windows (use medians across pairs per side for shading)
+    starts_ctz = np.asarray(Z.get('starts_ctz', []), dtype=float)
+    starts_veh = np.asarray(Z.get('starts_veh', []), dtype=float)
+    early_dur = float(Z.get('early_dur', 0.05))
+    # effective bin seconds
+    eff_per = Z.get('eff_bin_ms_per_pair'); eff_ms = Z.get('eff_bin_ms')
+    if eff_per is not None and np.asarray(eff_per).size:
+        eff_s = float(np.nanmedian(np.asarray(eff_per, dtype=float))) * 1e-3
+    elif eff_ms is not None:
+        eff_s = float(eff_ms) * 1e-3
+    else:
+        eff_s = float(np.median(np.diff(t))) if t.size > 1 else 0.001
+    def med_or_nan(a):
+        a = np.asarray(a, dtype=float)
+        return float(np.nanmedian(a)) if a.size else np.nan
+    s_c = med_or_nan(starts_ctz)
+    s_v = med_or_nan(starts_veh)
+    e0_c = s_c
+    e1_c = s_c + early_dur
+    e0_v = s_v
+    e1_v = s_v + early_dur
+    l0_c = e1_c + 0.100 + eff_s
+    l0_v = e1_v + 0.100 + eff_s
+
+    fig = plt.figure(figsize=(10, 4), dpi=150)
+    gs = fig.add_gridspec(1, 2, wspace=0.25)
+    ax1 = fig.add_subplot(gs[0, 0])
+    # Shading
+    if np.isfinite(e0_v):
+        ax1.axvspan(e0_v, e1_v, color='0.92', zorder=0)
+    if np.isfinite(e0_c):
+        ax1.axvspan(e0_c, e1_c, color='0.92', zorder=0)
+    if np.isfinite(l0_v):
+        ax1.axvspan(l0_v, t[-1], color='0.85', zorder=0)
+    if np.isfinite(l0_c):
+        ax1.axvspan(l0_c, t[-1], color='0.85', zorder=0)
+    # Data
+    ax1.plot(t, veh_mean_s, color='k', lw=1.5, label='VEH mean')
+    ax1.plot(t, ctz_mean_s, color='tab:blue', lw=1.5, label='CTZ mean')
+    ax1.axhline(0.0, color='0.3', lw=0.8)
+    ax1.axvline(0.0, color='r', ls='--', lw=0.8)
+    ax1.legend(frameon=False, fontsize=9)
+    ax1.set_xlabel('Time (s)')
+    ax1.set_ylabel('Normalized rate')
+    if rule_text:
+        ax1.set_title(rule_text)
+    # Right: boxplot panel
+    ax2 = fig.add_subplot(gs[0, 1])
+    # Recompute using same path as _save_boxplot to ensure consistency
+    # We will draw into ax2 directly
+    # Prepare dummy fig to reuse the styling, but here we draw minimal
+    data = []
+    # Re-run compute for late-phase maxima with smoothing to ensure consistency is handled already
+    ctz_vals, veh_vals, _, _ = _collect_post_max(Z, args)
+    data = [ctz_vals, veh_vals]
+    boxprops_patch = dict(linewidth=1.2, edgecolor='k')
+    whiskerprops_line = dict(linewidth=1.2, color='k')
+    capprops_line = dict(linewidth=1.2, color='k')
+    medianprops_line = dict(linewidth=1.6, color='k')
+    bp = ax2.boxplot(
+        data, positions=[1, 2], widths=0.6, patch_artist=True,
+        boxprops=boxprops_patch, medianprops=medianprops_line,
+        whiskerprops=whiskerprops_line, capprops=capprops_line, showfliers=False,
+    )
+    for patch, fc in zip(bp['boxes'], ['tab:blue', 'k']):
+        patch.set_facecolor(fc); patch.set_alpha(0.5)
+    # jitter
+    rng = np.random.default_rng(42)
+    for i, arr in enumerate(data, start=1):
+        if arr.size:
+            x = i + (rng.random(arr.size) - 0.5) * 0.18
+            ax2.scatter(x, arr, s=8, color='0.6', alpha=0.6, linewidths=0)
+    ax2.set_xticks([1, 2]); ax2.set_xticklabels(['CTZ', 'VEH'])
+    ax2.set_ylabel('Normalized post-phase max')
+    fig.tight_layout()
+    fig.savefig(fig_base.with_suffix('.svg'))
+    fig.savefig(fig_base.with_suffix('.pdf'))
+    plt.close(fig)
+
+
 def _save_boxplot(fig_base: Path, ctz: np.ndarray, veh: np.ndarray, window_info: Optional[dict] = None, rule_text: Optional[str] = None) -> None:
     fig = plt.figure(figsize=(5, 5), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
@@ -420,6 +554,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     fig_base = save_dir / (grp_path.stem + '__postmax_boxplot')
     rule = 'post window: early_end + 0.100 s + 1 bin' if args.post_start is None else f'post window: start={args.post_start:.3f}s'
     _save_boxplot(fig_base, ctz, veh, window_info=winfo, rule_text=rule)
+    # Also save a composite figure (means overlay + the same box plot)
+    _save_composite(save_dir / (grp_path.stem + '__postmax_composite'), Z, args, window_info=winfo, rule_text=rule)
     # Export stats CSV (overall + per-pair with FDR)
     csv_path = save_dir / (grp_path.stem + '__postmax_stats.csv')
     _export_stats(csv_path, ctz, veh, pair_stats=pair_rows)
