@@ -319,11 +319,16 @@ def main() -> int:
                 tifffile.imwrite(norm_path, norm_arr)
             except Exception as ex:
                 print(f"[warn] Failed to write normalized channel {ch} for {r}: {ex}")
-        # Pseudocolor RGB 8-bit per channel (Blues/Greens/Reds)
+        # Pseudocolor RGB 8-bit per channel (match invivo merge style: pure R/G/B channel fill)
         for ch in channels:
-            cmap = mplcm.get_cmap(cmaps[ch])
-            rgba = cmap(np.clip(disp[r][ch], 0.0, 1.0))  # HxWx4 floats 0..1
-            rgb8 = (rgba[..., :3] * 255.0 + 0.5).astype(np.uint8)
+            v8 = (np.clip(disp[r][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+            z = np.zeros_like(v8, dtype=np.uint8)
+            if ch == 'tdTom':
+                rgb8 = np.stack([v8, z, z], axis=-1)  # red
+            elif ch == 'EYFP':
+                rgb8 = np.stack([z, v8, z], axis=-1)  # green
+            else:  # 'DAPI'
+                rgb8 = np.stack([z, z, v8], axis=-1)  # blue
             pseudo_path = channels_pseudo_dir / f"{r.replace('/', '_')}_{ch}_pseudo.tif"
             try:
                 tifffile.imwrite(pseudo_path, rgb8)
