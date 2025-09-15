@@ -194,8 +194,12 @@ def compute_global_percentiles(imgs: List[np.ndarray], low: float, high: float) 
 
 def _argparse() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Plot condition × channels grid with RGB overlay")
-    p.add_argument('--condition', action='append', default=[], help='NAME=DIR per condition (repeat)')
-    p.add_argument('--ids', nargs='*', default=[], help='Candidate IDs to search for (first match wins)')
+    p.add_argument('--condition', action='append', default=[
+        'Luciferin+NMDA=/Users/ecrespo/Desktop/lmc_invivo_images_el222/data-Manny-1/LMC4f coded raw images/Coded Images/lmc4_invivo_fiji_outputinages/ctz_nmda',
+        'Luciferin=/Users/ecrespo/Desktop/lmc_invivo_images_el222/data-Manny-1/LMC4f coded raw images/Coded Images/lmc4_invivo_fiji_outputinages/ctz_only',
+        'NMDA=/Users/ecrespo/Desktop/lmc_invivo_images_el222/data-Manny-1/LMC4f coded raw images/Coded Images/lmc4_invivo_fiji_outputinages/no_ctz_veh_nmda',
+    ], help='NAME=DIR per condition (repeat)')
+    p.add_argument('--ids', nargs='*', default=['1961','1971','19121'], help='Candidate IDs to search for (first match wins)')
     p.add_argument('--id-map', action='append', default=[], help='NAME:ID — force ID per condition (repeat)')
     p.add_argument('--low', type=float, default=1.0, help='Lower percentile for display (default 1)')
     p.add_argument('--high', type=float, default=99.0, help='Upper percentile for display (default 99)')
