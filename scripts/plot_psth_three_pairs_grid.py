@@ -53,6 +53,17 @@ python -m scripts.plot_psth_three_pairs_grid \
 
 No arguments: autodiscovers latest group NPZ under CONFIG.output_root and
 selects first matches for plates 2,4,5.
+
+Troubleshooting
+---------------
+- MUA percent-change: no valid channels
+  - This scatter needs a valid early VEH baseline and late windows for each channel.
+  - Common causes and fixes:
+    1) Raw arrays missing while using `--mua-source raw` → either regenerate the pooled NPZ (PSTH Explorer → Group) so it includes `ctz_raw_all`/`veh_raw_all`, or use `--mua-source norm` (falls back to pre‑renorm smoothed arrays).
+    2) Early window falls outside the plotted range → include early in `--x-min/--x-max` (e.g., `--x-min -0.2` ensures early ≥0 is visible).
+    3) Late window falls outside the plotted range → adjust `--late-gap/--late-dur` or widen `--x-max` so [late_start, late_end] has points.
+    4) Baseline ≤ 0 after smoothing → increase smoothing (e.g., `--smooth-gauss-fwhm-ms 40`) or use `--mua-early-stat median` to stabilize.
+  - The script prints exact output file paths. If the scatter is skipped, the console shows this message.
 """
 
 import argparse
@@ -873,7 +884,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 w.writeheader(); w.writerows(recs)
             print(f"MUA scatter data saved: {csv_path}")
         else:
-            print('MUA percent-change: no valid channels (check early/late windows and x-range).')
+            # NOTE for future self (why this can happen):
+            # - Raw arrays are not present in the pooled NPZ and `--mua-source raw` was requested.
+            #   In this case we intentionally do NOT fall back silently; switch to `--mua-source norm`
+            #   or regenerate the pooled NPZ so it contains ctz_raw_all/veh_raw_all.
+            # - Early window is outside the current x-range, so baseline has no samples.
+            #   Fix by ensuring `--x-min/--x-max` include the early span.
+            # - Late window is outside the current x-range (or has zero width), so there are no late samples.
+            #   Adjust `--late-gap/--late-dur` and/or `--x-max`.
+            # - After smoothing, baseline VEH is ≤ 0, which makes percent change undefined.
+            #   Try stronger smoothing (e.g., `--smooth-gauss-fwhm-ms 40`) or `--mua-early-stat median`.
+            print('MUA percent-change: no valid channels. Check raw availability, early/late windows, x-range, and baseline > 0. See Troubleshooting in module docstring.')
 
     return 0
 
