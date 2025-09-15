@@ -237,6 +237,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--ctz-min', type=float, default=1.5, help='Minimum CTZ late metric to qualify (default 1.5)')
     ap.add_argument('--veh-max', type=float, default=1.1, help='Maximum VEH late metric to qualify (default 1.1)')
     ap.add_argument('--top-k', type=int, default=6, help='Number of example channels to draw (default 6)')
+    # Optional: MUA percent-change scatter (y = 100*(CTZ_late-VEH_late)/VEH_early, x = VEH_early)
+    ap.add_argument('--save-mua-scatter', action='store_true', help='Also save MUA percent-change vs VEH baseline scatter + CSV from plotted (smoothed, clipped) data (pre-renorm)')
+    ap.add_argument('--mua-early-stat', type=str, choices=['mean','median'], default='mean', help='Early statistic for VEH baseline (default: mean)')
+    ap.add_argument('--mua-late-metric', type=str, choices=['mean','max'], default='mean', help='Late metric (mean or max) for percent-change (default: mean)')
     args = ap.parse_args(argv)
 
     group_npz = args.group_npz or _find_latest_group_npz()
@@ -335,6 +339,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             ldur = float(args.late_dur) if (args.late_dur is not None and args.late_dur > 0) else max(0.0, x1 - l0)
             late_veh = (l0, ldur)
 
+        # Preserve pre-renormalization (smoothed, clipped) copies for MUA scatter
+        Yv_pre = Yv_clip.copy()
+        Yc_pre = Yc_clip.copy()
+
         # Optional re-normalization to early window on the smoothed, clipped data
         if not getattr(args, 'no-renorm', False):
             def _renorm_side(Y: np.ndarray, start: Optional[float]) -> np.ndarray:
@@ -374,6 +382,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             't': t_clip,
             'Yv': Yv_clip,
             'Yc': Yc_clip,
+            'Yv_nr': Yv_pre,
+            'Yc_nr': Yc_pre,
             'early_veh': (s_veh, dur) if s_veh is not None else None,
             'early_ctz': (s_ctz, dur) if s_ctz is not None else None,
             'late_veh': late_veh,
@@ -725,6 +735,82 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"Enhanced examples ({k} rows) saved: {ex_base.with_suffix('.svg')} and {ex_base.with_suffix('.pdf')}")
                 else:
                     print('Enhanced: no channels met criteria after thresholds; try relaxing --ctz-min or increasing --veh-max.')
+
+    # Optional: MUA percent-change scatter (pre-renorm, smoothed)
+    if getattr(args, 'save_mua_scatter', False):
+        from pathlib import Path as _Path
+        recs = []  # rows of dicts for CSV
+        x_baseline = []
+        y_pct = []
+        for r, row in enumerate(rows):
+            t_r = np.asarray(row['t'], dtype=float)
+            if row.get('Yv_nr') is None or row.get('Yc_nr') is None:
+                continue
+            Yv_nr = np.asarray(row['Yv_nr'], dtype=float)
+            Yc_nr = np.asarray(row['Yc_nr'], dtype=float)
+            e = row.get('early_veh')
+            l_v = row.get('late_veh'); l_c = row.get('late_ctz')
+            if e is None or l_v is None or l_c is None:
+                continue
+            e0, edur = e
+            m_e = (t_r >= e0) & (t_r <= e0 + edur)
+            if not np.any(m_e):
+                continue
+            # Baseline VEH per channel
+            if str(args.mua_early_stat) == 'median':
+                b = np.nanmedian(Yv_nr[:, m_e], axis=1)
+            else:
+                b = np.nanmean(Yv_nr[:, m_e], axis=1)
+            # Late metrics
+            def _late_val(Y: np.ndarray, lwin: Tuple[float, float]) -> np.ndarray:
+                l0, ldur = lwin
+                l1 = min(x1, l0 + (ldur if (ldur is not None and ldur > 0) else max(0.0, x1 - l0)))
+                m = (t_r >= l0) & (t_r <= l1)
+                if not np.any(m):
+                    return np.full(Y.shape[0], np.nan)
+                if str(args.mua_late_metric) == 'max':
+                    return np.nanmax(Y[:, m], axis=1)
+                else:
+                    return np.nanmean(Y[:, m], axis=1)
+            v_late = _late_val(Yv_nr, l_v)
+            c_late = _late_val(Yc_nr, l_c)
+            # Percent change relative to VEH baseline
+            with np.errstate(divide='ignore', invalid='ignore'):
+                pc = (c_late - v_late) / b * 100.0
+            ok = np.isfinite(pc) & np.isfinite(b) & (b > 0)
+            if np.any(ok):
+                for ch in np.where(ok)[0]:
+                    recs.append({
+                        'pair': row['pid'], 'row': r, 'ch': int(ch),
+                        'veh_baseline': float(b[ch]), 'veh_late': float(v_late[ch]), 'ctz_late': float(c_late[ch]),
+                        'pct_change': float(pc[ch]),
+                    })
+                x_baseline.extend(b[ok].tolist())
+                y_pct.extend(pc[ok].tolist())
+
+        if x_baseline and y_pct:
+            # Scatter
+            fig5 = plt.figure(figsize=(6, 5), dpi=150)
+            ax5 = fig5.add_subplot(1, 1, 1)
+            ax5.scatter(np.asarray(x_baseline, dtype=float), np.asarray(y_pct, dtype=float), s=12, color='tab:purple', alpha=0.7)
+            ax5.axhline(0.0, color='0.5', ls='--', lw=0.8)
+            ax5.set_xlabel('VEH baseline (early, pre-renorm)')
+            ax5.set_ylabel('Percent change in MUA (CTZ−VEH)/VEH_baseline × 100')
+            fig5.tight_layout()
+            mua_base = _Path(str(base.with_suffix('')) + f"__mua_pct_vs_veh_baseline__late-{str(args.mua_late_metric)}__early-{str(args.mua_early_stat)}")
+            fig5.savefig(mua_base.with_suffix('.svg'))
+            fig5.savefig(mua_base.with_suffix('.pdf'))
+            plt.close(fig5)
+            print(f"MUA percent-change scatter saved: {mua_base.with_suffix('.svg')} and {mua_base.with_suffix('.pdf')}")
+            # CSV
+            import csv as _csv
+            csv_path = _Path(str(base.with_suffix('')) + '__mua_pct_vs_veh_baseline.csv')
+            with csv_path.open('w', newline='') as f:
+                w = _csv.DictWriter(f, fieldnames=['pair','row','ch','veh_baseline','veh_late','ctz_late','pct_change'])
+                w.writeheader(); w.writerows(recs)
+            print(f"MUA scatter data saved: {csv_path}")
+        else:
+            print('MUA percent-change: no valid channels (check early/late windows and x-range).')
 
     return 0
 
