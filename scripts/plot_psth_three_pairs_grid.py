@@ -242,7 +242,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
     ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
     ap.add_argument('--save-persistence-boxplot', action='store_true', help='Also save CTZ/VEH boxplot of percent persistence: 100×(late/early) per channel (uses --mua-early-stat and --mua-late-metric)')
-    ap.add_argument('--save-percent-boxplot', action='store_true', help='Also save CTZ/VEH boxplot of late-phase percent change vs early (uses --mua-early-stat and --mua-late-metric)')
     ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
     ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic for early baseline (default: npz = use per-pair stat or global if present)')
     ap.add_argument('--percent-renorm', action='store_true', help='Renormalize to percent change relative to early baseline (per channel): 100*(y - baseline)/baseline; early ≈ 0%%')
