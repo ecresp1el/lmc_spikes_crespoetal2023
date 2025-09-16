@@ -9,7 +9,9 @@ Overview
 This headless script reproduces group‑level comparisons directly from pooled NPZ
 files saved by the Tk PSTH GUI. It computes:
 - Early‑phase firing rate (Hz) per channel using the exact early window you set
-  in the GUI.
+  in the GUI, sourced by default from unbinned spike timestamps in the exported
+  HDF5 (for non‑quantized rates). If HDF5 cannot be found, it falls back to
+  binned counts in the pooled NPZ.
 - Late‑phase firing rate (Hz) per channel using a consistent post‑phase rule or
   an explicit window you provide.
 - Per‑channel decay time constant tau (seconds) after the early burst by fitting
@@ -82,6 +84,8 @@ Assumptions and handling details
   stability; raw counts are always used to compute FR (no spike re‑detection).
 - Visualization caps (y‑axis) never alter CSV values; they only improve plot
   readability.
+ - Early FR: computed from raw timestamps by default (HDF5) as count/early_dur;
+   falls back to NPZ counts/bin mean ÷ bin_s only if HDF5 is unavailable.
 - Naming in plots: treated side is labeled “Luciferin (CTZ)” and control is
   labeled “Vehicle”.
 
@@ -144,6 +148,8 @@ class Args:
     # Plot overlay controls
     early_swarm: bool
     swarm_size: int
+    # Early FR source control
+    early_from_raw: bool
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
@@ -175,6 +181,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     # Overlay for early FR points
     p.add_argument('--early-swarm', action='store_true', help='Use a swarm overlay (if seaborn available) for early FR boxplot')
     p.add_argument('--swarm-size', type=int, default=4, help='Point size for swarm/jitter overlays (default 4)')
+    p.add_argument('--early-from-raw', action='store_true', default=True, help='Compute early FR from unbinned spike timestamps in HDF5 (default True). If HDF5 not found, falls back to binned counts.')
     a = p.parse_args(argv)
     return Args(
         group_npz=a.group_npz,
@@ -200,6 +207,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
         tau_agg=str(a.tau_agg),
         early_swarm=bool(a.early_swarm),
         swarm_size=int(a.swarm_size),
+        early_from_raw=bool(a.early_from_raw),
     )
 
 
@@ -231,6 +239,10 @@ def _spike_dir(output_root: Path, cli_dir: Optional[Path]) -> Path:
     if cli_dir is not None:
         return cli_dir
     return output_root / 'exports' / 'spikes_waveforms' / 'analysis' / 'spike_matrices'
+
+
+def _exports_root(output_root: Path) -> Path:
+    return output_root / 'exports' / 'spikes_waveforms'
 
 
 def _discover_latest_group_npz(plots_dir: Path) -> Optional[Path]:
@@ -368,6 +380,102 @@ def _collect_early_fr(Z: dict, use_median: bool) -> Tuple[np.ndarray, np.ndarray
             'U': float(U), 'p': float(p),
         })
 
+    return np.asarray(pooled_ctz, dtype=float), np.asarray(pooled_veh, dtype=float), per_pair_rows
+
+
+def _find_pair_h5(exports_root: Path, pair_id: str) -> Optional[Path]:
+    """Recursively locate the exports HDF5 for a given pair_id (stem match)."""
+    try:
+        cands = list(exports_root.rglob(f'{pair_id}.h5'))
+        if not cands:
+            return None
+        # Prefer the most recently modified (in case of duplicates)
+        cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return cands[0]
+    except Exception:
+        return None
+
+
+def _chem_time_for_side_h5(f, side: str) -> float:
+    """Chem time (seconds) for side in the pair H5 (mirrors build_spike_matrix logic)."""
+    import json as _json
+    if side in f:
+        try:
+            ab = f[side].attrs.get('analysis_bounds')
+            abj = _json.loads(ab) if isinstance(ab, (bytes, bytearray, str)) else {}
+            return float(abj.get('t0', 0.0))
+        except Exception:
+            pass
+    key = 'chem_ctz_s' if side == 'CTZ' else 'chem_veh_s'
+    try:
+        v = f.attrs.get(key, None)
+        return float(v) if v is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _collect_early_fr_from_raw(Z: dict, output_root: Path) -> Tuple[np.ndarray, np.ndarray, list[dict]]:
+    """Compute early FR (Hz) from unbinned spike timestamps in the exports HDF5s.
+
+    For each pair and side:
+      - Find `<exports_root>/**/<pair_id>.h5`
+      - Get chem time for side
+      - Count spikes per channel in [chem + start, chem + start + dur]
+      - FR = count / dur (Hz)
+    """
+    import h5py  # type: ignore
+    t = np.asarray(Z.get('t'), dtype=float)
+    starts_ctz = np.asarray(Z.get('starts_ctz', []), dtype=float)
+    starts_veh = np.asarray(Z.get('starts_veh', []), dtype=float)
+    early_dur = float(Z.get('early_dur', 0.05))
+    early_dur_per_pair = np.asarray(Z.get('early_dur_per_pair', []), dtype=float)
+    pairs = Z.get('pairs', [])
+    if not pairs:
+        return np.array([]), np.array([]), []
+    exports_root = _exports_root(output_root)
+    pooled_ctz: list[float] = []
+    pooled_veh: list[float] = []
+    per_pair_rows: list[dict] = []
+    for i, pid in enumerate(pairs):
+        pid = str(pid)
+        h5 = _find_pair_h5(exports_root, pid)
+        n_ctz = 0
+        n_veh = 0
+        if h5 is None or not h5.exists():
+            per_pair_rows.append({'pair_id': pid, 'n_ctz': 0, 'n_veh': 0, 'note': 'h5 not found'})
+            continue
+        ed_i = float(early_dur_per_pair[i]) if early_dur_per_pair.size > i and np.isfinite(early_dur_per_pair[i]) else early_dur
+        with h5py.File(h5.as_posix(), 'r') as f:
+            for side, starts, out_list, side_key in (
+                ('CTZ', starts_ctz, pooled_ctz, 'n_ctz'),
+                ('VEH', starts_veh, pooled_veh, 'n_veh'),
+            ):
+                grp = f.get(side, None)
+                if grp is None:
+                    continue
+                chem = _chem_time_for_side_h5(f, side)
+                s_rel = float(starts[i]) if i < starts.size else 0.0
+                s_abs = chem + s_rel
+                e_abs = s_abs + ed_i
+                # iterate per-channel timestamp datasets
+                for k in grp.keys():
+                    if not (k.startswith('ch') and k.endswith('_timestamps')):
+                        continue
+                    try:
+                        st = np.asarray(grp[k][:], dtype=float)
+                    except Exception:
+                        continue
+                    if st.size == 0:
+                        continue
+                    c = int(np.count_nonzero((st >= s_abs) & (st <= e_abs)))
+                    fr = float(c) / float(max(ed_i, 1e-12))
+                    if np.isfinite(fr):
+                        out_list.append(fr)
+                        if side_key == 'n_ctz':
+                            n_ctz += 1
+                        else:
+                            n_veh += 1
+        per_pair_rows.append({'pair_id': pid, 'n_ctz': n_ctz, 'n_veh': n_veh})
     return np.asarray(pooled_ctz, dtype=float), np.asarray(pooled_veh, dtype=float), per_pair_rows
 
 
@@ -867,8 +975,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         pass
     save_dir = grp_path.parent
 
-    # Early-phase FR (uses GUI metadata: starts_ctz/starts_veh + early_dur)
-    ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=args.use_median)
+    # Early-phase FR — Prefer unbinned timestamps from HDF5 for non-quantized rates
+    if args.early_from_raw:
+        try:
+            ctz_hz, veh_hz, pair_rows = _collect_early_fr_from_raw(Z, _infer_output_root(args.output_root))
+        except Exception as e:
+            print('[earlyfr] Raw early FR failed, falling back to binned counts:', e)
+            ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=False)
+    else:
+        ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=False)
     if ctz_hz.size and veh_hz.size:
         fig_base = save_dir / (grp_path.stem + '__earlyfr_boxplot')
         # Build note with per-pair channel counts
