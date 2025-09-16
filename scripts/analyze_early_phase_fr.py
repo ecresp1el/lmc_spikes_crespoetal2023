@@ -101,6 +101,9 @@ class Args:
     # Tau plotting controls
     tau_plot_ymax: Optional[float]
     tau_plot_pctl: float
+    tau_units: str
+    tau_plot_scale: str
+    tau_agg: str
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
@@ -126,6 +129,9 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     # Tau plotting
     p.add_argument('--tau-plot-ymax', type=float, default=None, help='Cap tau boxplot y-axis at this value (seconds)')
     p.add_argument('--tau-plot-pctl', type=float, default=99.0, help='If no --tau-plot-ymax, cap using this percentile (default 99)')
+    p.add_argument('--tau-units', type=str, choices=['s', 'ms'], default='s', help='Units to plot/report tau (s or ms). CSV stays in seconds.')
+    p.add_argument('--tau-plot-scale', type=str, choices=['linear', 'log'], default='linear', help='Tau plot y-axis scale')
+    p.add_argument('--tau-agg', type=str, choices=['channel', 'pair-median'], default='channel', help='Aggregate tau by channel (default) or per-pair median')
     a = p.parse_args(argv)
     return Args(
         group_npz=a.group_npz,
@@ -146,6 +152,9 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
         grid_x_max=float(a.grid_x_max),
         tau_plot_ymax=(float(a.tau_plot_ymax) if a.tau_plot_ymax is not None else None),
         tau_plot_pctl=float(a.tau_plot_pctl),
+        tau_units=str(a.tau_units),
+        tau_plot_scale=str(a.tau_plot_scale),
+        tau_agg=str(a.tau_agg),
     )
 
 
@@ -404,7 +413,7 @@ def _smooth_ma1d(y: np.ndarray, k: int) -> np.ndarray:
     return np.convolve(y.astype(float), K, mode='same')
 
 
-def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict]]:
+def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict], list[np.ndarray], list[np.ndarray]]:
     """Estimate post-early decay time constant (tau) per channel by fitting ln(FR - baseline).
 
     Steps per pair/side/channel:
@@ -435,6 +444,8 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
 
     pooled_tau_ctz: list[float] = []
     pooled_tau_veh: list[float] = []
+    per_pair_taus_ctz: list[np.ndarray] = []
+    per_pair_taus_veh: list[np.ndarray] = []
     per_pair_rows: list[dict] = []
 
     for i in range(P):
@@ -445,9 +456,13 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
         e1_c = e0_c + ed_i
         e1_v = e0_v + ed_i
 
-        for side, arr_all, e0, e1, pooled in (
-            ('CTZ', ctz_counts_all, e0_c, e1_c, pooled_tau_ctz),
-            ('VEH', veh_counts_all, e0_v, e1_v, pooled_tau_veh),
+        # Accumulate per-pair tau lists for both sides
+        tau_list_ctz: list[float] = []
+        tau_list_veh: list[float] = []
+
+        for side, arr_all, e0, e1, pooled, tau_list in (
+            ('CTZ', ctz_counts_all, e0_c, e1_c, pooled_tau_ctz, tau_list_ctz),
+            ('VEH', veh_counts_all, e0_v, e1_v, pooled_tau_veh, tau_list_veh),
         ):
             try:
                 A = np.asarray(arr_all[i], dtype=float)  # (C,T)
@@ -494,14 +509,24 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                         if ok and args.tau_max_s is not None:
                             ok = tau <= float(args.tau_max_s)
                         if ok:
-                            pooled.append(float(tau))
+                            tau_f = float(tau)
+                            pooled.append(tau_f)
+                            tau_list.append(tau_f)
                 except Exception:
                     continue
 
         pid = str(Z.get('pairs', [i])[i]) if len(Z.get('pairs', [])) > i else str(i)
         per_pair_rows.append({'pair_id': pid})
+        per_pair_taus_ctz.append(np.asarray(tau_list_ctz, dtype=float))
+        per_pair_taus_veh.append(np.asarray(tau_list_veh, dtype=float))
 
-    return np.asarray(pooled_tau_ctz, dtype=float), np.asarray(pooled_tau_veh, dtype=float), per_pair_rows
+    return (
+        np.asarray(pooled_tau_ctz, dtype=float),
+        np.asarray(pooled_tau_veh, dtype=float),
+        per_pair_rows,
+        per_pair_taus_ctz,
+        per_pair_taus_veh,
+    )
 
 
 def _fdr_bh(pvals: np.ndarray, alpha: float = 0.05) -> Tuple[np.ndarray, np.ndarray]:
@@ -519,7 +544,7 @@ def _fdr_bh(pvals: np.ndarray, alpha: float = 0.05) -> Tuple[np.ndarray, np.ndar
     return reject, q_full
 
 
-def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None) -> None:
+def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None, yscale: str = 'linear') -> None:
     fig = plt.figure(figsize=(5, 5), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
     data = [arr_ctz, arr_veh]
@@ -548,13 +573,18 @@ def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylab
     ax.set_ylabel(ylabel)
     if title:
         ax.set_title(title)
-    # Optional axis limits
+    # Optional axis limits and scale
     if ymin is not None or ymax is not None:
         yl = ax.get_ylim()
         lo = float(ymin) if ymin is not None else yl[0]
         hi = float(ymax) if ymax is not None else yl[1]
         if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
             ax.set_ylim(lo, hi)
+    try:
+        if yscale in ('log', 'linear'):
+            ax.set_yscale(yscale)
+    except Exception:
+        pass
     fig.tight_layout()
     fig.savefig(fig_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
     fig.savefig(fig_base.with_suffix('.pdf'), bbox_inches='tight')
@@ -784,7 +814,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     # Tau estimation (seconds) via ln(FR - baseline) decay fit
     try:
-        tau_c, tau_v, tau_rows = _collect_tau(Z, args)
+        tau_c, tau_v, tau_rows, tau_pairs_c, tau_pairs_v = _collect_tau(Z, args)
         if tau_c.size and tau_v.size:
             t_base = save_dir / (grp_path.stem + '__tau_boxplot')
             # Robust y-limit to avoid autoscale being dominated by outliers
@@ -794,7 +824,22 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 if combined.size:
                     pctl = max(0.0, min(100.0, args.tau_plot_pctl))
                     ycap = float(np.nanpercentile(combined, pctl)) * 1.05
-            _save_boxplot(t_base, tau_c, tau_v, ylabel='Tau (s)', title='Decay time constant (tau)', ymin=0.0, ymax=ycap)
+            # Aggregation level and units
+            if args.tau_agg == 'pair-median':
+                vals_c = np.array([np.nanmedian(x) for x in tau_pairs_c if np.asarray(x).size], dtype=float)
+                vals_v = np.array([np.nanmedian(x) for x in tau_pairs_v if np.asarray(x).size], dtype=float)
+            else:
+                vals_c = tau_c
+                vals_v = tau_v
+            ylab = 'Tau (s)'
+            scale_factor = 1.0
+            if args.tau_units == 'ms':
+                ylab = 'Tau (ms)'
+                scale_factor = 1000.0
+            vals_c_plot = vals_c * scale_factor
+            vals_v_plot = vals_v * scale_factor
+            ycap_plot = (ycap * scale_factor) if (ycap is not None) else None
+            _save_boxplot(t_base, vals_c_plot, vals_v_plot, ylabel=ylab, title='Decay time constant (tau)', ymin=0.0, ymax=ycap_plot, yscale=args.tau_plot_scale)
             t_csv = save_dir / (grp_path.stem + '__tau_stats.csv')
             _export_stats(t_csv, tau_c, tau_v, pair_stats=tau_rows)
             print('[tau] Wrote figure:', t_base.with_suffix('.svg'))
