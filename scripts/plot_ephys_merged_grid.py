@@ -37,6 +37,8 @@ from matplotlib import cm as mplcm
 from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib.ticker import FuncFormatter
 from matplotlib import patches
+from matplotlib.widgets import RectangleSelector
+import json
 import tifffile
 
 
@@ -182,6 +184,11 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--scalebar-color', type=str, default='white', help='Scalebar and label color')
     p.add_argument('--out', type=Path, default=Path('LMC4f_ephys_merged_grid'), help='Output base name')
     p.add_argument('--out-root', type=Path, default=None, help='Root output directory for all exports. Default: <base-dir>/<out>')
+    # ROI options
+    p.add_argument('--roi', type=str, default=None, help='Rectangular ROI as x,y,w,h in pixels (applied to all images)')
+    p.add_argument('--roi-interactive', action='store_true', help='Pick ROI interactively on a reference image before processing')
+    p.add_argument('--roi-ref-root', type=str, default=None, help='Root name to use for interactive ROI (default: first available)')
+    p.add_argument('--roi-json', type=Path, default=None, help='Path to load/save ROI JSON {"x":int,"y":int,"w":int,"h":int}')
     return p.parse_args()
 
 
@@ -232,6 +239,77 @@ def main() -> int:
         shp = dapi.shape
         base_shape[root] = shp
         print(f"  {root}: shape={shp}  px_size_um={px_um_map[root]}")
+
+    # Determine ROI
+    roi = None  # (x,y,w,h)
+    # Load from JSON if provided and exists
+    if args.roi_json and args.roi_json.exists():
+        try:
+            data = json.loads(args.roi_json.read_text())
+            roi = (int(data['x']), int(data['y']), int(data['w']), int(data['h']))
+            print(f"[roi] Loaded ROI from {args.roi_json}: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}")
+        except Exception as ex:
+            print(f"[warn] Failed to load ROI from {args.roi_json}: {ex}")
+    # Parse from --roi
+    if roi is None and args.roi:
+        try:
+            parts = args.roi.replace(',', ' ').split()
+            x, y, w, h = [int(float(v)) for v in parts[:4]]
+            roi = (x, y, w, h)
+            print(f"[roi] Using ROI from --roi: x={x} y={y} w={w} h={h}")
+        except Exception as ex:
+            print(f"[warn] Failed to parse --roi '{args.roi}': {ex}")
+    # Interactive selection
+    if roi is None and args.roi_interactive:
+        ref = args.roi_ref_root or (next(iter(files.keys())) if files else None)
+        if ref is None or ref not in raw:
+            print("[warn] Cannot run interactive ROI — reference root not found. Skipping.")
+        else:
+            def norm01(a: np.ndarray) -> np.ndarray:
+                lo = np.percentile(a, float(args.low)); hi = np.percentile(a, float(args.high))
+                return np.clip((a.astype(float) - lo) / (hi - lo + 1e-12), 0, 1)
+            ov = np.stack([norm01(raw[ref]['tdTom']), norm01(raw[ref]['EYFP']), norm01(raw[ref]['DAPI'])], axis=-1)
+            sel = {'roi': None}
+            def onselect(eclick, erelease):
+                x0, y0 = eclick.xdata, eclick.ydata
+                x1, y1 = erelease.xdata, erelease.ydata
+                if None in (x0, y0, x1, y1):
+                    return
+                x_min, x_max = sorted([x0, x1]); y_min, y_max = sorted([y0, y1])
+                sel['roi'] = (int(round(x_min)), int(round(y_min)), int(round(x_max - x_min)), int(round(y_max - y_min)))
+            fig_roi, ax_roi = plt.subplots(1, 1, figsize=(6, 6))
+            ax_roi.imshow(ov); ax_roi.set_title(f"Select ROI on {ref}; close window to confirm", fontsize=10); ax_roi.axis('off')
+            RectangleSelector(ax_roi, onselect, drawtype='box', useblit=True, button=[1], minspanx=5, minspany=5, spancoords='pixels', interactive=True)
+            plt.show()
+            if sel['roi'] is None:
+                print('[warn] No ROI selected; proceeding without cropping')
+            else:
+                roi = sel['roi']
+                print(f"[roi] Selected ROI on {ref}: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}")
+                # Save ROI JSON
+                roi_json_path = args.roi_json or (out_root / 'roi.json')
+                try:
+                    roi_json_path.write_text(json.dumps({'x': roi[0], 'y': roi[1], 'w': roi[2], 'h': roi[3]}, indent=2))
+                    print(f"[roi] Saved ROI to {roi_json_path}")
+                except Exception as ex:
+                    print(f"[warn] Failed to save ROI JSON: {ex}")
+
+    # Apply ROI crop
+    if roi is not None:
+        x, y, w, h = roi
+        for r in list(raw.keys()):
+            for ch in list(raw[r].keys()):
+                arr = raw[r][ch]
+                H, W = arr.shape[:2]
+                x0 = max(0, min(W, x)); y0 = max(0, min(H, y))
+                x1 = max(x0, min(W, x0 + max(1, w)))
+                y1 = max(y0, min(H, y0 + max(1, h)))
+                raw[r][ch] = arr[y0:y1, x0:x1]
+        print(f"[roi] Applied ROI crop to all images: x={x} y={y} w={w} h={h}")
+
+    # Update base shape after potential cropping
+    for r in raw:
+        base_shape[r] = raw[r]['DAPI'].shape
 
     # Build display arrays 0..1 per chosen normalization
     roots = list(raw.keys())
