@@ -141,6 +141,9 @@ class Args:
     tau_units: str
     tau_plot_scale: str
     tau_agg: str
+    # Plot overlay controls
+    early_swarm: bool
+    swarm_size: int
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
@@ -169,6 +172,9 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--tau-units', type=str, choices=['s', 'ms'], default='s', help='Units to plot/report tau (s or ms). CSV stays in seconds.')
     p.add_argument('--tau-plot-scale', type=str, choices=['linear', 'log'], default='linear', help='Tau plot y-axis scale')
     p.add_argument('--tau-agg', type=str, choices=['channel', 'pair-median'], default='channel', help='Aggregate tau by channel (default) or per-pair median')
+    # Overlay for early FR points
+    p.add_argument('--early-swarm', action='store_true', help='Use a swarm overlay (if seaborn available) for early FR boxplot')
+    p.add_argument('--swarm-size', type=int, default=4, help='Point size for swarm/jitter overlays (default 4)')
     a = p.parse_args(argv)
     return Args(
         group_npz=a.group_npz,
@@ -192,6 +198,8 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
         tau_units=str(a.tau_units),
         tau_plot_scale=str(a.tau_plot_scale),
         tau_agg=str(a.tau_agg),
+        early_swarm=bool(a.early_swarm),
+        swarm_size=int(a.swarm_size),
     )
 
 
@@ -586,7 +594,7 @@ def _fdr_bh(pvals: np.ndarray, alpha: float = 0.05) -> Tuple[np.ndarray, np.ndar
     return reject, q_full
 
 
-def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None, yscale: str = 'linear', note: Optional[str] = None) -> None:
+def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None, yscale: str = 'linear', note: Optional[str] = None, overlay: str = 'jitter', swarm_size: int = 4) -> None:
     fig = plt.figure(figsize=(5, 5), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
     data = [arr_ctz, arr_veh]
@@ -602,14 +610,25 @@ def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylab
     for patch, fc in zip(bp['boxes'], ['tab:blue', 'k']):
         patch.set_facecolor(fc)
         patch.set_alpha(0.5)
-    # Jittered points
-    rng = np.random.default_rng(42)
-    for i, arr in enumerate(data, start=1):
-        arr = np.asarray(arr, dtype=float)
-        arr = arr[np.isfinite(arr)]
-        if arr.size:
-            x = i + (rng.random(arr.size) - 0.5) * 0.18
-            ax.scatter(x, arr, s=8, color='0.6', alpha=0.6, linewidths=0)
+    # Overlay points: swarm (if requested and seaborn available) or jitter fallback
+    if overlay == 'swarm':
+        try:
+            import seaborn as sns  # type: ignore
+            # Build categorical vectors for two groups
+            cats = (['Luciferin (CTZ)'] * int(np.isfinite(np.asarray(arr_ctz)).sum())) + (['Vehicle'] * int(np.isfinite(np.asarray(arr_veh)).sum()))
+            vals = np.concatenate([np.asarray(arr_ctz, dtype=float)[np.isfinite(np.asarray(arr_ctz, dtype=float))],
+                                   np.asarray(arr_veh, dtype=float)[np.isfinite(np.asarray(arr_veh, dtype=float))]])
+            sns.swarmplot(x=cats, y=vals, ax=ax, size=int(swarm_size), color='0.35', alpha=0.7, zorder=3)
+        except Exception:
+            overlay = 'jitter'
+    if overlay != 'swarm':
+        rng = np.random.default_rng(42)
+        for i, arr in enumerate(data, start=1):
+            arr = np.asarray(arr, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                x = i + (rng.random(arr.size) - 0.5) * 0.18
+                ax.scatter(x, arr, s=int(max(1, swarm_size)), color='0.6', alpha=0.6, linewidths=0, zorder=3)
     ax.set_xticks([1, 2])
     ax.set_xticklabels(['Luciferin (CTZ)', 'Vehicle'])
     ax.set_ylabel(ylabel)
@@ -859,7 +878,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             note = f'Pairs={pairs_n} | Luc(CTZ) ch={total_ctz} | Vehicle ch={total_veh}'
         except Exception:
             note = None
-        _save_boxplot(fig_base, ctz_hz, veh_hz, ylabel='Early-phase firing rate (Hz)', title='Early-phase firing rate (Hz)', note=note)
+        _save_boxplot(
+            fig_base,
+            ctz_hz,
+            veh_hz,
+            ylabel='Early-phase firing rate (Hz)',
+            title='Early-phase firing rate (Hz)',
+            note=note,
+            overlay=('swarm' if args.early_swarm else 'jitter'),
+            swarm_size=args.swarm_size,
+        )
         try:
             _save_composite(save_dir / (grp_path.stem + '__earlyfr'), Z)
         except Exception:
