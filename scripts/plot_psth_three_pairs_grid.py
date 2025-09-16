@@ -228,8 +228,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--out', type=Path, default=None, help='Output path base (writes .svg and .pdf)')
     ap.add_argument('--x-min', type=float, default=-0.2, help='Left x-limit in seconds (default -0.2)')
     ap.add_argument('--x-max', type=float, default=1.0, help='Right x-limit in seconds (default 1.0)')
-    ap.add_argument('--scalebar', type=float, default=None, help='Vertical scale bar value (normalized units). If omitted, auto-chosen')
-    ap.add_argument('--scale-label', type=str, default='norm', help='Scale bar label text (default: norm)')
+    ap.add_argument('--scalebar', type=float, default=None, help='Vertical scale bar value (data units). If omitted, auto-chosen')
+    ap.add_argument('--scale-label', type=str, default=None, help='Scale bar label text (default: norm, or %% if --percent-renorm)')
     ap.add_argument('--smooth-bins', type=int, default=1, help='Boxcar smoothing width in bins (applied to all traces; default 1=none)')
     ap.add_argument('--smooth-gauss-ms', type=float, default=None, help='Gaussian smoothing sigma in milliseconds (overrides FWHM if set)')
     ap.add_argument('--smooth-gauss-fwhm-ms', type=float, default=25.0, help='Gaussian smoothing FWHM in milliseconds (default 25 ms)')
@@ -241,7 +241,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
     ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
     ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
-    ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic to renormalize with (default: npz = use per-pair stat or global if present)')
+    ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic for early baseline (default: npz = use per-pair stat or global if present)')
+    ap.add_argument('--percent-renorm', action='store_true', help='Renormalize to percent change relative to early baseline (per channel): 100*(y - baseline)/baseline; early ≈ 0%%')
     # Optional: find enhanced channels (CTZ late high, VEH late low) and append plots
     ap.add_argument('--find-enhanced', action='store_true', help='Identify channels with CTZ late enhancement but low VEH and append scatter + examples')
     ap.add_argument('--metric', type=str, choices=['max','mean'], default='max', help='Late-phase metric per channel for selection (default: max)')
@@ -259,6 +260,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if group_npz is None or not group_npz.exists():
         print('Group NPZ not found. Provide --group-npz or run PSTH Explorer Group to create one.')
         return 2
+    # Set default scale label dynamically if not provided
+    if args.scale_label is None:
+        args.scale_label = '%' if bool(getattr(args, 'percent_renorm', False)) else 'norm'
 
     Z = np.load(group_npz, allow_pickle=True)
     try:
@@ -374,12 +378,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # Optional re-normalization to early window on the smoothed, clipped data
         if not getattr(args, 'no-renorm', False):
-            def _renorm_side(Y: np.ndarray, start: Optional[float]) -> np.ndarray:
+            def _baseline_vec(Y: np.ndarray, start: Optional[float]) -> Optional[np.ndarray]:
                 if Y.size == 0 or start is None:
-                    return Y
+                    return None
                 m_e = (t_clip >= start) & (t_clip <= (start + dur))
                 if not np.any(m_e):
-                    return Y
+                    return None
                 if args.renorm_stat == 'median':
                     b = np.nanmedian(Y[:, m_e], axis=1)
                 elif args.renorm_stat == 'npz':
@@ -391,11 +395,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                         b = np.nanmean(Y[:, m_e], axis=1)
                 else:
                     b = np.nanmean(Y[:, m_e], axis=1)
+                b = np.asarray(b, dtype=float)
                 b[~np.isfinite(b)] = 1.0
                 b[b == 0.0] = 1.0
-                return Y / b[:, None]
-            Yv_clip = _renorm_side(Yv_clip, s_veh)
-            Yc_clip = _renorm_side(Yc_clip, s_ctz)
+                return b
+
+            def _apply_renorm(Y: np.ndarray, b: Optional[np.ndarray], percent: bool) -> np.ndarray:
+                if Y.size == 0 or b is None:
+                    return Y
+                if percent:
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        return (Y - b[:, None]) / b[:, None] * 100.0
+                else:
+                    return Y / b[:, None]
+
+            b_veh = _baseline_vec(Yv_clip, s_veh)
+            b_ctz = _baseline_vec(Yc_clip, s_ctz)
+            Yv_clip = _apply_renorm(Yv_clip, b_veh, bool(getattr(args, 'percent_renorm', False)))
+            Yc_clip = _apply_renorm(Yc_clip, b_ctz, bool(getattr(args, 'percent_renorm', False)))
 
         # Update global y-range after renormalization and smoothing
         if Yv_clip.size:
@@ -556,6 +573,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         base = args.out
     else:
         base = group_npz.parent / f"psth_three_pairs__{'-'.join(str(p) for p in args.plates)}"
+        # Avoid clobbering: if percent-renorm enabled, append suffix
+        if bool(getattr(args, 'percent_renorm', False)):
+            base = base.parent / (base.name + '__pct')
     base.parent.mkdir(parents=True, exist_ok=True)
     svg = base.with_suffix('.svg')
     pdf = base.with_suffix('.pdf')
