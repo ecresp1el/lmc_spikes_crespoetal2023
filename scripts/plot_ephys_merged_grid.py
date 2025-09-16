@@ -279,7 +279,17 @@ def main() -> int:
                 sel['roi'] = (int(round(x_min)), int(round(y_min)), int(round(x_max - x_min)), int(round(y_max - y_min)))
             fig_roi, ax_roi = plt.subplots(1, 1, figsize=(6, 6))
             ax_roi.imshow(ov); ax_roi.set_title(f"Select ROI on {ref}; close window to confirm", fontsize=10); ax_roi.axis('off')
-            RectangleSelector(ax_roi, onselect, drawtype='box', useblit=True, button=[1], minspanx=5, minspany=5, spancoords='pixels', interactive=True)
+            # Matplotlib API compatibility: avoid deprecated/removed args like 'drawtype'/'spancoords'
+            RectangleSelector(
+                ax_roi,
+                onselect,
+                useblit=True,
+                button=[1],
+                minspanx=5,
+                minspany=5,
+                interactive=True,
+                drag_from_anywhere=False,
+            )
             plt.show()
             if sel['roi'] is None:
                 print('[warn] No ROI selected; proceeding without cropping')
