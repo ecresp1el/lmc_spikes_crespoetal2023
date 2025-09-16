@@ -151,7 +151,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--group-npz', type=Path, default=None, help='Pooled NPZ (default: latest in plots dir)')
     p.add_argument('--output-root', type=Path, default=None, help='Override output root for auto-discovery')
     p.add_argument('--spike-dir', type=Path, default=None, help='Override spike matrices dir under output_root')
-    p.add_argument('--use-median', action='store_true', help='Use median across early bins (default: mean)')
+    p.add_argument('--use-median', action='store_true', help='[Deprecated for consistency] Early FR uses mean across bins to match late-phase')
     # Late-phase window controls (relative to chem=0)
     p.add_argument('--post-start', type=float, default=None, help='Late window start (s). Default: early_end + 0.100s + 1 bin')
     p.add_argument('--post-dur', type=float, default=None, help='Late window duration (s). Default: to end of trace')
@@ -336,11 +336,9 @@ def _collect_early_fr(Z: dict, use_median: bool) -> Tuple[np.ndarray, np.ndarray
                 continue
             if not np.any(mwin):
                 continue
-            # Summary across early bins per channel
-            if use_median:
-                per_ch = np.nanmedian(A[:, mwin], axis=1)
-            else:
-                per_ch = np.nanmean(A[:, mwin], axis=1)
+            # Summary across early bins per channel: use MEAN to match late-phase FR methodology
+            # (use_median is deprecated and ignored to keep consistency)
+            per_ch = np.nanmean(A[:, mwin], axis=1)
             # Convert counts/bin -> Hz
             per_ch_hz = per_ch / max(eff_bin_s, 1e-12)
             per_ch_hz = per_ch_hz[np.isfinite(per_ch_hz)]
@@ -854,6 +852,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             print('[earlyfr] Pairs discovered:', len(pairs))
         except Exception:
             pass
+        # Consistency note: early FR uses mean across bins to match late-phase
+        if getattr(args, 'use_median', False):
+            print('[earlyfr] Note: --use-median is ignored. Early FR uses MEAN across bins to match late-phase FR.')
         print('[earlyfr] tau_params:',
               f'baseline_pre_s={float(getattr(args, "baseline_pre_s", 0.0))}',
               f'tau_start_delta_s={float(getattr(args, "tau_start_delta_s", 0.0))}',
