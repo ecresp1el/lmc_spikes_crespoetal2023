@@ -128,7 +128,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--grid-x-max', type=float, default=0.8, help='Grid x-max (default 0.8)')
     # Tau plotting
     p.add_argument('--tau-plot-ymax', type=float, default=None, help='Cap tau boxplot y-axis at this value (seconds)')
-    p.add_argument('--tau-plot-pctl', type=float, default=99.0, help='If no --tau-plot-ymax, cap using this percentile (default 99)')
+    p.add_argument('--tau-plot-pctl', type=float, default=95.0, help='If no --tau-plot-ymax, cap using this percentile (default 95)')
     p.add_argument('--tau-units', type=str, choices=['s', 'ms'], default='s', help='Units to plot/report tau (s or ms). CSV stays in seconds.')
     p.add_argument('--tau-plot-scale', type=str, choices=['linear', 'log'], default='linear', help='Tau plot y-axis scale')
     p.add_argument('--tau-agg', type=str, choices=['channel', 'pair-median'], default='channel', help='Aggregate tau by channel (default) or per-pair median')
@@ -823,7 +823,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 combined = np.concatenate([tau_c[np.isfinite(tau_c)], tau_v[np.isfinite(tau_v)]])
                 if combined.size:
                     pctl = max(0.0, min(100.0, args.tau_plot_pctl))
-                    ycap = float(np.nanpercentile(combined, pctl)) * 1.05
+                    ycap = float(np.nanpercentile(combined, pctl))
+                    med = float(np.nanmedian(combined)) if np.isfinite(np.nanmedian(combined)) else None
+                    # Guardrails: ensure positive, not below median, and small headroom
+                    if not np.isfinite(ycap) or ycap <= 0:
+                        ymax_val = float(np.nanmax(combined)) if np.isfinite(np.nanmax(combined)) else None
+                        ycap = ymax_val if (ymax_val is not None and np.isfinite(ymax_val)) else None
+                    if med is not None and np.isfinite(ycap) and ycap < med * 1.2:
+                        ycap = med * 1.2
+                    if ycap is not None and np.isfinite(ycap):
+                        ycap = ycap * 1.05
             # Aggregation level and units
             if args.tau_agg == 'pair-median':
                 vals_c = np.array([np.nanmedian(x) for x in tau_pairs_c if np.asarray(x).size], dtype=float)
@@ -839,7 +848,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             vals_c_plot = vals_c * scale_factor
             vals_v_plot = vals_v * scale_factor
             ycap_plot = (ycap * scale_factor) if (ycap is not None) else None
-            _save_boxplot(t_base, vals_c_plot, vals_v_plot, ylabel=ylab, title='Decay time constant (tau)', ymin=0.0, ymax=ycap_plot, yscale=args.tau_plot_scale)
+            _save_boxplot(t_base, vals_c_plot, vals_v_plot, ylabel=ylab, title='Decay time constant (tau)', ymin=0.0, ymax=ycap_plot, yscale='linear')
             t_csv = save_dir / (grp_path.stem + '__tau_stats.csv')
             _export_stats(t_csv, tau_c, tau_v, pair_stats=tau_rows)
             print('[tau] Wrote figure:', t_base.with_suffix('.svg'))
