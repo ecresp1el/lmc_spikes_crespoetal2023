@@ -159,6 +159,7 @@ def _plot_pair(
     color_mean: str,
     *,
     show_chem: bool = True,
+    show_shading: bool = True,
     early: Optional[Tuple[float, float]] = None,
     late: Optional[Tuple[float, Optional[float]]] = None,
     show_y0: bool = True,
@@ -171,13 +172,14 @@ def _plot_pair(
     if Y.ndim == 1:
         Y = Y[None, :]
     # Shading and reference lines
-    if early is not None:
-        s0, dur = early
-        ax.axvspan(float(s0), float(s0 + dur), color='0.92', zorder=0)
-    if late is not None:
-        l0, ldur = late
-        l1 = float(l0 + ldur) if (ldur is not None and ldur > 0) else ax.get_xlim()[1]
-        ax.axvspan(float(l0), float(l1), color='0.85', zorder=0)
+    if show_shading:
+        if early is not None:
+            s0, dur = early
+            ax.axvspan(float(s0), float(s0 + dur), color='0.92', zorder=0)
+        if late is not None:
+            l0, ldur = late
+            l1 = float(l0 + ldur) if (ldur is not None and ldur > 0) else ax.get_xlim()[1]
+            ax.axvspan(float(l0), float(l1), color='0.85', zorder=0)
     if show_y0:
         ax.axhline(0.0, color='0.3', lw=0.8, zorder=3)
     if show_chem:
@@ -241,6 +243,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--xbar', type=float, default=0.2, help='Horizontal time scale bar length in seconds (default 0.2)')
     ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
+    ap.add_argument('--show-axes', action='store_true', help='Show axes and ticks (timestamps) on subplots (default: hidden for minimalist look)')
+    ap.add_argument('--no-chem-line', action='store_true', help='Hide the chem vertical reference line at t=0 (default: shown)')
+    ap.add_argument('--no-window-shading', action='store_true', help='Hide early/late shaded windows (default: shown)')
     ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
     ap.add_argument('--save-persistence-boxplot', action='store_true', help='Also save CTZ/VEH boxplot of percent persistence: 100×(late/early) per channel (uses --mua-early-stat and --mua-late-metric)')
     ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
@@ -482,13 +487,22 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Plot rows: individual pairs
     for r, row in enumerate(rows):
-        _plot_pair(axes[r, 0], row['t'], row['Yv'], color_mean='k', early=row.get('early_veh'), late=row.get('late_veh'))
-        _plot_pair(axes[r, 1], row['t'], row['Yc'], color_mean='C0', early=row.get('early_ctz'), late=row.get('late_ctz'))
+        _plot_pair(
+            axes[r, 0], row['t'], row['Yv'], color_mean='k',
+            early=row.get('early_veh'), late=row.get('late_veh'),
+            show_chem=not args.no_chem_line, show_shading=not args.no_window_shading,
+        )
+        _plot_pair(
+            axes[r, 1], row['t'], row['Yc'], color_mean='C0',
+            early=row.get('early_ctz'), late=row.get('late_ctz'),
+            show_chem=not args.no_chem_line, show_shading=not args.no_window_shading,
+        )
         for c in (0, 1):
             ax = axes[r, c]
             ax.set_xlim(x0, x1)
             ax.set_ylim(gmin, gmax)
-            ax.axis('off')
+            if not args.show_axes:
+                ax.axis('off')
             if args.label_windows:
                 # Compose labels for early/late
                 if c == 0:
@@ -533,13 +547,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     Yv_stack = np.vstack(Yv_means) if Yv_means else np.zeros((1, t_ref.size))
     Yc_stack = np.vstack(Yc_means) if Yc_means else np.zeros((1, t_ref.size))
     # Plot using the same helper (will draw thin grey per-pair means + thick colored grand mean)
-    _plot_pair(axes[n, 0], t_ref, Yv_stack, color_mean='k')
-    _plot_pair(axes[n, 1], t_ref, Yc_stack, color_mean='C0')
+    _plot_pair(axes[n, 0], t_ref, Yv_stack, color_mean='k', show_chem=not args.no_chem_line, show_shading=not args.no_window_shading)
+    _plot_pair(axes[n, 1], t_ref, Yc_stack, color_mean='C0', show_chem=not args.no_chem_line, show_shading=not args.no_window_shading)
     for c in (0, 1):
         ax = axes[n, c]
         ax.set_xlim(x0, x1)
         ax.set_ylim(gmin, gmax)
-        ax.axis('off')
+        if not args.show_axes:
+            ax.axis('off')
 
     # Helper to interpolate a (C,T) matrix to common t_ref
     def _interp_rows_to(t_src: np.ndarray, Y_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
@@ -563,13 +578,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     Yv_all = np.vstack(Yv_all_list) if Yv_all_list else np.zeros((1, t_ref.size))
     Yc_all = np.vstack(Yc_all_list) if Yc_all_list else np.zeros((1, t_ref.size))
 
-    _plot_pair(axes[n + 1, 0], t_ref, Yv_all, color_mean='k')
-    _plot_pair(axes[n + 1, 1], t_ref, Yc_all, color_mean='C0')
+    _plot_pair(axes[n + 1, 0], t_ref, Yv_all, color_mean='k', show_chem=not args.no_chem_line, show_shading=not args.no_window_shading)
+    _plot_pair(axes[n + 1, 1], t_ref, Yc_all, color_mean='C0', show_chem=not args.no_chem_line, show_shading=not args.no_window_shading)
     for c in (0, 1):
         ax = axes[n + 1, c]
         ax.set_xlim(x0, x1)
         ax.set_ylim(gmin, gmax)
-        ax.axis('off')
+        if not args.show_axes:
+            ax.axis('off')
 
     # Single global vertical scale bar inside the top-left axes (data units)
     ax0 = axes[0, 0]
