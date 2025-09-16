@@ -98,6 +98,9 @@ class Args:
     append_grid: bool
     grid_x_min: float
     grid_x_max: float
+    # Tau plotting controls
+    tau_plot_ymax: Optional[float]
+    tau_plot_pctl: float
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
@@ -120,6 +123,9 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--append-grid', action='store_true', help='Also render the 5×2 PSTH grid using pooled NPZ')
     p.add_argument('--grid-x-min', type=float, default=-0.2, help='Grid x-min (default -0.2)')
     p.add_argument('--grid-x-max', type=float, default=0.8, help='Grid x-max (default 0.8)')
+    # Tau plotting
+    p.add_argument('--tau-plot-ymax', type=float, default=None, help='Cap tau boxplot y-axis at this value (seconds)')
+    p.add_argument('--tau-plot-pctl', type=float, default=99.0, help='If no --tau-plot-ymax, cap using this percentile (default 99)')
     a = p.parse_args(argv)
     return Args(
         group_npz=a.group_npz,
@@ -138,6 +144,8 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
         append_grid=bool(a.append_grid),
         grid_x_min=float(a.grid_x_min),
         grid_x_max=float(a.grid_x_max),
+        tau_plot_ymax=(float(a.tau_plot_ymax) if a.tau_plot_ymax is not None else None),
+        tau_plot_pctl=float(a.tau_plot_pctl),
     )
 
 
@@ -511,7 +519,7 @@ def _fdr_bh(pvals: np.ndarray, alpha: float = 0.05) -> Tuple[np.ndarray, np.ndar
     return reject, q_full
 
 
-def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None) -> None:
+def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None) -> None:
     fig = plt.figure(figsize=(5, 5), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
     data = [arr_ctz, arr_veh]
@@ -540,6 +548,13 @@ def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylab
     ax.set_ylabel(ylabel)
     if title:
         ax.set_title(title)
+    # Optional axis limits
+    if ymin is not None or ymax is not None:
+        yl = ax.get_ylim()
+        lo = float(ymin) if ymin is not None else yl[0]
+        hi = float(ymax) if ymax is not None else yl[1]
+        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+            ax.set_ylim(lo, hi)
     fig.tight_layout()
     fig.savefig(fig_base.with_suffix('.svg'), bbox_inches='tight', transparent=True)
     fig.savefig(fig_base.with_suffix('.pdf'), bbox_inches='tight')
@@ -772,7 +787,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         tau_c, tau_v, tau_rows = _collect_tau(Z, args)
         if tau_c.size and tau_v.size:
             t_base = save_dir / (grp_path.stem + '__tau_boxplot')
-            _save_boxplot(t_base, tau_c, tau_v, ylabel='Tau (s)', title='Decay time constant (tau)')
+            # Robust y-limit to avoid autoscale being dominated by outliers
+            ycap = args.tau_plot_ymax
+            if ycap is None:
+                combined = np.concatenate([tau_c[np.isfinite(tau_c)], tau_v[np.isfinite(tau_v)]])
+                if combined.size:
+                    pctl = max(0.0, min(100.0, args.tau_plot_pctl))
+                    ycap = float(np.nanpercentile(combined, pctl)) * 1.05
+            _save_boxplot(t_base, tau_c, tau_v, ylabel='Tau (s)', title='Decay time constant (tau)', ymin=0.0, ymax=ycap)
             t_csv = save_dir / (grp_path.stem + '__tau_stats.csv')
             _export_stats(t_csv, tau_c, tau_v, pair_stats=tau_rows)
             print('[tau] Wrote figure:', t_base.with_suffix('.svg'))
