@@ -165,6 +165,42 @@ def extract_channels_from_image(arr: np.ndarray) -> Tuple[np.ndarray, np.ndarray
     return z, z, z
 
 
+def raw_to_uint8(arr: np.ndarray) -> np.ndarray:
+    """Map raw image to 8-bit without percentile normalization.
+
+    - Integer types: scale by dtype max (e.g., uint16 -> divide by 65535).
+    - Float types: assume 0..1; clip and scale to 0..255.
+    """
+    a = np.asarray(arr)
+    if np.issubdtype(a.dtype, np.integer):
+        info = np.iinfo(a.dtype)
+        if info.max <= 0:
+            return np.zeros(a.shape, dtype=np.uint8)
+        return np.clip((a.astype(np.float64) * (255.0 / float(info.max)) + 0.5), 0, 255).astype(np.uint8)
+    elif np.issubdtype(a.dtype, np.floating):
+        return np.clip(a, 0.0, 1.0).astype(np.float64).__mul__(255.0).__add__(0.5).astype(np.uint8)
+    else:
+        return np.clip(a.astype(np.float64), 0.0, 255.0).__add__(0.5).astype(np.uint8)
+
+
+def raw_pseudo_rgb_single(arr: np.ndarray, ch: str) -> np.ndarray:
+    """Pure-channel pseudocolor from raw grayscale: tdTom->R, EYFP->G, DAPI->B."""
+    v8 = raw_to_uint8(arr)
+    z = np.zeros_like(v8, dtype=np.uint8)
+    if ch == 'tdTom':
+        return np.stack([v8, z, z], axis=-1)
+    if ch == 'EYFP':
+        return np.stack([z, v8, z], axis=-1)
+    return np.stack([z, z, v8], axis=-1)
+
+
+def raw_merged_rgb(dapi: np.ndarray, eyfp: np.ndarray, tdtom: np.ndarray) -> np.ndarray:
+    r = raw_to_uint8(tdtom)
+    g = raw_to_uint8(eyfp)
+    b = raw_to_uint8(dapi)
+    return np.stack([r, g, b], axis=-1)
+
+
 def _argparse() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Plot ephys merged images grid: DAPI, EYFP, tdTom + RGB")
     p.add_argument('--base-dir', type=Path, default=Path('/Users/ecrespo/Desktop/lmc_invivo_images_el222/data-Manny-1/LMC4f coded raw images/in_ephys_images'), help='Base directory to scan recursively')
@@ -267,10 +303,8 @@ def main() -> int:
         if ref is None or ref not in raw:
             print("[warn] Cannot run interactive ROI — reference root not found. Skipping.")
         else:
-            def norm01(a: np.ndarray) -> np.ndarray:
-                lo = np.percentile(a, float(args.low)); hi = np.percentile(a, float(args.high))
-                return np.clip((a.astype(float) - lo) / (hi - lo + 1e-12), 0, 1)
-            ov = np.stack([norm01(raw[ref]['tdTom']), norm01(raw[ref]['EYFP']), norm01(raw[ref]['DAPI'])], axis=-1)
+            # Raw pseudocolor overlay for ROI selection (no percentile normalization)
+            ov = raw_merged_rgb(raw[ref]['DAPI'], raw[ref]['EYFP'], raw[ref]['tdTom'])
             sel = {'roi': None}
             def onselect(eclick, erelease):
                 x0, y0 = eclick.xdata, eclick.ydata
@@ -306,24 +340,46 @@ def main() -> int:
                 except Exception as ex:
                     print(f"[warn] Failed to save ROI JSON: {ex}")
 
-    # Optionally save/display ROI overlays on full images before cropping
+    # Optionally save/display ROI overlays on full images before cropping (raw pseudocolor)
     if roi is not None:
-        def norm01(a: np.ndarray) -> np.ndarray:
-            lo = np.percentile(a, float(args.low)); hi = np.percentile(a, float(args.high))
-            return np.clip((a.astype(float) - lo) / (hi - lo + 1e-12), 0, 1)
         x, y, w, h = roi
         for r in raw.keys():
-            ov_full = np.stack([norm01(raw[r]['tdTom']), norm01(raw[r]['EYFP']), norm01(raw[r]['DAPI'])], axis=-1)
+            ov_full = raw_merged_rgb(raw[r]['DAPI'], raw[r]['EYFP'], raw[r]['tdTom'])
             H, W = ov_full.shape[:2]
             x0 = max(0, min(W, x)); y0 = max(0, min(H, y))
             x1 = max(x0, min(W, x0 + max(1, w))); y1 = max(y0, min(H, y0 + max(1, h)))
-            fig_ov, ax_ov = plt.subplots(1, 2, figsize=(10, 5))
-            ax_ov[0].imshow(ov_full); ax_ov[0].add_patch(patches.Rectangle((x0, y0), x1-x0, y1-y0, fill=False, edgecolor='yellow', linewidth=2))
+            # Mask overlay
+            mask_rgba = np.zeros((H, W, 4), dtype=float)
+            mask_rgba[y0:y1, x0:x1, :] = [1.0, 1.0, 0.0, 0.25]
+            fig_ov, ax_ov = plt.subplots(1, 2, figsize=(12, 5))
+            ax_ov[0].imshow(ov_full); ax_ov[0].imshow(mask_rgba); ax_ov[0].add_patch(patches.Rectangle((x0, y0), x1-x0, y1-y0, fill=False, edgecolor='yellow', linewidth=2))
             ax_ov[0].set_title(f"{r} — Full with ROI"); ax_ov[0].axis('off')
-            ax_ov[1].imshow(ov_full[y0:y1, x0:x1]); ax_ov[1].set_title(f"{r} — ROI crop"); ax_ov[1].axis('off')
+            ax_ov[1].imshow(ov_full[y0:y1, x0:x1]); ax_ov[1].set_title(f"{r} — ROI crop (raw)"); ax_ov[1].axis('off')
             fig_ov.tight_layout()
             fig_ov.savefig(roi_overlays_dir / f"{r.replace('/', '_')}_roi_overlay.png", dpi=200)
             plt.close(fig_ov)
+        # Always open a 1x4 raw pseudocolor preview for reference/first root
+        refp = args.roi_ref_root or (next(iter(raw.keys())) if raw else None)
+        if refp and refp in raw:
+            dapi = raw[refp]['DAPI']; eyfp = raw[refp]['EYFP']; tdtom = raw[refp]['tdTom']
+            H, W = dapi.shape[:2]
+            x0 = max(0, min(W, x)); y0 = max(0, min(H, y))
+            x1 = max(x0, min(W, x0 + max(1, w))); y1 = max(y0, min(H, y0 + max(1, h)))
+            r_rgb = raw_pseudo_rgb_single(tdtom, 'tdTom')
+            g_rgb = raw_pseudo_rgb_single(eyfp, 'EYFP')
+            b_rgb = raw_pseudo_rgb_single(dapi, 'DAPI')
+            m_rgb = raw_merged_rgb(dapi, eyfp, tdtom)
+            mask_rgba = np.zeros((H, W, 4), dtype=float)
+            mask_rgba[y0:y1, x0:x1, :] = [1.0, 1.0, 0.0, 0.25]
+            fig1, axs1 = plt.subplots(1, 4, figsize=(16, 4))
+            axs1[0].imshow(r_rgb); axs1[0].imshow(mask_rgba); axs1[0].set_title('R (tdTom) raw'); axs1[0].axis('off')
+            axs1[1].imshow(g_rgb); axs1[1].imshow(mask_rgba); axs1[1].set_title('G (EYFP) raw'); axs1[1].axis('off')
+            axs1[2].imshow(b_rgb); axs1[2].imshow(mask_rgba); axs1[2].set_title('B (DAPI) raw'); axs1[2].axis('off')
+            axs1[3].imshow(m_rgb); axs1[3].imshow(mask_rgba); axs1[3].set_title('Merged raw'); axs1[3].axis('off')
+            fig1.tight_layout()
+            (figures_dir / 'roi_raw_previews').mkdir(parents=True, exist_ok=True)
+            fig1.savefig(figures_dir / 'roi_raw_previews' / f"{refp.replace('/', '_')}_roi_raw_preview.png", dpi=200)
+            plt.show()
         # Optional on-screen preview for a chosen root
         if getattr(args, 'roi_preview', False):
             refp = args.roi_ref_root or (next(iter(raw.keys())) if raw else None)
