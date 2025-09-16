@@ -396,9 +396,11 @@ def _collect_late_fr(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[
     for i in range(P):
         eff_bin_s = _eff_bin_s_for_pair(Z, i, t)
         # Window per side
-        for side, arr_all, starts, pooled, used_ps, used_pe, tag in (
-            ('CTZ', ctz_counts_all, starts_ctz, pooled_ctz, used_ps_ctz, used_pe_ctz, 'ctz'),
-            ('VEH', veh_counts_all, starts_veh, pooled_veh, used_ps_veh, used_pe_veh, 'veh'),
+        counts_ctz_i = 0
+        counts_veh_i = 0
+        for side, arr_all, starts, pooled, used_ps, used_pe, is_ctz in (
+            ('CTZ', ctz_counts_all, starts_ctz, pooled_ctz, used_ps_ctz, used_pe_ctz, True),
+            ('VEH', veh_counts_all, starts_veh, pooled_veh, used_ps_veh, used_pe_veh, False),
         ):
             try:
                 A = np.asarray(arr_all[i], dtype=float)  # (C,T)
@@ -423,13 +425,13 @@ def _collect_late_fr(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[
             if per_ch_hz.size:
                 pooled.extend(per_ch_hz.tolist())
                 used_ps.append(ps); used_pe.append(pe)
+                if is_ctz:
+                    counts_ctz_i += per_ch_hz.size
+                else:
+                    counts_veh_i += per_ch_hz.size
         # Per-pair summary comparisons (if both sides had data)
         pid = str(Z.get('pairs', [i])[i]) if len(Z.get('pairs', [])) > i else str(i)
-        # We cannot reconstruct within this loop easily if either was missing; recompute minimally
-        # but keep it simple: skip per-pair U if either side empty
-        # (CSV will still contain overall stats)
-        # Leaving per-pair U as NaN here to keep structure consistent
-        per_pair_rows.append({'pair_id': pid, 'U': np.nan, 'p': np.nan})
+        per_pair_rows.append({'pair_id': pid, 'U': np.nan, 'p': np.nan, 'n_ctz': int(counts_ctz_i), 'n_veh': int(counts_veh_i)})
 
     info = {
         'ps_ctz': np.asarray(used_ps_ctz, dtype=float),
@@ -556,7 +558,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                     continue
 
         pid = str(Z.get('pairs', [i])[i]) if len(Z.get('pairs', [])) > i else str(i)
-        per_pair_rows.append({'pair_id': pid})
+        per_pair_rows.append({'pair_id': pid, 'n_ctz': int(len(tau_list_ctz)), 'n_veh': int(len(tau_list_veh))})
         per_pair_taus_ctz.append(np.asarray(tau_list_ctz, dtype=float))
         per_pair_taus_veh.append(np.asarray(tau_list_veh, dtype=float))
 
@@ -584,7 +586,7 @@ def _fdr_bh(pvals: np.ndarray, alpha: float = 0.05) -> Tuple[np.ndarray, np.ndar
     return reject, q_full
 
 
-def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None, yscale: str = 'linear') -> None:
+def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylabel: str, title: Optional[str] = None, ymin: Optional[float] = None, ymax: Optional[float] = None, yscale: str = 'linear', note: Optional[str] = None) -> None:
     fig = plt.figure(figsize=(5, 5), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
     data = [arr_ctz, arr_veh]
@@ -613,6 +615,11 @@ def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylab
     ax.set_ylabel(ylabel)
     if title:
         ax.set_title(title)
+    if note:
+        try:
+            ax.text(0.02, 0.98, note, transform=ax.transAxes, va='top', ha='left', fontsize=9)
+        except Exception:
+            pass
     # Optional axis limits and scale
     if ymin is not None or ymax is not None:
         yl = ax.get_ylim()
@@ -739,7 +746,7 @@ def _export_stats(csv_path: Path, ctz: np.ndarray, veh: np.ndarray, pair_stats: 
         U, p = np.nan, np.nan
     row_overall = {
         'level': 'overall',
-        'n_ctz': int(ctz.size), 'n_luc': int(veh.size),
+        'n_ctz': int(ctz.size), 'n_veh': int(veh.size), 'n_luc': int(veh.size),
         'median_ctz_hz': float(np.nanmedian(ctz)) if ctz.size else np.nan,
         'median_luc_hz': float(np.nanmedian(veh)) if veh.size else np.nan,
         'mean_ctz_hz': float(np.nanmean(ctz)) if ctz.size else np.nan,
@@ -768,7 +775,7 @@ def _export_stats(csv_path: Path, ctz: np.ndarray, veh: np.ndarray, pair_stats: 
 
     # Fieldnames
     preferred_order = [
-        'level', 'pair_id', 'n_ctz', 'n_luc',
+        'level', 'pair_id', 'n_ctz', 'n_veh', 'n_luc',
         'median_ctz_hz', 'median_luc_hz', 'mean_ctz_hz', 'mean_luc_hz',
         'iqr_ctz_hz', 'iqr_luc_hz', 'U', 'p', 'q_fdr', 'reject_fdr',
     ]
@@ -823,6 +830,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     # Report source for reproducibility
     try:
         print('[earlyfr] NPZ:', grp_path)
+        try:
+            pairs = Z.get('pairs', [])
+            print('[earlyfr] Pairs discovered:', len(pairs))
+        except Exception:
+            pass
         print('[earlyfr] tau_params:',
               f'baseline_pre_s={float(getattr(args, "baseline_pre_s", 0.0))}',
               f'tau_start_delta_s={float(getattr(args, "tau_start_delta_s", 0.0))}',
@@ -839,7 +851,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=args.use_median)
     if ctz_hz.size and veh_hz.size:
         fig_base = save_dir / (grp_path.stem + '__earlyfr_boxplot')
-        _save_boxplot(fig_base, ctz_hz, veh_hz, ylabel='Early-phase firing rate (Hz)', title='Early-phase firing rate (Hz)')
+        # Build note with per-pair channel counts
+        try:
+            total_ctz = int(np.nansum([r.get('n_ctz', 0) for r in pair_rows]))
+            total_veh = int(np.nansum([r.get('n_luc', r.get('n_veh', 0)) for r in pair_rows]))
+            pairs_n = len(pair_rows)
+            note = f'Pairs={pairs_n} | Luc(CTZ) ch={total_ctz} | Vehicle ch={total_veh}'
+        except Exception:
+            note = None
+        _save_boxplot(fig_base, ctz_hz, veh_hz, ylabel='Early-phase firing rate (Hz)', title='Early-phase firing rate (Hz)', note=note)
         try:
             _save_composite(save_dir / (grp_path.stem + '__earlyfr'), Z)
         except Exception:
@@ -856,7 +876,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         l_ctz, l_veh, l_rows, _winfo = _collect_late_fr(Z, args)
         if l_ctz.size and l_veh.size:
             l_base = save_dir / (grp_path.stem + '__latefr_boxplot')
-            _save_boxplot(l_base, l_ctz, l_veh, ylabel='Late-phase firing rate (Hz)', title='Late-phase firing rate (Hz)')
+            try:
+                total_ctz = int(np.nansum([r.get('n_ctz', 0) for r in l_rows]))
+                total_veh = int(np.nansum([r.get('n_veh', 0) for r in l_rows]))
+                pairs_n = len(l_rows)
+                note = f'Pairs={pairs_n} | Luc(CTZ) ch={total_ctz} | Vehicle ch={total_veh}'
+            except Exception:
+                note = None
+            _save_boxplot(l_base, l_ctz, l_veh, ylabel='Late-phase firing rate (Hz)', title='Late-phase firing rate (Hz)', note=note)
             l_csv = save_dir / (grp_path.stem + '__latefr_stats.csv')
             _export_stats(l_csv, l_ctz, l_veh, pair_stats=l_rows)
             print('[latefr] Wrote figure:', l_base.with_suffix('.svg'))
@@ -902,7 +929,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             vals_c_plot = vals_c * scale_factor
             vals_v_plot = vals_v * scale_factor
             ycap_plot = (ycap * scale_factor) if (ycap is not None) else None
-            _save_boxplot(t_base, vals_c_plot, vals_v_plot, ylabel=ylab, title='Decay time constant (tau)', ymin=0.0, ymax=ycap_plot, yscale='linear')
+            try:
+                total_ctz = int(np.nansum([r.get('n_ctz', 0) for r in tau_rows]))
+                total_veh = int(np.nansum([r.get('n_veh', 0) for r in tau_rows]))
+                pairs_n = len(tau_rows)
+                note = f'Pairs={pairs_n} | Luc(CTZ) ch={total_ctz} | Vehicle ch={total_veh}'
+            except Exception:
+                note = None
+            _save_boxplot(t_base, vals_c_plot, vals_v_plot, ylabel=ylab, title='Decay time constant (tau)', ymin=0.0, ymax=ycap_plot, yscale='linear', note=note)
             t_csv = save_dir / (grp_path.stem + '__tau_stats.csv')
             _export_stats(t_csv, tau_c, tau_v, pair_stats=tau_rows)
             print('[tau] Wrote figure:', t_base.with_suffix('.svg'))
