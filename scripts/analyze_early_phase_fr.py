@@ -2,28 +2,57 @@
 from __future__ import annotations
 
 """
-Compare Early-Phase Firing Rate (Hz) between CTZ and Luciferin (VEH) using
-the pooled NPZ exported by the Tk PSTH GUI (Run Group Comparison).
+CTZ vs Luciferin early/late firing rates and decay tau from pooled PSTH NPZs.
 
-Inputs
-------
-- Pooled NPZ from the GUI (Run Group Comparison), discovered automatically from
-  the plots folder or provided via --group-npz.
-  Uses keys: t, ctz_counts_all, veh_counts_all, starts_ctz, starts_veh, early_dur,
-             eff_bin_ms[, eff_bin_ms_per_pair].
+Data source and provenance
+--------------------------
+- Inputs are pooled NPZs written by the Tk GUI: `scripts/psth_explorer_tk.py` →
+  `_run_group_comparison()`. These contain per‑pair, per‑channel matrices and
+  metadata reflecting the GUI selections you made for the early window and
+  smoothing/binning.
+- Keys used here (all saved by the GUI group step):
+  - `t` (time axis, seconds), `pairs` (IDs)
+  - `starts_ctz`, `starts_veh` (per‑pair early starts, seconds)
+  - `early_dur` (global early duration, seconds) and `early_dur_per_pair` (optional overrides)
+  - `eff_bin_ms` (global bin ms) and `eff_bin_ms_per_pair` (per‑pair effective bin ms)
+  - `ctz_counts_all`, `veh_counts_all` (object arrays of per‑channel counts per bin)
+  - Optional: `ctz_norm`, `veh_norm` for normalized overlay context
 
-What it computes
-----------------
-- Per-channel early-window firing rate in Hz for each pair and side:
-  rate_hz = mean(counts_per_bin in early window) / (effective_bin_seconds)
+What this script computes
+-------------------------
+- Early-phase FR (Hz): mean counts/bin within each side’s early window divided by
+  effective bin seconds. Early windows come directly from `starts_*` and
+  `early_dur` (per‑pair overrides used if present).
+- Late-phase FR (Hz): mean counts/bin in a late window. By default we mimic the
+  post-phase convention used in `scripts/analyze_psth_post_vs_early.py`:
+  start = early_end + 0.100 s + 1 bin; end = end of trace (overridable via CLI).
+- Tau (s): post‑early decay time constant per channel from an exponential‑decay
+  model on FR(t). We fit ln(FR − baseline) vs time (seconds) after a short gap
+  following the early window. Tau is reported in seconds.
+
+Relationship to other scripts
+-----------------------------
+- `scripts/analyze_psth_post_vs_early.py`: operates on normalized matrices and
+  summarizes post‑phase maxima. This script operates on counts to get absolute
+  FR (Hz) and estimates decay tau; it complements, not duplicates, that module.
+- `scripts/plot_psth_group_ctz_veh.py`: renders group overlays; we reuse its
+  discovery/saving patterns but compute different metrics here.
+- `scripts/analyze_spike_matrices.py`: works on binary matrices for rasters.
+  Our inputs ultimately derive from the same matrices via the GUI pooling step.
 
 Outputs (written next to the NPZ)
 ---------------------------------
-- Box plot figure with jitter: <npz_stem>__earlyfr_boxplot.(svg|pdf)
-- CSV with stats and tests:    <npz_stem>__earlyfr_stats.csv
-- Optional composite (means overlay + box): <npz_stem>__earlyfr_composite.(svg|pdf)
+- Early FR boxplot + CSV: `<npz_stem>__earlyfr_boxplot.(svg|pdf)`, `<npz_stem>__earlyfr_stats.csv`
+- Late FR boxplot + CSV:  `<npz_stem>__latefr_boxplot.(svg|pdf)`, `<npz_stem>__latefr_stats.csv`
+- Tau boxplot + CSV:      `<npz_stem>__tau_boxplot.(svg|pdf)`, `<npz_stem>__tau_stats.csv`
+- Optional: early composite overlay: `<npz_stem>__earlyfr_composite.(svg|pdf)`
 
-Style and conventions follow existing scripts in this repo.
+Notes on units
+--------------
+- The time axis `t` is in seconds, so FR is in Hz and tau is in seconds.
+- Tau can exceed the plotted window length mathematically if the decay is very
+  slow; you can restrict it via `--tau-max-s` if you want to censor large
+  values relative to your acquisition window.
 """
 
 import argparse
@@ -64,6 +93,7 @@ class Args:
     tau_burst_min_rel: float
     tau_burst_min_abs_hz: float
     tau_smooth_bins: int
+    tau_max_s: Optional[float]
     # Optional context plots
     append_grid: bool
     grid_x_min: float
@@ -86,6 +116,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     p.add_argument('--tau-burst-min-rel', type=float, default=1.20, help='Require early mean >= baseline*rel (default 1.20)')
     p.add_argument('--tau-burst-min-abs-hz', type=float, default=1.0, help='Additionally require early mean >= baseline + abs (Hz)')
     p.add_argument('--tau-smooth-bins', type=int, default=3, help='Boxcar smoothing (bins) for FR series in tau fit (default 3)')
+    p.add_argument('--tau-max-s', type=float, default=None, help='Max tau to accept (seconds); default None = no explicit cap (aside from sanity checks)')
     p.add_argument('--append-grid', action='store_true', help='Also render the 5×2 PSTH grid using pooled NPZ')
     p.add_argument('--grid-x-min', type=float, default=-0.2, help='Grid x-min (default -0.2)')
     p.add_argument('--grid-x-max', type=float, default=0.8, help='Grid x-max (default 0.8)')
@@ -103,6 +134,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
         tau_burst_min_rel=float(a.tau_burst_min_rel),
         tau_burst_min_abs_hz=float(a.tau_burst_min_abs_hz),
         tau_smooth_bins=int(a.tau_smooth_bins),
+        tau_max_s=(float(a.tau_max_s) if a.tau_max_s is not None else None),
         append_grid=bool(a.append_grid),
         grid_x_min=float(a.grid_x_min),
         grid_x_max=float(a.grid_x_max),
@@ -201,6 +233,7 @@ def _collect_early_fr(Z: dict, use_median: bool) -> Tuple[np.ndarray, np.ndarray
     starts_ctz = np.asarray(Z.get('starts_ctz', []), dtype=float)
     starts_veh = np.asarray(Z.get('starts_veh', []), dtype=float)
     early_dur = float(Z.get('early_dur', 0.05))
+    early_dur_per_pair = np.asarray(Z.get('early_dur_per_pair', []), dtype=float)
 
     ctz_counts_all = Z.get('ctz_counts_all')
     veh_counts_all = Z.get('veh_counts_all')
@@ -218,11 +251,13 @@ def _collect_early_fr(Z: dict, use_median: bool) -> Tuple[np.ndarray, np.ndarray
     for i in range(P):
         # Determine effective bin (seconds) for this pair
         eff_bin_s = _eff_bin_s_for_pair(Z, i, t)
-        # Build masks per side
+        # Per‑pair early duration: prefer per‑pair override if present
+        ed_i = float(early_dur_per_pair[i]) if early_dur_per_pair.size > i and np.isfinite(early_dur_per_pair[i]) else early_dur
+        # Build masks per side from GUI metadata
         s_ctz = float(starts_ctz[i]) if i < starts_ctz.size else 0.0
         s_veh = float(starts_veh[i]) if i < starts_veh.size else 0.0
-        m_ctz = _window_mask(t, s_ctz, early_dur)
-        m_veh = _window_mask(t, s_veh, early_dur)
+        m_ctz = _window_mask(t, s_ctz, ed_i)
+        m_veh = _window_mask(t, s_veh, ed_i)
 
         ctz_vals_i: Optional[np.ndarray] = None
         veh_vals_i: Optional[np.ndarray] = None
@@ -286,6 +321,7 @@ def _collect_late_fr(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[
     starts_ctz = np.asarray(Z.get('starts_ctz', []), dtype=float)
     starts_veh = np.asarray(Z.get('starts_veh', []), dtype=float)
     early_dur = float(Z.get('early_dur', 0.05))
+    early_dur_per_pair = np.asarray(Z.get('early_dur_per_pair', []), dtype=float)
     ctz_counts_all = Z.get('ctz_counts_all')
     veh_counts_all = Z.get('veh_counts_all')
     if ctz_counts_all is None or veh_counts_all is None:
@@ -320,7 +356,8 @@ def _collect_late_fr(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[
                 ps = float(args.post_start)
             else:
                 e_start = float(starts[i]) if i < starts.size else 0.0
-                ps = max(0.0, e_start + early_dur + 0.100 + eff_bin_s)
+                ed_i = float(early_dur_per_pair[i]) if early_dur_per_pair.size > i and np.isfinite(early_dur_per_pair[i]) else early_dur
+                ps = max(0.0, e_start + ed_i + 0.100 + eff_bin_s)
             pe = float(t[-1]) if args.post_dur is None else (ps + float(args.post_dur))
             m = (t >= ps) & (t <= pe)
             if not np.any(m):
@@ -373,6 +410,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
     starts_ctz = np.asarray(Z.get('starts_ctz', []), dtype=float)
     starts_veh = np.asarray(Z.get('starts_veh', []), dtype=float)
     early_dur = float(Z.get('early_dur', 0.05))
+    early_dur_per_pair = np.asarray(Z.get('early_dur_per_pair', []), dtype=float)
     ctz_counts_all = Z.get('ctz_counts_all')
     veh_counts_all = Z.get('veh_counts_all')
     if ctz_counts_all is None or veh_counts_all is None:
@@ -395,8 +433,9 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
         eff_bin_s = _eff_bin_s_for_pair(Z, i, t)
         e0_c = float(starts_ctz[i]) if i < starts_ctz.size else 0.0
         e0_v = float(starts_veh[i]) if i < starts_veh.size else 0.0
-        e1_c = e0_c + early_dur
-        e1_v = e0_v + early_dur
+        ed_i = float(early_dur_per_pair[i]) if early_dur_per_pair.size > i and np.isfinite(early_dur_per_pair[i]) else early_dur
+        e1_c = e0_c + ed_i
+        e1_v = e0_v + ed_i
 
         for side, arr_all, e0, e1, pooled in (
             ('CTZ', ctz_counts_all, e0_c, e1_c, pooled_tau_ctz),
@@ -442,8 +481,11 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                     b, a = np.polyfit(t_fit, ln_y, 1)  # slope b, intercept a
                     if b < 0:
                         tau = -1.0 / b
-                        # Sanity bounds (0 < tau < 10 s)
-                        if np.isfinite(tau) and 1e-3 < tau < 10.0:
+                        # Sanity/option bounds
+                        ok = np.isfinite(tau) and (tau > 1e-3)
+                        if ok and args.tau_max_s is not None:
+                            ok = tau <= float(args.tau_max_s)
+                        if ok:
                             pooled.append(float(tau))
                 except Exception:
                     continue
