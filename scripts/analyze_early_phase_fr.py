@@ -9,9 +9,9 @@ Overview
 This headless script reproduces group‑level comparisons directly from pooled NPZ
 files saved by the Tk PSTH GUI. It computes:
 - Early‑phase firing rate (Hz) per channel using the exact early window you set
-  in the GUI, sourced by default from unbinned spike timestamps in the exported
-  HDF5 (for non‑quantized rates). If HDF5 cannot be found, it falls back to
-  binned counts in the pooled NPZ.
+  in the GUI, computed identically to late‑phase (mean counts/bin within window
+  divided by effective bin seconds). The only difference between early and late
+  metrics is the time window used.
 - Late‑phase firing rate (Hz) per channel using a consistent post‑phase rule or
   an explicit window you provide.
 - Per‑channel decay time constant tau (seconds) after the early burst by fitting
@@ -84,8 +84,8 @@ Assumptions and handling details
   stability; raw counts are always used to compute FR (no spike re‑detection).
 - Visualization caps (y‑axis) never alter CSV values; they only improve plot
   readability.
- - Early FR: computed from raw timestamps by default (HDF5) as count/early_dur;
-   falls back to NPZ counts/bin mean ÷ bin_s only if HDF5 is unavailable.
+ - Early FR: computed from pooled NPZ counts exactly like late FR (mean across
+   bins ÷ bin_s), using the early window from the GUI.
 - Naming in plots: treated side is labeled “Luciferin (CTZ)” and control is
   labeled “Vehicle”.
 
@@ -181,7 +181,7 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> Args:
     # Overlay for early FR points
     p.add_argument('--early-swarm', action='store_true', help='Use a swarm overlay (if seaborn available) for early FR boxplot')
     p.add_argument('--swarm-size', type=int, default=4, help='Point size for swarm/jitter overlays (default 4)')
-    p.add_argument('--early-from-raw', action='store_true', default=True, help='Compute early FR from unbinned spike timestamps in HDF5 (default True). If HDF5 not found, falls back to binned counts.')
+    p.add_argument('--early-from-raw', action='store_true', default=False, help='[Deprecated] Early FR now matches late-phase computation (mean counts/bin ÷ bin_s). This flag is ignored to keep methods identical.')
     a = p.parse_args(argv)
     return Args(
         group_npz=a.group_npz,
@@ -960,9 +960,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             print('[earlyfr] Pairs discovered:', len(pairs))
         except Exception:
             pass
-        # Consistency note: early FR uses mean across bins to match late-phase
+        # Consistency notes: early FR matches late-phase method (mean/bin ÷ bin_s)
         if getattr(args, 'use_median', False):
             print('[earlyfr] Note: --use-median is ignored. Early FR uses MEAN across bins to match late-phase FR.')
+        if getattr(args, 'early_from_raw', False):
+            print('[earlyfr] Note: --early-from-raw is ignored. Early FR uses binned counts to match late-phase FR.')
         print('[earlyfr] tau_params:',
               f'baseline_pre_s={float(getattr(args, "baseline_pre_s", 0.0))}',
               f'tau_start_delta_s={float(getattr(args, "tau_start_delta_s", 0.0))}',
@@ -975,15 +977,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         pass
     save_dir = grp_path.parent
 
-    # Early-phase FR — Prefer unbinned timestamps from HDF5 for non-quantized rates
-    if args.early_from_raw:
-        try:
-            ctz_hz, veh_hz, pair_rows = _collect_early_fr_from_raw(Z, _infer_output_root(args.output_root))
-        except Exception as e:
-            print('[earlyfr] Raw early FR failed, falling back to binned counts:', e)
-            ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=False)
-    else:
-        ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=False)
+    # Early-phase FR — compute identically to late-phase (mean counts/bin ÷ bin_s), only window differs
+    if getattr(args, 'early_from_raw', False):
+        print('[earlyfr] Note: --early-from-raw is ignored. Early FR uses binned counts (mean/bin ÷ bin_s) to match late-phase.')
+    ctz_hz, veh_hz, pair_rows = _collect_early_fr(Z, use_median=False)
     if ctz_hz.size and veh_hz.size:
         fig_base = save_dir / (grp_path.stem + '__earlyfr_boxplot')
         # Build note with per-pair channel counts
