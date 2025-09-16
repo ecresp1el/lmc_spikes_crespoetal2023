@@ -237,6 +237,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--late-gap', type=float, default=0.100, help='Seconds after early end before late starts (default 0.100 s)')
     ap.add_argument('--late-dur', type=float, default=None, help='Late window duration in seconds (default: to end of axis)')
     ap.add_argument('--anchor-window', type=str, choices=['early','late'], default='early', help='Window used to compute baseline for renormalization (default: early)')
+    ap.add_argument('--anchor-metric', type=str, choices=['mean','median','max'], default='mean', help='Statistic over anchor window to define baseline (default: mean)')
     ap.add_argument('--xbar', type=float, default=0.2, help='Horizontal time scale bar length in seconds (default 0.2)')
     ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
@@ -244,7 +245,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--save-persistence-boxplot', action='store_true', help='Also save CTZ/VEH boxplot of percent persistence: 100×(late/early) per channel (uses --mua-early-stat and --mua-late-metric)')
     ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
     ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic for early baseline (default: npz = use per-pair stat or global if present)')
-    ap.add_argument('--percent-renorm', action='store_true', help='Renormalize to percent change relative to early baseline (per channel): 100*(y - baseline)/baseline; early ≈ 0%%')
+    ap.add_argument('--percent-renorm', action='store_true', help='Percent change relative to baseline: 100*(y - baseline)/baseline')
+    ap.add_argument('--percent-of-baseline', action='store_true', help='Percent of baseline: 100*(y / baseline). Use with --anchor-window late --anchor-metric max to make late max = 100%%')
     # Optional: find enhanced channels (CTZ late high, VEH late low) and append plots
     ap.add_argument('--find-enhanced', action='store_true', help='Identify channels with CTZ late enhancement but low VEH and append scatter + examples')
     ap.add_argument('--metric', type=str, choices=['max','mean'], default='max', help='Late-phase metric per channel for selection (default: max)')
@@ -264,7 +266,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     # Set default scale label dynamically if not provided
     if args.scale_label is None:
-        args.scale_label = '%' if bool(getattr(args, 'percent_renorm', False)) else 'norm'
+        args.scale_label = '%' if (bool(getattr(args, 'percent_renorm', False)) or bool(getattr(args, 'percent_of_baseline', False))) else 'norm'
 
     Z = np.load(group_npz, allow_pickle=True)
     try:
@@ -391,26 +393,37 @@ def main(argv: Optional[List[str]] = None) -> int:
                 m_w = (t_clip >= s0) & (t_clip <= s1)
                 if not np.any(m_w):
                     return None
-                if args.renorm_stat == 'median':
+                # Choose baseline per args.anchor_metric over the chosen window
+                metric = str(getattr(args, 'anchor_metric', 'mean'))
+                if metric == 'max':
+                    b = np.nanmax(Y[:, m_w], axis=1)
+                elif metric == 'median':
                     b = np.nanmedian(Y[:, m_w], axis=1)
-                elif args.renorm_stat == 'npz':
-                    # use per-pair stat if available, else fall back to mean
-                    stat_name = str(_val_for_index(stat_pp, i)).lower() if 'stat_pp' in locals() else 'mean'
-                    if stat_name.startswith('med'):
+                else:
+                    # mean or npz fallback
+                    if args.renorm_stat == 'npz':
+                        # use per-pair stat if available, else fall back to mean
+                        stat_name = str(_val_for_index(stat_pp, i)).lower() if 'stat_pp' in locals() else 'mean'
+                        if stat_name.startswith('med'):
+                            b = np.nanmedian(Y[:, m_w], axis=1)
+                        else:
+                            b = np.nanmean(Y[:, m_w], axis=1)
+                    elif args.renorm_stat == 'median':
                         b = np.nanmedian(Y[:, m_w], axis=1)
                     else:
                         b = np.nanmean(Y[:, m_w], axis=1)
-                else:
-                    b = np.nanmean(Y[:, m_w], axis=1)
                 b = np.asarray(b, dtype=float)
                 b[~np.isfinite(b)] = 1.0
                 b[b == 0.0] = 1.0
                 return b
 
-            def _apply_renorm(Y: np.ndarray, b: Optional[np.ndarray], percent: bool) -> np.ndarray:
+            def _apply_renorm(Y: np.ndarray, b: Optional[np.ndarray], percent_change: bool, percent_of: bool) -> np.ndarray:
                 if Y.size == 0 or b is None:
                     return Y
-                if percent:
+                if percent_of:
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        return (Y / b[:, None]) * 100.0
+                if percent_change:
                     with np.errstate(divide='ignore', invalid='ignore'):
                         return (Y - b[:, None]) / b[:, None] * 100.0
                 else:
@@ -423,8 +436,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             else:
                 b_veh = _baseline_vec(Yv_clip, (s_veh, dur) if s_veh is not None else None)
                 b_ctz = _baseline_vec(Yc_clip, (s_ctz, dur) if s_ctz is not None else None)
-            Yv_clip = _apply_renorm(Yv_clip, b_veh, bool(getattr(args, 'percent_renorm', False)))
-            Yc_clip = _apply_renorm(Yc_clip, b_ctz, bool(getattr(args, 'percent_renorm', False)))
+            Yv_clip = _apply_renorm(Yv_clip, b_veh, bool(getattr(args, 'percent_renorm', False)), bool(getattr(args, 'percent_of_baseline', False)))
+            Yc_clip = _apply_renorm(Yc_clip, b_ctz, bool(getattr(args, 'percent_renorm', False)), bool(getattr(args, 'percent_of_baseline', False)))
 
         # Update global y-range after renormalization and smoothing
         if Yv_clip.size:
@@ -585,12 +598,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         base = args.out
     else:
         base = group_npz.parent / f"psth_three_pairs__{'-'.join(str(p) for p in args.plates)}"
-        # Avoid clobbering: append suffixes for percent/anchor
+        # Avoid clobbering: append suffixes for percent/anchor/metric
         suf = ''
-        if bool(getattr(args, 'percent_renorm', False)):
+        if bool(getattr(args, 'percent_of_baseline', False)):
+            suf += '__pctof'
+        elif bool(getattr(args, 'percent_renorm', False)):
             suf += '__pct'
         if str(getattr(args, 'anchor_window', 'early')) == 'late':
             suf += '__late'
+        metric = str(getattr(args, 'anchor_metric', 'mean'))
+        if metric == 'max':
+            suf += '__max'
+        elif metric == 'median':
+            suf += '__median'
         if suf:
             base = base.parent / (base.name + suf)
     base.parent.mkdir(parents=True, exist_ok=True)
