@@ -236,10 +236,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--gauss-truncate', type=float, default=3.0, help='Gaussian kernel half-width in sigmas (default 3.0)')
     ap.add_argument('--late-gap', type=float, default=0.100, help='Seconds after early end before late starts (default 0.100 s)')
     ap.add_argument('--late-dur', type=float, default=None, help='Late window duration in seconds (default: to end of axis)')
+    ap.add_argument('--anchor-window', type=str, choices=['early','late'], default='early', help='Window used to compute baseline for renormalization (default: early)')
     ap.add_argument('--xbar', type=float, default=0.2, help='Horizontal time scale bar length in seconds (default 0.2)')
     ap.add_argument('--xbar-label', type=str, default='s', help='Horizontal scale bar label suffix (default: s)')
     ap.add_argument('--label-windows', action='store_true', help='Annotate early/late window times in each subplot')
     ap.add_argument('--save-boxplot', action='store_true', help='Also compute late-phase maxima from the plotted data and save a CTZ vs VEH boxplot + stats CSV')
+    ap.add_argument('--save-persistence-boxplot', action='store_true', help='Also save CTZ/VEH boxplot of percent persistence: 100×(late/early) per channel (uses --mua-early-stat and --mua-late-metric)')
     ap.add_argument('--save-percent-boxplot', action='store_true', help='Also save CTZ/VEH boxplot of late-phase percent change vs early (uses --mua-early-stat and --mua-late-metric)')
     ap.add_argument('--no-renorm', action='store_true', help='Disable re-normalizing smoothed traces to the early window (default: renormalize)')
     ap.add_argument('--renorm-stat', type=str, choices=['mean','median','npz'], default='npz', help='Statistic for early baseline (default: npz = use per-pair stat or global if present)')
@@ -377,25 +379,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         Yv_pre = Yv_clip.copy()
         Yc_pre = Yc_clip.copy()
 
-        # Optional re-normalization to early window on the smoothed, clipped data
+        # Optional re-normalization to early/late window on the smoothed, clipped data
         if not getattr(args, 'no-renorm', False):
-            def _baseline_vec(Y: np.ndarray, start: Optional[float]) -> Optional[np.ndarray]:
-                if Y.size == 0 or start is None:
+            def _baseline_vec(Y: np.ndarray, win: Optional[Tuple[float, Optional[float]]]) -> Optional[np.ndarray]:
+                if Y.size == 0 or win is None:
                     return None
-                m_e = (t_clip >= start) & (t_clip <= (start + dur))
-                if not np.any(m_e):
+                s0, wdur = win
+                if wdur is None or wdur <= 0:
+                    s1 = x1
+                else:
+                    s1 = s0 + wdur
+                m_w = (t_clip >= s0) & (t_clip <= s1)
+                if not np.any(m_w):
                     return None
                 if args.renorm_stat == 'median':
-                    b = np.nanmedian(Y[:, m_e], axis=1)
+                    b = np.nanmedian(Y[:, m_w], axis=1)
                 elif args.renorm_stat == 'npz':
                     # use per-pair stat if available, else fall back to mean
                     stat_name = str(_val_for_index(stat_pp, i)).lower() if 'stat_pp' in locals() else 'mean'
                     if stat_name.startswith('med'):
-                        b = np.nanmedian(Y[:, m_e], axis=1)
+                        b = np.nanmedian(Y[:, m_w], axis=1)
                     else:
-                        b = np.nanmean(Y[:, m_e], axis=1)
+                        b = np.nanmean(Y[:, m_w], axis=1)
                 else:
-                    b = np.nanmean(Y[:, m_e], axis=1)
+                    b = np.nanmean(Y[:, m_w], axis=1)
                 b = np.asarray(b, dtype=float)
                 b[~np.isfinite(b)] = 1.0
                 b[b == 0.0] = 1.0
@@ -410,8 +417,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 else:
                     return Y / b[:, None]
 
-            b_veh = _baseline_vec(Yv_clip, s_veh)
-            b_ctz = _baseline_vec(Yc_clip, s_ctz)
+            # Determine which window to anchor: early or late
+            if str(getattr(args, 'anchor_window', 'early')) == 'late':
+                b_veh = _baseline_vec(Yv_clip, late_veh)
+                b_ctz = _baseline_vec(Yc_clip, late_ctz)
+            else:
+                b_veh = _baseline_vec(Yv_clip, (s_veh, dur) if s_veh is not None else None)
+                b_ctz = _baseline_vec(Yc_clip, (s_ctz, dur) if s_ctz is not None else None)
             Yv_clip = _apply_renorm(Yv_clip, b_veh, bool(getattr(args, 'percent_renorm', False)))
             Yc_clip = _apply_renorm(Yc_clip, b_ctz, bool(getattr(args, 'percent_renorm', False)))
 
@@ -574,9 +586,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         base = args.out
     else:
         base = group_npz.parent / f"psth_three_pairs__{'-'.join(str(p) for p in args.plates)}"
-        # Avoid clobbering: if percent-renorm enabled, append suffix
+        # Avoid clobbering: append suffixes for percent/anchor
+        suf = ''
         if bool(getattr(args, 'percent_renorm', False)):
-            base = base.parent / (base.name + '__pct')
+            suf += '__pct'
+        if str(getattr(args, 'anchor_window', 'early')) == 'late':
+            suf += '__late'
+        if suf:
+            base = base.parent / (base.name + suf)
     base.parent.mkdir(parents=True, exist_ok=True)
     svg = base.with_suffix('.svg')
     pdf = base.with_suffix('.pdf')
@@ -916,6 +933,97 @@ def main(argv: Optional[List[str]] = None) -> int:
             # - After smoothing, baseline VEH is ≤ 0, which makes percent change undefined.
             #   Try stronger smoothing (e.g., `--smooth-gauss-fwhm-ms 40`) or `--mua-early-stat median`.
             print('MUA percent-change: no valid channels. Check raw availability, early/late windows, x-range, and baseline > 0. See Troubleshooting in module docstring.')
+
+    # Optional: Persistence boxplot: percent of early retained at late (per channel, per side)
+    if getattr(args, 'save_persistence_boxplot', False):
+        from pathlib import Path as _Path
+        def _win_mask(tt: np.ndarray, win: Optional[Tuple[float, Optional[float]]]) -> np.ndarray:
+            if win is None:
+                return np.zeros_like(tt, dtype=bool)
+            s0, wdur = win
+            s1 = min(x1, s0 + (wdur if (wdur is not None and wdur > 0) else max(0.0, x1 - s0)))
+            return (tt >= s0) & (tt <= s1)
+        ctz_ratios: list[float] = []
+        veh_ratios: list[float] = []
+        recs: list[dict] = []
+        for r, row in enumerate(rows):
+            tt = np.asarray(row['t'], dtype=float)
+            # Use pre-renorm smoothed arrays for window metrics
+            Yv_nr = np.asarray(row.get('Yv_nr'), dtype=float) if row.get('Yv_nr') is not None else None
+            Yc_nr = np.asarray(row.get('Yc_nr'), dtype=float) if row.get('Yc_nr') is not None else None
+            e_v = row.get('early_veh'); l_v = row.get('late_veh')
+            e_c = row.get('early_ctz'); l_c = row.get('late_ctz')
+            if Yv_nr is None or Yc_nr is None or e_v is None or l_v is None or e_c is None or l_c is None:
+                continue
+            m_e_v = _win_mask(tt, e_v)
+            m_l_v = _win_mask(tt, l_v)
+            m_e_c = _win_mask(tt, e_c)
+            m_l_c = _win_mask(tt, l_c)
+            if not (np.any(m_e_v) and np.any(m_l_v) and np.any(m_e_c) and np.any(m_l_c)):
+                continue
+            # Early baseline per channel
+            if str(args.mua_early_stat) == 'median':
+                b_v = np.nanmedian(Yv_nr[:, m_e_v], axis=1)
+                b_c = np.nanmedian(Yc_nr[:, m_e_c], axis=1)
+            else:
+                b_v = np.nanmean(Yv_nr[:, m_e_v], axis=1)
+                b_c = np.nanmean(Yc_nr[:, m_e_c], axis=1)
+            # Late metric per channel
+            if str(args.mua_late_metric) == 'max':
+                L_v = np.nanmax(Yv_nr[:, m_l_v], axis=1)
+                L_c = np.nanmax(Yc_nr[:, m_l_c], axis=1)
+            else:
+                L_v = np.nanmean(Yv_nr[:, m_l_v], axis=1)
+                L_c = np.nanmean(Yc_nr[:, m_l_c], axis=1)
+            b_v = np.asarray(b_v, dtype=float); b_c = np.asarray(b_c, dtype=float)
+            L_v = np.asarray(L_v, dtype=float); L_c = np.asarray(L_c, dtype=float)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r_v = 100.0 * (L_v / b_v)
+                r_c = 100.0 * (L_c / b_c)
+            ok_v = np.isfinite(r_v) & np.isfinite(b_v) & (b_v > 0)
+            ok_c = np.isfinite(r_c) & np.isfinite(b_c) & (b_c > 0)
+            # Collect
+            for ch in np.where(ok_v)[0]:
+                veh_ratios.append(float(r_v[ch]))
+                recs.append({'pair': row['pid'], 'plate': int(str(row['pid']).split('_')[1]) if str(row['pid']).startswith('plate_') else -1,
+                             'row': r, 'ch': int(ch), 'side': 'VEH', 'early': float(b_v[ch]), 'late': float(L_v[ch]), 'ratio_pct': float(r_v[ch])})
+            for ch in np.where(ok_c)[0]:
+                ctz_ratios.append(float(r_c[ch]))
+                recs.append({'pair': row['pid'], 'plate': int(str(row['pid']).split('_')[1]) if str(row['pid']).startswith('plate_') else -1,
+                             'row': r, 'ch': int(ch), 'side': 'CTZ', 'early': float(b_c[ch]), 'late': float(L_c[ch]), 'ratio_pct': float(r_c[ch])})
+        import matplotlib.pyplot as _plt
+        fig6 = _plt.figure(figsize=(5.0, 5.0), dpi=150)
+        ax6 = fig6.add_subplot(1, 1, 1)
+        import numpy as _np
+        C = _np.asarray(ctz_ratios, dtype=float)
+        V = _np.asarray(veh_ratios, dtype=float)
+        data = [C, V]
+        bp = ax6.boxplot(data, positions=[1, 2], widths=0.6, patch_artist=True,
+                         boxprops=dict(linewidth=1.2, edgecolor='k'),
+                         medianprops=dict(linewidth=1.6, color='k'),
+                         whiskerprops=dict(linewidth=1.2, color='k'),
+                         capprops=dict(linewidth=1.2, color='k'), showfliers=False)
+        for patch, fc in zip(bp['boxes'], ['tab:blue', 'k']):
+            patch.set_facecolor(fc); patch.set_alpha(0.5)
+        rng = _np.random.default_rng(7)
+        for i, arr in enumerate(data, start=1):
+            if arr.size:
+                xj = i + (rng.random(arr.size) - 0.5) * 0.18
+                ax6.scatter(xj, arr, s=8, color='0.6', alpha=0.6, linewidths=0)
+        ax6.set_xticks([1, 2]); ax6.set_xticklabels(['CTZ', 'VEH'])
+        ax6.axhline(100.0, color='0.7', lw=1.0, ls='--')
+        ax6.set_ylabel('Persistence: late/early × 100 (%)')
+        fig6.tight_layout()
+        pb_base = _Path(str(base.with_suffix('')) + f"__persistence__late_over_early__late-{str(args.mua_late_metric)}__early-{str(args.mua_early_stat)}")
+        fig6.savefig(pb_base.with_suffix('.svg')); fig6.savefig(pb_base.with_suffix('.pdf'))
+        _plt.close(fig6)
+        # CSV
+        import csv as _csv
+        csv_path = _Path(str(pb_base.with_suffix('')) + '.csv')
+        with csv_path.open('w', newline='') as f:
+            w = _csv.DictWriter(f, fieldnames=['pair','plate','row','ch','side','early','late','ratio_pct'])
+            w.writeheader(); w.writerows(recs)
+        print(f"Persistence boxplot saved: {pb_base.with_suffix('.svg')} and {pb_base.with_suffix('.pdf')}; data: {csv_path}")
 
     return 0
 
