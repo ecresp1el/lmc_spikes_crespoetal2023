@@ -189,6 +189,7 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--roi-interactive', action='store_true', help='Pick ROI interactively on a reference image before processing')
     p.add_argument('--roi-ref-root', type=str, default=None, help='Root name to use for interactive ROI (default: first available)')
     p.add_argument('--roi-json', type=Path, default=None, help='Path to load/save ROI JSON {"x":int,"y":int,"w":int,"h":int}')
+    p.add_argument('--roi-preview', action='store_true', help='After selecting/providing ROI, show a preview with overlay + crop')
     return p.parse_args()
 
 
@@ -206,7 +207,8 @@ def main() -> int:
     channels_norm_dir = out_root / 'channels' / 'norm'
     channels_pseudo_dir = out_root / 'channels' / 'pseudo'
     merged_dir = out_root / 'merged'
-    for d in (figures_dir, channels_raw_dir, channels_norm_dir, channels_pseudo_dir, merged_dir):
+    roi_overlays_dir = figures_dir / 'roi_overlays'
+    for d in (figures_dir, channels_raw_dir, channels_norm_dir, channels_pseudo_dir, merged_dir, roi_overlays_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # Locate files per root
@@ -303,6 +305,38 @@ def main() -> int:
                     print(f"[roi] Saved ROI to {roi_json_path}")
                 except Exception as ex:
                     print(f"[warn] Failed to save ROI JSON: {ex}")
+
+    # Optionally save/display ROI overlays on full images before cropping
+    if roi is not None:
+        def norm01(a: np.ndarray) -> np.ndarray:
+            lo = np.percentile(a, float(args.low)); hi = np.percentile(a, float(args.high))
+            return np.clip((a.astype(float) - lo) / (hi - lo + 1e-12), 0, 1)
+        x, y, w, h = roi
+        for r in raw.keys():
+            ov_full = np.stack([norm01(raw[r]['tdTom']), norm01(raw[r]['EYFP']), norm01(raw[r]['DAPI'])], axis=-1)
+            H, W = ov_full.shape[:2]
+            x0 = max(0, min(W, x)); y0 = max(0, min(H, y))
+            x1 = max(x0, min(W, x0 + max(1, w))); y1 = max(y0, min(H, y0 + max(1, h)))
+            fig_ov, ax_ov = plt.subplots(1, 2, figsize=(10, 5))
+            ax_ov[0].imshow(ov_full); ax_ov[0].add_patch(patches.Rectangle((x0, y0), x1-x0, y1-y0, fill=False, edgecolor='yellow', linewidth=2))
+            ax_ov[0].set_title(f"{r} — Full with ROI"); ax_ov[0].axis('off')
+            ax_ov[1].imshow(ov_full[y0:y1, x0:x1]); ax_ov[1].set_title(f"{r} — ROI crop"); ax_ov[1].axis('off')
+            fig_ov.tight_layout()
+            fig_ov.savefig(roi_overlays_dir / f"{r.replace('/', '_')}_roi_overlay.png", dpi=200)
+            plt.close(fig_ov)
+        # Optional on-screen preview for a chosen root
+        if getattr(args, 'roi_preview', False):
+            refp = args.roi_ref_root or (next(iter(raw.keys())) if raw else None)
+            if refp and refp in raw:
+                ov_full = np.stack([norm01(raw[refp]['tdTom']), norm01(raw[refp]['EYFP']), norm01(raw[refp]['DAPI'])], axis=-1)
+                H, W = ov_full.shape[:2]
+                x0 = max(0, min(W, x)); y0 = max(0, min(H, y))
+                x1 = max(x0, min(W, x0 + max(1, w))); y1 = max(y0, min(H, y0 + max(1, h)))
+                fig_prev, ax_prev = plt.subplots(1, 2, figsize=(10, 5))
+                ax_prev[0].imshow(ov_full); ax_prev[0].add_patch(patches.Rectangle((x0, y0), x1-x0, y1-y0, fill=False, edgecolor='yellow', linewidth=2))
+                ax_prev[0].set_title(f"{refp} — Full with ROI"); ax_prev[0].axis('off')
+                ax_prev[1].imshow(ov_full[y0:y1, x0:x1]); ax_prev[1].set_title(f"{refp} — ROI crop"); ax_prev[1].axis('off')
+                fig_prev.tight_layout(); plt.show()
 
     # Apply ROI crop
     if roi is not None:
