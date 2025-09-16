@@ -4,41 +4,66 @@ from __future__ import annotations
 """
 CTZ vs Luciferin early/late firing rates and decay tau from pooled PSTH NPZs.
 
+Overview
+--------
+This headless script reproduces group‑level comparisons directly from pooled NPZ
+files saved by the Tk PSTH GUI. It computes:
+- Early‑phase firing rate (Hz) per channel using the exact early window you set
+  in the GUI.
+- Late‑phase firing rate (Hz) per channel using a consistent post‑phase rule or
+  an explicit window you provide.
+- Per‑channel decay time constant tau (seconds) after the early burst by fitting
+  an exponential decay model to FR(t).
+
 Data source and provenance
 --------------------------
-- Inputs are pooled NPZs written by the Tk GUI: `scripts/psth_explorer_tk.py` →
-  `_run_group_comparison()`. These contain per‑pair, per‑channel matrices and
-  metadata reflecting the GUI selections you made for the early window and
-  smoothing/binning.
-- Keys used here (all saved by the GUI group step):
-  - `t` (time axis, seconds), `pairs` (IDs)
-  - `starts_ctz`, `starts_veh` (per‑pair early starts, seconds)
-  - `early_dur` (global early duration, seconds) and `early_dur_per_pair` (optional overrides)
-  - `eff_bin_ms` (global bin ms) and `eff_bin_ms_per_pair` (per‑pair effective bin ms)
+- Inputs are pooled NPZs written by the GUI Group step: see
+  `scripts/psth_explorer_tk.py` (_run_group_comparison). These include per‑pair,
+  per‑channel matrices and the metadata reflecting your GUI selections.
+- Keys used (all saved alongside the pooled data):
+  - `t` (seconds), `pairs`
+  - `starts_ctz`, `starts_veh` (per‑pair early window start, seconds)
+  - `early_dur` (seconds) and, if present, `early_dur_per_pair`
+  - `eff_bin_ms` and (preferred) `eff_bin_ms_per_pair`
   - `ctz_counts_all`, `veh_counts_all` (object arrays of per‑channel counts per bin)
-  - Optional: `ctz_norm`, `veh_norm` for normalized overlay context
+  - Optional `ctz_norm`, `veh_norm` (normalized means overlays, only for context)
 
-What this script computes
+Exact tau computation (per channel)
+-----------------------------------
+For each pair and each channel on a side (CTZ/VEH):
+1) Convert counts/bin → FR (Hz): FR(t) = counts_per_bin / eff_bin_s, where eff_bin_s
+   is taken from `eff_bin_ms_per_pair[i] / 1000` or global `eff_bin_ms/1000`.
+2) Baseline (Hz): mean FR over the pre‑chem window [−baseline_pre_s, 0). Default
+   baseline_pre_s = 0.10 s.
+3) Early burst check (include channel only if both pass): mean FR within the GUI
+   early window [start, start+dur] must be ≥ max(baseline × tau_burst_min_rel,
+   baseline + tau_burst_min_abs_hz). Defaults: rel=1.20, abs=1.0 Hz.
+4) Fit start (seconds): ps = early_end + tau_start_delta_s. Default delta = 0.050 s.
+5) Fit region: take samples at t ≥ ps where (FR − baseline) > 0 to avoid log of
+   non‑positive values and require at least tau_min_points bins (default 8).
+6) Linear regression on ln(FR − baseline) vs time (seconds): ln(FR − baseline) ≈ a + b t.
+   If b < 0, tau = −1/b (seconds). Sanity checks apply (finite; >1e−3 s; ≤ tau_max_s if set).
+
+Late‑phase window (for late FR)
+-------------------------------
+The GUI only defines the early window. For late‑phase FR we use the same
+post‑phase rule as other scripts unless overridden: start = early_end + 0.100 s +
+one bin; end = end of trace (or ps + post_dur).
+
+Reproducibility and usage
 -------------------------
-- Early-phase FR (Hz): mean counts/bin within each side’s early window divided by
-  effective bin seconds. Early windows come directly from `starts_*` and
-  `early_dur` (per‑pair overrides used if present).
-- Late-phase FR (Hz): mean counts/bin in a late window. By default we mimic the
-  post-phase convention used in `scripts/analyze_psth_post_vs_early.py`:
-  start = early_end + 0.100 s + 1 bin; end = end of trace (overridable via CLI).
-- Tau (s): post‑early decay time constant per channel from an exponential‑decay
-  model on FR(t). We fit ln(FR − baseline) vs time (seconds) after a short gap
-  following the early window. Tau is reported in seconds.
-
-Relationship to other scripts
------------------------------
-- `scripts/analyze_psth_post_vs_early.py`: operates on normalized matrices and
-  summarizes post‑phase maxima. This script operates on counts to get absolute
-  FR (Hz) and estimates decay tau; it complements, not duplicates, that module.
-- `scripts/plot_psth_group_ctz_veh.py`: renders group overlays; we reuse its
-  discovery/saving patterns but compute different metrics here.
-- `scripts/analyze_spike_matrices.py`: works on binary matrices for rasters.
-  Our inputs ultimately derive from the same matrices via the GUI pooling step.
+1) Produce a pooled NPZ via the GUI:
+   - Run `python -m scripts.psth_explorer_tk`, select pairs, set early window,
+     click Group. This writes `psth_group_data__*.npz` to `<output_root>/exports/
+     spikes_waveforms/analysis/spike_matrices/plots/` and also a pointer
+     `psth_group_latest.npz` or `psth_group_latest.txt`.
+2) Run this script against that NPZ:
+   - Auto‑discover: `python -m scripts.analyze_early_phase_fr`
+   - Explicit path: `python -m scripts.analyze_early_phase_fr --group-npz /path/to/psth_group_data__N.npz`
+3) Key CLI parameters controlling tau: `--baseline-pre-s`, `--tau-start-delta-s`,
+   `--tau-min-points`, `--tau-burst-min-rel`, `--tau-burst-min-abs-hz`, and
+   optional `--tau-max-s` (censors large taus in the analysis). Plot readability
+   can be improved via `--tau-plot-ymax` or `--tau-plot-pctl` (visual cap only).
 
 Outputs (written next to the NPZ)
 ---------------------------------
@@ -47,12 +72,24 @@ Outputs (written next to the NPZ)
 - Tau boxplot + CSV:      `<npz_stem>__tau_boxplot.(svg|pdf)`, `<npz_stem>__tau_stats.csv`
 - Optional: early composite overlay: `<npz_stem>__earlyfr_composite.(svg|pdf)`
 
-Notes on units
---------------
-- The time axis `t` is in seconds, so FR is in Hz and tau is in seconds.
-- Tau can exceed the plotted window length mathematically if the decay is very
-  slow; you can restrict it via `--tau-max-s` if you want to censor large
-  values relative to your acquisition window.
+Assumptions and handling details
+--------------------------------
+- Time `t` is seconds; FR is Hz; tau is seconds.
+- If per‑pair `early_dur_per_pair` exists, it overrides `early_dur` for that pair.
+- Effective bin seconds are pair‑specific where available; otherwise use global
+  or derive from median dt of `t` as a last resort.
+- FR for tau is optionally smoothed (boxcar over bins) only for fitting
+  stability; raw counts are always used to compute FR (no spike re‑detection).
+- Visualization caps (y‑axis) never alter CSV values; they only improve plot
+  readability.
+- Naming in plots: treated side is labeled “Luciferin (CTZ)” and control is
+  labeled “Vehicle”.
+
+Related scripts
+---------------
+- `scripts/analyze_psth_post_vs_early.py` — normalized late‑phase max stats.
+- `scripts/plot_psth_group_ctz_veh.py` — group overlays for pooled NPZs.
+- `scripts/analyze_spike_matrices.py` — binary raster visualizations.
 """
 
 import argparse
@@ -414,14 +451,15 @@ def _smooth_ma1d(y: np.ndarray, k: int) -> np.ndarray:
 
 
 def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict], list[np.ndarray], list[np.ndarray]]:
-    """Estimate post-early decay time constant (tau) per channel by fitting ln(FR - baseline).
+    """Estimate post‑early decay time constant (tau) per channel by fitting ln(FR − baseline).
 
-    Steps per pair/side/channel:
-    - Compute FR(t) = counts/bin / eff_bin_s
-    - Baseline = mean FR in [-baseline_pre_s, 0)
-    - Require early burst: mean FR in [start, start+early_dur] >= max(baseline * rel, baseline + abs_hz)
-    - Fit ln(max(FR - baseline, eps)) vs t for t in [early_end + tau_start_delta_s, ...] while FR>baseline
-    - tau = -1/slope (only if slope<0 and enough points)
+    Steps per pair/side/channel (see module docstring for full details):
+    - Compute FR(t) = counts/bin ÷ eff_bin_s (Hz).
+    - Baseline = mean FR in the pre‑chem window [-baseline_pre_s, 0).
+    - Include only channels that burst in early window relative to baseline.
+    - Fit ln(FR − baseline) vs time for t ≥ early_end + tau_start_delta_s, using
+      only positive (FR − baseline) samples and at least tau_min_points bins.
+    - If slope b from ln(FR − baseline) ≈ a + b t is negative, tau = −1/b (s).
     """
     t = np.asarray(Z.get('t'), dtype=float)
     starts_ctz = np.asarray(Z.get('starts_ctz', []), dtype=float)
@@ -449,6 +487,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
     per_pair_rows: list[dict] = []
 
     for i in range(P):
+        # Effective bin size (s) for converting counts to Hz
         eff_bin_s = _eff_bin_s_for_pair(Z, i, t)
         e0_c = float(starts_ctz[i]) if i < starts_ctz.size else 0.0
         e0_v = float(starts_veh[i]) if i < starts_veh.size else 0.0
@@ -470,7 +509,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                 continue
             if A.ndim != 2 or A.size == 0:
                 continue
-            # Compute FR per channel time series (Hz)
+            # Per‑channel FR time series (Hz). No spike re‑detection; just bin‑level counts.
             FR = A / max(eff_bin_s, 1e-12)
             if args.tau_smooth_bins and int(args.tau_smooth_bins) > 1:
                 FR = np.apply_along_axis(lambda x: _smooth_ma1d(x, int(args.tau_smooth_bins)), 1, FR)
@@ -480,6 +519,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                 continue
             for ch in range(FR.shape[0]):
                 fr = FR[ch, :].astype(float)
+                # Baseline FR (Hz) and early‑window mean (Hz)
                 base = float(np.nanmean(fr[m_base]))
                 early_mean = float(np.nanmean(fr[m_early]))
                 # Burst requirement
@@ -490,7 +530,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                 m_fit = (t >= ps)
                 if not np.any(m_fit):
                     continue
-                # Use region where fr > base to avoid log of <=0
+                # Use only region where (fr − base) > 0 to avoid log of ≤ 0; require enough points
                 y = fr[m_fit] - base
                 t_fit = t[m_fit]
                 valid = np.isfinite(y) & (y > 0)
@@ -498,7 +538,7 @@ def _collect_tau(Z: dict, args: Args) -> Tuple[np.ndarray, np.ndarray, list[dict
                 t_fit = t_fit[valid]
                 if y.size < int(args.tau_min_points):
                     continue
-                # Linear fit to ln(y) = a + b*t  => tau = -1/b if b<0
+                # Linear fit to ln(y) = a + b t  => tau = −1/b if b < 0
                 try:
                     ln_y = np.log(y)
                     b, a = np.polyfit(t_fit, ln_y, 1)  # slope b, intercept a
@@ -569,7 +609,7 @@ def _save_boxplot(fig_base: Path, arr_ctz: np.ndarray, arr_veh: np.ndarray, ylab
             x = i + (rng.random(arr.size) - 0.5) * 0.18
             ax.scatter(x, arr, s=8, color='0.6', alpha=0.6, linewidths=0)
     ax.set_xticks([1, 2])
-    ax.set_xticklabels(['CTZ', 'Luciferin'])
+    ax.set_xticklabels(['Luciferin (CTZ)', 'Vehicle'])
     ax.set_ylabel(ylabel)
     if title:
         ax.set_title(title)
@@ -645,8 +685,9 @@ def _save_composite(fig_base: Path, Z: dict) -> None:
     ax2 = fig.add_subplot(gs[0, 1])
 
     # Left: overlay of group means (normalized)
-    ax1.plot(t, _apply_smoothing_1d(veh_mean, t, kbox=1), color='k', lw=1.5, label='Luciferin mean')
-    ax1.plot(t, _apply_smoothing_1d(ctz_mean, t, kbox=1), color='tab:blue', lw=1.5, label='CTZ mean')
+    # Treated side is CTZ (Luciferin); control is Vehicle (VEH)
+    ax1.plot(t, _apply_smoothing_1d(ctz_mean, t, kbox=1), color='tab:blue', lw=1.5, label='Luciferin (CTZ) mean')
+    ax1.plot(t, _apply_smoothing_1d(veh_mean, t, kbox=1), color='k', lw=1.5, label='Vehicle mean')
     ax1.axhline(0.0, color='0.3', lw=0.8)
     ax1.axvline(0.0, color='r', ls='--', lw=0.8)
     ax1.legend(frameon=False, fontsize=9)
@@ -677,7 +718,7 @@ def _save_composite(fig_base: Path, Z: dict) -> None:
             x = i + (rng.random(arr.size) - 0.5) * 0.18
             ax2.scatter(x, arr, s=8, color='0.6', alpha=0.6, linewidths=0)
     ax2.set_xticks([1, 2])
-    ax2.set_xticklabels(['CTZ', 'Luciferin'])
+    ax2.set_xticklabels(['Luciferin (CTZ)', 'Vehicle'])
     ax2.set_ylabel('Early-phase firing rate (Hz)')
     fig.tight_layout()
     fig.savefig((fig_base.parent / (fig_base.name + '_composite')).with_suffix('.svg'))
@@ -779,6 +820,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print('[earlyfr] group NPZ not found:', grp_path)
         return 1
     Z = _load_group_npz(grp_path)
+    # Report source for reproducibility
+    try:
+        print('[earlyfr] NPZ:', grp_path)
+        print('[earlyfr] tau_params:',
+              f'baseline_pre_s={float(getattr(args, "baseline_pre_s", 0.0))}',
+              f'tau_start_delta_s={float(getattr(args, "tau_start_delta_s", 0.0))}',
+              f'tau_min_points={int(getattr(args, "tau_min_points", 0))}',
+              f'tau_burst_min_rel={float(getattr(args, "tau_burst_min_rel", 0.0))}',
+              f'tau_burst_min_abs_hz={float(getattr(args, "tau_burst_min_abs_hz", 0.0))}',
+              f'tau_smooth_bins={int(getattr(args, "tau_smooth_bins", 0))}',
+              f'tau_max_s={getattr(args, "tau_max_s", None)}')
+    except Exception:
+        pass
     save_dir = grp_path.parent
 
     # Early-phase FR (uses GUI metadata: starts_ctz/starts_veh + early_dur)
