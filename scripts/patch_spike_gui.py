@@ -26,17 +26,178 @@ GUI workflow (manual-only, per cell)
      If no spikes: Mark 0 Sweep.
   4) Next Sweep switches to After for the same sweep. Repeat step 3.
   5) Next Sweep again advances to the next sweep and switches back to Before.
-  6) When finished for the cell, click Save All Labels (writes Before + After CSVs,
-     marks the cell complete, and advances to the next incomplete cell in the same group).
+  6) When finished for the cell, click Save All Labels (writes Before + After CSVs
+     and marks the cell complete).
+  7) Use Verify Saved (optional) to check that the saved CSVs exist and include all sweeps.
+  8) Click Next Cell to move on (stays within the selected group).
 
 Checks & updates (explicit)
   - Next Sweep is blocked unless the current label/sweep is confirmed
     via Detect Sweep or Mark 0 Sweep.
   - Save All Labels blocks unless every sweep for BOTH labels is confirmed.
   - Switching groups is blocked if the current cell is incomplete.
-  - After Save All Labels, the cell is marked complete in the progress file.
+  - After Save All Labels, the cell is marked complete in the progress file (no auto-advance).
   - The progress file is updated whenever the plot refreshes (navigation or detection).
+  - Verify Saved checks for output files and validates sweep coverage by label.
+  - Verify Saved is intended after Save All Labels for the current cell.
   - The app resumes from the last saved state if the cell was not completed.
+
+High-level flow diagram (UI -> functions -> outputs)
+  +---------------------+
+  | main()              |
+  +---------------------+
+             |
+             v
+  +---------------------+       +----------------------+
+  | LineSpikeGUI.__init__|-----> | build_index() -> df  |
+  +---------------------+       +----------------------+
+             |
+             v
+  +---------------------+       +----------------------+
+  | _load_progress()    |-----> | progress JSON        |
+  +---------------------+       +----------------------+
+             |
+             v
+  +---------------------+       +----------------------+
+  | _set_group()        |-----> | rec list + selection |
+  +---------------------+       +----------------------+
+             |
+             v
+  +---------------------+       +----------------------+
+  | _load_recording()   |-----> | pyabf.ABF handle     |
+  +---------------------+       +----------------------+
+             |
+             v
+  +---------------------+<----->+----------------------+
+  | _draw_sweep()        |      | plot + status update |
+  +---------------------+       +----------------------+
+             |
+             v
+  +---------------------+       +----------------------+
+  | _persist_last_state |-----> | progress JSON        |
+  +---------------------+       +----------------------+
+
+  User actions (manual):
+    Draw Line -> start_line_capture() -> on_click() -> line_by_rec_label
+    Detect Sweep -> detect_current_sweep() -> _detect_for_sweep_with()
+      -> results + confirmed -> _draw_sweep()
+    Mark 0 Sweep -> mark_zero_sweep() -> results + confirmed -> _draw_sweep()
+    Next Sweep -> next_sweep() -> _load_recording() -> _draw_sweep()
+    Save All Labels -> save_all_labels() -> write CSVs -> _mark_completed() -> progress JSON
+    Verify Saved -> verify_saved_outputs() -> CSV existence + sweep coverage check
+
+Complete function map (all functions and methods)
+  Top-level functions:
+    +----------------------------------------------+
+    | _slug                                         |
+    | build_index                                   |
+    | _distance_from_ms                             |
+    | _width_from_ms                                |
+    | line_y_at_time                                |
+    | parse_args                                    |
+    | main                                          |
+    +----------------------------------------------+
+
+  Data structures:
+    +----------------------------------------------+
+    | PeakParams (dataclass):                       |
+    |   prominence, distance_samples, width_samples |
+    +----------------------------------------------+
+
+  LineSpikeGUI (class methods):
+    +----------------------------------------------+
+    | __init__                                      |
+    | _build_widgets                                |
+    | _load_progress                                |
+    | _save_progress                                |
+    | _persist_last_state                           |
+    | _is_completed                                 |
+    | _set_group                                    |
+    | _first_incomplete_index                       |
+    | _update_record_list                           |
+    | _update_progress_labels                       |
+    | _next_incomplete_cell                         |
+    | _mark_completed                               |
+    | _advance_after_completion                     |
+    | _current_recording_id                         |
+    | _current_label                                |
+    | _abf_path                                     |
+    | _load_recording                               |
+    | _current_line                                 |
+    | _window_mask                                  |
+    | _draw_sweep                                   |
+    | _update_status                                |
+    | on_group_change                               |
+    | on_label_change                               |
+    | prev_recording                                |
+    | next_recording                                |
+    | prev_sweep                                    |
+    | next_sweep                                    |
+    | start_line_capture                            |
+    | on_click                                      |
+    | _detect_for_sweep_with                        |
+    | _detect_for_sweep                             |
+    | detect_current_sweep                          |
+    | mark_zero_sweep                               |
+    | detect_all_sweeps                             |
+    | save_csv                                      |
+    | save_all_labels                               |
+    | verify_saved_outputs                          |
+    | run                                           |
+    +----------------------------------------------+
+
+Function index (what each does)
+  - _slug: build safe filename fragments for output paths.
+  - build_index: scan base-dir for ABF files and build the metadata table.
+  - _distance_from_ms: convert a ms distance to sample count.
+  - _width_from_ms: convert a ms width to sample count.
+  - line_y_at_time: compute threshold line Y values at time vector.
+  - parse_args: CLI arguments for GUI launch.
+  - main: CLI entry point and GUI bootstrapping.
+  - PeakParams: container for peak detection settings.
+  - LineSpikeGUI.__init__: loads index/progress, sets group/recording, builds UI.
+  - _build_widgets: constructs the GUI (dropdowns, buttons, list, plot).
+  - _load_progress: read progress JSON if present.
+  - _save_progress: write progress JSON.
+  - _persist_last_state: save current group/recording/label/sweep.
+  - _is_completed: check if a cell is marked complete.
+  - _set_group: load group, choose recording, and refresh UI.
+  - _first_incomplete_index: find first incomplete cell in current group.
+  - _update_record_list: refresh the listbox with completion marks.
+  - _update_progress_labels: refresh progress counters in the UI header.
+  - _next_incomplete_cell: select next incomplete cell (group-only).
+  - _mark_completed: mark a cell complete in progress JSON.
+  - _advance_after_completion: move to next incomplete cell in the same group.
+  - _current_recording_id: current recording ID pointer.
+  - _current_label: current label ("Before"/"After").
+  - _abf_path: resolve the ABF file path for group/recording/label.
+  - _load_recording: load ABF for label and set sweep index.
+  - _current_line: get the current threshold line for label.
+  - _window_mask: build time-window mask for plotting/detection.
+  - _draw_sweep: render trace, line, and detected peaks; update progress.
+  - _update_status: update status bar text.
+  - on_group_change: enforce completion before switching group.
+  - on_label_change: switch Before/After in-place (same sweep).
+  - prev_recording: disabled (use Next Cell).
+  - next_recording: jump to next incomplete cell in current group.
+  - prev_sweep: move back in the Before/After pairing order.
+  - next_sweep: enforce confirmation then move forward in pairing order.
+  - start_line_capture: arm line drawing mode.
+  - on_click: collect two points to define a manual line.
+  - _detect_for_sweep_with: compute peaks for a sweep given a line.
+  - _detect_for_sweep: wrapper that uses the current line.
+  - detect_current_sweep: detect and confirm current sweep.
+  - mark_zero_sweep: confirm current sweep with zero spikes.
+  - detect_all_sweeps: detect all sweeps for current label (bulk).
+  - save_csv: save current label (only) to CSVs.
+  - save_all_labels: save Before+After for the cell, mark completed.
+  - verify_saved_outputs: validate output CSVs and sweep coverage.
+  - run: start the Tk main loop.
+
+Outputs (files)
+  - <group>__<recording>__all_labels__spike_summaries.csv
+  - <group>__<recording>__all_labels__spike_events.csv
+  - patch_spike_gui_progress.json (completion + last state)
 
 CSV outputs (detailed schema)
   1) <group>__<recording>__all_labels__spike_summaries.csv
@@ -269,6 +430,7 @@ class LineSpikeGUI:
         ttk.Button(controls, text="Detect All", command=self.detect_all_sweeps).pack(side=tk.LEFT, padx=2)
         ttk.Button(controls, text="Save CSV", command=self.save_csv).pack(side=tk.LEFT, padx=6)
         ttk.Button(controls, text="Save All Labels", command=self.save_all_labels).pack(side=tk.LEFT, padx=2)
+        ttk.Button(controls, text="Verify Saved", command=self.verify_saved_outputs).pack(side=tk.LEFT, padx=2)
 
         self.status = ttk.Label(self.root, text="Ready.")
         self.status.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
@@ -524,7 +686,10 @@ class LineSpikeGUI:
 
     def next_recording(self) -> None:
         if not self._is_completed(self.group, self._current_recording_id()):
-            messagebox.showwarning("Cell Not Complete", "Finish the current cell before moving on.")
+            messagebox.showwarning(
+                "Cell Not Complete",
+                "Finish the current cell and save it before moving on.",
+            )
             return
         next_cell = self._next_incomplete_cell(group_only=True)
         if not next_cell:
@@ -791,8 +956,72 @@ class LineSpikeGUI:
         pd.DataFrame(event_rows).to_csv(events_path, index=False)
         self._mark_completed(self.group, rec_id)
         msg = f"Saved ALL labels CSV to {summary_path} and {events_path}."
+        msg += " Use Verify Saved, then Next Cell."
         self._update_status(msg)
-        self._advance_after_completion()
+        self._persist_last_state()
+
+    def verify_saved_outputs(self) -> None:
+        rec_id = self._current_recording_id()
+        out_dir = self.output_dir
+        slug_group = _slug(self.group)
+        base = f"{slug_group}__{rec_id}__all_labels"
+        summary_path = out_dir / f"{base}__spike_summaries.csv"
+        events_path = out_dir / f"{base}__spike_events.csv"
+
+        if not summary_path.exists() or not events_path.exists():
+            msg = f"Missing files for {rec_id}: {summary_path.name} / {events_path.name}"
+            self._update_status(msg)
+            messagebox.showwarning("Verify Saved", msg)
+            return
+
+        try:
+            summary_df = pd.read_csv(summary_path)
+            events_df = pd.read_csv(events_path)
+        except Exception as exc:
+            msg = f"Failed to read CSVs: {exc}"
+            self._update_status(msg)
+            messagebox.showerror("Verify Saved", msg)
+            return
+
+        expected_cols = [
+            "Group",
+            "Recording_ID",
+            "Label",
+            "Sweep_Number",
+            "Line_Points",
+            "N_Peaks",
+            "Peak_Indices",
+            "Peak_Times_s",
+        ]
+        missing_cols = [c for c in expected_cols if c not in summary_df.columns]
+        issues = []
+        if missing_cols:
+            issues.append(f"Missing columns: {missing_cols}")
+
+        coverage = {}
+        for label in ("Before", "After"):
+            try:
+                abf = pyabf.ABF(str(self._abf_path(rec_id, label)))
+                expected = len(abf.sweepList)
+            except Exception:
+                expected = None
+            have = summary_df[summary_df["Label"] == label]["Sweep_Number"].nunique()
+            coverage[label] = (have, expected)
+            if expected is not None and have != expected:
+                issues.append(f"{label} sweeps {have}/{expected}")
+
+        summary_rows = len(summary_df)
+        event_rows = len(events_df)
+        msg = (
+            f"{rec_id}: summary rows={summary_rows}, events rows={event_rows}, "
+            f"Before sweeps={coverage['Before'][0]}/{coverage['Before'][1]}, "
+            f"After sweeps={coverage['After'][0]}/{coverage['After'][1]}"
+        )
+        self._update_status(msg)
+        if issues:
+            messagebox.showwarning("Verify Saved", msg + f" | Issues: {issues}")
+        else:
+            messagebox.showinfo("Verify Saved", msg)
 
     def run(self) -> None:
         self.root.mainloop()
