@@ -2,7 +2,11 @@
 """
 GUI spike detector for BLADe patch ABF recordings.
 
-Usage:
+Output location
+  By default, CSVs are written under ./patch_spike_output_gui relative to where you run
+  the command (current working directory). You can override with --output-dir.
+
+How to run (example)
   python scripts/patch_spike_gui.py \
     --base-dir "/Users/ecrespo/Desktop/BLADe_patch_data_beforefileremoval" \
     --group "L + ACR2-CTZ" \
@@ -10,6 +14,43 @@ Usage:
     --output-dir ./patch_spike_output_gui \
     --t-start 0 --t-end 1.2 \
     --prominence 5
+
+GUI workflow (manual-only)
+  1) Start at Before for sweep 0.
+  2) If spikes are expected: Draw Line (two clicks) -> Detect Sweep (dots appear).
+     If no spikes: Mark 0 Sweep.
+  3) Next Sweep switches to After for the same sweep. Repeat step 2.
+  4) Next Sweep again advances to the next sweep and switches back to Before.
+  5) When finished for the cell, click Save All Labels (writes Before + After CSVs).
+
+Notes:
+  - You must confirm each label/sweep via Detect Sweep or Mark 0 Sweep.
+  - Save All Labels warns if any sweeps were not confirmed.
+
+CSV outputs (detailed schema)
+  1) <group>__<recording>__all_labels__spike_summaries.csv
+     One row per sweep per label (Before/After).
+     Columns:
+       - Group: group name string (e.g., "L + ACR2-CTZ")
+       - Recording_ID: recording ID string (e.g., "CTZ-1")
+       - Label: "Before" or "After"
+       - Sweep_Number: integer sweep index
+       - Line_Points: JSON list of two (time, voltage) points; "null" if no line
+       - N_Peaks: number of detected spikes for that sweep
+       - Peak_Indices: JSON list of integer sample indices for each spike
+       - Peak_Times_s: JSON list of spike times in seconds
+
+  2) <group>__<recording>__all_labels__spike_events.csv
+     One row per detected spike (empty if no spikes).
+     Columns:
+       - Group
+       - Recording_ID
+       - Label
+       - Sweep_Number
+       - Peak_Index: sample index of the spike
+       - Peak_Time_s: spike time in seconds
+       - Peak_Time_ms: spike time in milliseconds
+       - Peak_Voltage_mV: voltage at the spike peak (mV)
 """
 
 from __future__ import annotations
@@ -39,7 +80,6 @@ class PeakParams:
     prominence: Optional[float]
     distance_samples: Optional[int]
     width_samples: Optional[int]
-    height_k: float
 
 
 def _slug(text: str) -> str:
@@ -136,6 +176,7 @@ class LineSpikeGUI:
 
         self.line_by_rec_label: Dict[Tuple[str, str], Tuple[Tuple[float, float], Tuple[float, float]]] = {}
         self.results: Dict[Tuple[str, str, int], Dict[str, object]] = {}
+        self.confirmed: Dict[Tuple[str, str, int], bool] = {}
 
         self.capture_line = False
         self.capture_points: List[Tuple[float, float]] = []
@@ -145,7 +186,7 @@ class LineSpikeGUI:
         self.label_var = tk.StringVar(master=self.root, value=label)
         self.sweep_index = 0
         self._build_widgets()
-        self._load_recording()
+        self._load_recording(keep_sweep=False)
 
     def _build_widgets(self) -> None:
         top = ttk.Frame(self.root)
@@ -161,7 +202,6 @@ class LineSpikeGUI:
         label_menu.pack(side=tk.LEFT, padx=2)
 
         ttk.Button(top, text="Draw Line", command=self.start_line_capture).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="Auto Line", command=self.set_auto_line).pack(side=tk.LEFT, padx=2)
         ttk.Button(top, text="Detect Sweep", command=self.detect_current_sweep).pack(side=tk.LEFT, padx=6)
         ttk.Button(top, text="Mark 0 Sweep", command=self.mark_zero_sweep).pack(side=tk.LEFT, padx=2)
         ttk.Button(top, text="Detect All", command=self.detect_all_sweeps).pack(side=tk.LEFT, padx=2)
@@ -193,7 +233,7 @@ class LineSpikeGUI:
             raise ValueError(f"No ABF for {rec_id} {label}")
         return Path(sub["File_Path"].iloc[0])
 
-    def _load_recording(self) -> None:
+    def _load_recording(self, keep_sweep: bool) -> None:
         rec_id = self._current_recording_id()
         label = self._current_label()
         try:
@@ -201,15 +241,11 @@ class LineSpikeGUI:
         except Exception as exc:
             messagebox.showerror("Load Error", str(exc))
             return
-        self.sweep_index = 0
-        self._ensure_line()
+        if not keep_sweep:
+            self.sweep_index = 0
+        else:
+            self.sweep_index = min(self.sweep_index, len(self.abf.sweepList) - 1)
         self._draw_sweep()
-
-    def _ensure_line(self) -> None:
-        key = (self._current_recording_id(), self._current_label())
-        if key in self.line_by_rec_label:
-            return
-        self.set_auto_line()
 
     def _current_line(self) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
         return self.line_by_rec_label.get((self._current_recording_id(), self._current_label()))
@@ -254,27 +290,44 @@ class LineSpikeGUI:
         self.status.config(text=message)
 
     def on_label_change(self, *_: object) -> None:
-        self._load_recording()
+        self._load_recording(keep_sweep=True)
 
     def prev_recording(self) -> None:
         if self.recording_index > 0:
             self.recording_index -= 1
-        self._load_recording()
+        self._load_recording(keep_sweep=False)
 
     def next_recording(self) -> None:
         if self.recording_index < len(self.recording_ids) - 1:
             self.recording_index += 1
-        self._load_recording()
+        self._load_recording(keep_sweep=False)
 
     def prev_sweep(self) -> None:
+        label = self._current_label()
+        if label == "After":
+            self.label_var.set("Before")
+            self._load_recording(keep_sweep=True)
+            return
         if self.sweep_index > 0:
             self.sweep_index -= 1
-        self._draw_sweep()
+            self.label_var.set("After")
+            self._load_recording(keep_sweep=True)
 
     def next_sweep(self) -> None:
+        rec_id = self._current_recording_id()
+        label = self._current_label()
+        key = (rec_id, label, self.sweep_index)
+        if not self.confirmed.get(key, False):
+            messagebox.showwarning("Sweep Not Confirmed", "Detect or mark 0 before moving on.")
+            return
+        if label == "Before":
+            self.label_var.set("After")
+            self._load_recording(keep_sweep=True)
+            return
         if self.sweep_index < len(self.abf.sweepList) - 1:
             self.sweep_index += 1
-        self._draw_sweep()
+            self.label_var.set("Before")
+            self._load_recording(keep_sweep=True)
 
     def start_line_capture(self) -> None:
         self.capture_line = True
@@ -296,19 +349,6 @@ class LineSpikeGUI:
             self.capture_points = []
             self._update_status("Line set. Use Detect Sweep or Detect All.")
             self._draw_sweep()
-
-    def set_auto_line(self) -> None:
-        self.abf.setSweep(sweepNumber=self.sweep_index, channel=self.channel)
-        time_s = self.abf.sweepX
-        voltage = self.abf.sweepY
-        mask = self._window_mask(time_s)
-        threshold = float(np.nanmean(voltage[mask]) + self.params.height_k * np.nanstd(voltage[mask]))
-        key = (self._current_recording_id(), self._current_label())
-        t0 = float(time_s[mask][0])
-        t1 = float(time_s[mask][-1])
-        self.line_by_rec_label[key] = ((t0, threshold), (t1, threshold))
-        self._update_status(f"Auto line set at {threshold:.3f} mV.")
-        self._draw_sweep()
 
     def _detect_for_sweep_with(
         self,
@@ -359,6 +399,7 @@ class LineSpikeGUI:
             return
         key = (self._current_recording_id(), self._current_label(), self.sweep_index)
         self.results[key] = data
+        self.confirmed[key] = True
         self._update_status(f"Detected {len(data['peak_indices'])} peaks on sweep {self.sweep_index}.")
         self._draw_sweep()
 
@@ -369,6 +410,7 @@ class LineSpikeGUI:
             "peak_times": np.array([], dtype=float),
             "peak_voltages": np.array([], dtype=float),
         }
+        self.confirmed[key] = True
         self._update_status(f"Marked 0 peaks on sweep {self.sweep_index}.")
         self._draw_sweep()
 
@@ -380,6 +422,7 @@ class LineSpikeGUI:
             data = self._detect_for_sweep(int(sweep))
             key = (rec_id, label, int(sweep))
             self.results[key] = data
+            self.confirmed[key] = True
             total += len(data["peak_indices"])
         self._update_status(f"Detected {total} peaks across {len(self.abf.sweepList)} sweeps.")
         self._draw_sweep()
@@ -457,6 +500,7 @@ class LineSpikeGUI:
         all_labels = ["Before", "After"]
         summary_rows = []
         event_rows = []
+        missing: Dict[str, List[int]] = {"Before": [], "After": []}
 
         for label in all_labels:
             try:
@@ -465,20 +509,23 @@ class LineSpikeGUI:
                 messagebox.showerror("Load Error", str(exc))
                 return
 
-            line = self.line_by_rec_label.get((rec_id, label))
-            if line is None:
-                line = self._auto_line_for_label(rec_id, label)
-                self.line_by_rec_label[(rec_id, label)] = line
-
-            line_json = json.dumps(line)
-
             for sweep in abf.sweepList:
-                data = self._detect_for_sweep_with(abf, line, int(sweep))
                 key = (rec_id, label, int(sweep))
-                self.results[key] = data
+                data = self.results.get(
+                    key,
+                    {
+                        "peak_indices": np.array([], dtype=int),
+                        "peak_times": np.array([], dtype=float),
+                        "peak_voltages": np.array([], dtype=float),
+                    },
+                )
+                if not self.confirmed.get(key, False):
+                    missing[label].append(int(sweep))
                 peak_indices = data["peak_indices"]
                 peak_times = data["peak_times"]
                 peak_voltages = data["peak_voltages"]
+                line = self.line_by_rec_label.get((rec_id, label))
+                line_json = json.dumps(line) if line is not None else "null"
                 summary_rows.append(
                     {
                         "Group": self.group,
@@ -513,7 +560,12 @@ class LineSpikeGUI:
         events_path = out_dir / f"{base}__spike_events.csv"
         pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
         pd.DataFrame(event_rows).to_csv(events_path, index=False)
-        self._update_status(f"Saved ALL labels CSV to {summary_path} and {events_path}.")
+        msg = f"Saved ALL labels CSV to {summary_path} and {events_path}."
+        if missing["Before"] or missing["After"]:
+            msg += f" Missing sweeps - Before: {missing['Before']} After: {missing['After']}."
+        self._update_status(msg)
+        if missing["Before"] or missing["After"]:
+            messagebox.showwarning("Missing Sweeps", msg)
         self._draw_sweep()
 
     def run(self) -> None:
@@ -535,7 +587,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--distance-samples", type=int, default=None, help="Minimum peak distance in samples.")
     p.add_argument("--width-ms", type=float, default=None, help="Minimum peak width in ms.")
     p.add_argument("--width-samples", type=int, default=None, help="Minimum peak width in samples.")
-    p.add_argument("--height-k", type=float, default=0.5, help="Auto line: mean + k*std (default 0.5).")
     return p.parse_args()
 
 
@@ -575,7 +626,6 @@ def main() -> None:
         prominence=args.prominence,
         distance_samples=distance_samples,
         width_samples=width_samples,
-        height_k=args.height_k,
     )
 
     app = LineSpikeGUI(
