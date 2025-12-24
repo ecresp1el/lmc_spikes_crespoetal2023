@@ -4,7 +4,12 @@ GUI spike detector for BLADe patch ABF recordings.
 
 Output location
   By default, CSVs are written under ./patch_spike_output_gui relative to where you run
-  the command (current working directory). You can override with --output-dir.
+  the command (current working directory). "Working directory" means the shell `pwd`
+  where you launch the script (not the base-dir and not the script folder). You can
+  override with --output-dir; use an absolute path if you want a fixed location.
+  Example: if you run from /Users/ecrespo/Documents/github_project_folder/lmc_spikes_fresh
+  then outputs land in /Users/ecrespo/Documents/github_project_folder/lmc_spikes_fresh/patch_spike_output_gui
+  Output folders are created if missing.
   Progress is tracked in ./patch_spike_output_gui/patch_spike_gui_progress.json.
 
 How to run (example)
@@ -30,6 +35,22 @@ GUI workflow (manual-only, per cell)
      and marks the cell complete).
   7) Use Verify Saved (optional) to check that the saved CSVs exist and include all sweeps.
   8) Click Next Cell to move on (stays within the selected group).
+
+Step-by-step verification walkthrough (saving + navigation)
+  A) For each sweep pair (Before/After):
+     - Detect Sweep or Mark 0 Sweep for Before.
+     - Next Sweep -> After. Detect or Mark 0 Sweep for After.
+     - Next Sweep -> advances to the next sweep, back to Before.
+  B) After the final sweep pair is confirmed:
+     - Click Save All Labels. If any sweep is unconfirmed, saving is blocked.
+  C) Immediately click Verify Saved:
+     - Confirms both CSV files exist for this cell.
+     - Checks that each label has rows for every sweep in the ABF.
+     - Reports row counts and any mismatch in sweep coverage.
+  D) If Verify Saved is clean:
+     - Click Next Cell (moves to next incomplete cell in the same group).
+  E) When the group finishes:
+     - Use the group dropdown to select the next group.
 
 Checks & updates (explicit)
   - Next Sweep is blocked unless the current label/sweep is confirmed
@@ -198,6 +219,39 @@ Outputs (files)
   - <group>__<recording>__all_labels__spike_summaries.csv
   - <group>__<recording>__all_labels__spike_events.csv
   - patch_spike_gui_progress.json (completion + last state)
+  Note: <group> is slugged for filenames (spaces/symbols -> underscores), e.g.
+  "L + CS-CTZ" -> "L_CS-CTZ" in the output filenames.
+
+Downstream analysis files (recommended)
+  1) <group>__<recording>__all_labels__spike_events.csv
+     Use this for spike-time analyses (one row per detected spike).
+     If no spikes were detected for a cell, this file can be empty (0 rows).
+     Columns:
+       - Group: group name string (e.g., "L + CS-CTZ")
+       - Recording_ID: cell/recording identifier (e.g., "CTZ-1")
+       - Label: "Before" or "After"
+       - Sweep_Number: integer sweep index
+       - Peak_Index: integer sample index of the spike (0-based within the sweep)
+       - Peak_Time_s: spike time in seconds (from ABF sweepX)
+       - Peak_Time_ms: spike time in milliseconds
+       - Peak_Voltage_mV: voltage at the spike peak (mV, from ABF sweepY)
+
+  2) <group>__<recording>__all_labels__spike_summaries.csv
+     Use this for per-sweep counts and QC (one row per sweep per label).
+     Columns:
+       - Group
+       - Recording_ID
+       - Label
+       - Sweep_Number
+       - Line_Points: JSON list of two (time, voltage) points; "null" if no line.
+         Note: this is stored per label at save time (the last line set for that label),
+         so it is repeated across sweeps for that label.
+       - N_Peaks: number of detected spikes for that sweep
+       - Peak_Indices: JSON list of sample indices for spikes (empty list if none)
+       - Peak_Times_s: JSON list of spike times (seconds; empty list if none)
+
+  Progress file: patch_spike_gui_progress.json
+    This is only for resume/completion tracking (not used for downstream analysis).
 
 CSV outputs (detailed schema)
   1) <group>__<recording>__all_labels__spike_summaries.csv
