@@ -5,27 +5,38 @@ GUI spike detector for BLADe patch ABF recordings.
 Output location
   By default, CSVs are written under ./patch_spike_output_gui relative to where you run
   the command (current working directory). You can override with --output-dir.
+  Progress is tracked in ./patch_spike_output_gui/patch_spike_gui_progress.json.
 
 How to run (example)
   python scripts/patch_spike_gui.py \
     --base-dir "/Users/ecrespo/Desktop/BLADe_patch_data_beforefileremoval" \
-    --group "L + ACR2-CTZ" \
-    --recording-id CTZ-1 \
     --output-dir ./patch_spike_output_gui \
     --t-start 0 --t-end 1.2 \
     --prominence 5
 
-GUI workflow (manual-only)
-  1) Start at Before for sweep 0.
-  2) If spikes are expected: Draw Line (two clicks) -> Detect Sweep (dots appear).
-     If no spikes: Mark 0 Sweep.
-  3) Next Sweep switches to After for the same sweep. Repeat step 2.
-  4) Next Sweep again advances to the next sweep and switches back to Before.
-  5) When finished for the cell, click Save All Labels (writes Before + After CSVs).
+Optional start point
+  --group "<group name>" and --recording-id CTZ-1 let you jump to a specific cell,
+  but you can also pick the group from the dropdown before starting.
 
-Notes:
-  - You must confirm each label/sweep via Detect Sweep or Mark 0 Sweep.
-  - Save All Labels warns if any sweeps were not confirmed.
+GUI workflow (manual-only, per cell)
+  1) Pick a group from the dropdown. The app auto-selects the first incomplete cell
+     in that group. The app stays in this group until you finish all its cells.
+  2) Start at Before for sweep 0.
+  3) If spikes are expected: Draw Line (two clicks) -> Detect Sweep (dots appear).
+     If no spikes: Mark 0 Sweep.
+  4) Next Sweep switches to After for the same sweep. Repeat step 3.
+  5) Next Sweep again advances to the next sweep and switches back to Before.
+  6) When finished for the cell, click Save All Labels (writes Before + After CSVs,
+     marks the cell complete, and advances to the next incomplete cell in the same group).
+
+Checks & updates (explicit)
+  - Next Sweep is blocked unless the current label/sweep is confirmed
+    via Detect Sweep or Mark 0 Sweep.
+  - Save All Labels blocks unless every sweep for BOTH labels is confirmed.
+  - Switching groups is blocked if the current cell is incomplete.
+  - After Save All Labels, the cell is marked complete in the progress file.
+  - The progress file is updated whenever the plot refreshes (navigation or detection).
+  - The app resumes from the last saved state if the cell was not completed.
 
 CSV outputs (detailed schema)
   1) <group>__<recording>__all_labels__spike_summaries.csv
@@ -141,8 +152,8 @@ class LineSpikeGUI:
     def __init__(
         self,
         base_dir: Path,
-        group: str,
         output_dir: Path,
+        group: Optional[str],
         recording_id: Optional[str],
         label: str,
         channel: int,
@@ -151,7 +162,6 @@ class LineSpikeGUI:
         params: PeakParams,
     ) -> None:
         self.base_dir = base_dir
-        self.group = group
         self.output_dir = output_dir
         self.channel = channel
         self.t_start = t_start
@@ -161,19 +171,43 @@ class LineSpikeGUI:
         self.df = build_index(base_dir)
         if self.df.empty:
             raise RuntimeError(f"No ABF files found under {base_dir}")
-        if group not in self.df["Group"].unique():
-            raise ValueError(f"Group '{group}' not found in {base_dir}")
+        self.groups = sorted(self.df["Group"].unique().tolist())
+        if not self.groups:
+            raise RuntimeError("No groups found in the ABF index.")
 
-        self.df = self.df[self.df["Group"] == group]
-        self.recording_ids = sorted(self.df["Recording_ID"].unique().tolist())
-        if not self.recording_ids:
-            raise RuntimeError(f"No recordings found for group '{group}'")
+        self.progress_path = self.output_dir / "patch_spike_gui_progress.json"
+        self.completed: Dict[str, set[str]] = {}
+        self.last_state: Dict[str, object] = {}
+        self._load_progress()
 
-        if recording_id and recording_id in self.recording_ids:
-            self.recording_index = self.recording_ids.index(recording_id)
+        resume_group = self.last_state.get("group")
+        resume_rec = self.last_state.get("recording_id")
+        resume_label = self.last_state.get("label")
+        resume_sweep = self.last_state.get("sweep")
+        resume_ok = (
+            isinstance(resume_group, str)
+            and isinstance(resume_rec, str)
+            and resume_group in self.groups
+            and not self._is_completed(resume_group, resume_rec)
+        )
+
+        if group and group in self.groups:
+            initial_group = group
+        elif resume_ok:
+            initial_group = resume_group
         else:
-            self.recording_index = 0
+            initial_group = self.groups[0]
 
+        if resume_ok and resume_group == initial_group:
+            initial_label = str(resume_label) if resume_label in ("Before", "After") else label
+            initial_sweep = int(resume_sweep) if isinstance(resume_sweep, int) else 0
+        else:
+            initial_label = label
+            initial_sweep = 0
+
+        self.group = initial_group
+        self.recording_ids: List[str] = []
+        self.recording_index = 0
         self.line_by_rec_label: Dict[Tuple[str, str], Tuple[Tuple[float, float], Tuple[float, float]]] = {}
         self.results: Dict[Tuple[str, str, int], Dict[str, object]] = {}
         self.confirmed: Dict[Tuple[str, str, int], bool] = {}
@@ -183,33 +217,70 @@ class LineSpikeGUI:
 
         self.root = tk.Tk()
         self.root.title("Patch Spike Detector")
-        self.label_var = tk.StringVar(master=self.root, value=label)
-        self.sweep_index = 0
+        self.group_var = tk.StringVar(master=self.root, value=initial_group)
+        self.label_var = tk.StringVar(master=self.root, value=initial_label)
+        self.sweep_index = initial_sweep
         self._build_widgets()
-        self._load_recording(keep_sweep=False)
+        preferred = recording_id
+        if preferred is None and resume_ok and resume_group == initial_group:
+            preferred = resume_rec
+        self._set_group(initial_group, preferred_recording=preferred, resume_ok=resume_ok)
 
     def _build_widgets(self) -> None:
-        top = ttk.Frame(self.root)
-        top.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+        info = ttk.Frame(self.root)
+        info.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
 
-        ttk.Button(top, text="Prev Rec", command=self.prev_recording).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top, text="Next Rec", command=self.next_recording).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top, text="Prev Sweep", command=self.prev_sweep).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top, text="Next Sweep", command=self.next_sweep).pack(side=tk.LEFT, padx=2)
+        ttk.Label(info, text="Group:").pack(side=tk.LEFT, padx=4)
+        group_menu = ttk.OptionMenu(
+            info,
+            self.group_var,
+            self.group_var.get(),
+            *self.groups,
+            command=self.on_group_change,
+        )
+        group_menu.pack(side=tk.LEFT, padx=2)
 
-        ttk.Label(top, text="Label:").pack(side=tk.LEFT, padx=6)
-        label_menu = ttk.OptionMenu(top, self.label_var, self.label_var.get(), "Before", "After", command=self.on_label_change)
+        self.cell_label = ttk.Label(info, text="")
+        self.cell_label.pack(side=tk.LEFT, padx=8)
+        self.progress_label = ttk.Label(info, text="")
+        self.progress_label.pack(side=tk.LEFT, padx=8)
+
+        controls = ttk.Frame(self.root)
+        controls.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+
+        ttk.Button(controls, text="Prev Sweep", command=self.prev_sweep).pack(side=tk.LEFT, padx=2)
+        ttk.Button(controls, text="Next Sweep", command=self.next_sweep).pack(side=tk.LEFT, padx=2)
+        ttk.Button(controls, text="Next Cell", command=self.next_recording).pack(side=tk.LEFT, padx=6)
+
+        ttk.Label(controls, text="Label:").pack(side=tk.LEFT, padx=6)
+        label_menu = ttk.OptionMenu(
+            controls,
+            self.label_var,
+            self.label_var.get(),
+            "Before",
+            "After",
+            command=self.on_label_change,
+        )
         label_menu.pack(side=tk.LEFT, padx=2)
 
-        ttk.Button(top, text="Draw Line", command=self.start_line_capture).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="Detect Sweep", command=self.detect_current_sweep).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="Mark 0 Sweep", command=self.mark_zero_sweep).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top, text="Detect All", command=self.detect_all_sweeps).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top, text="Save CSV", command=self.save_csv).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="Save All Labels", command=self.save_all_labels).pack(side=tk.LEFT, padx=2)
+        ttk.Button(controls, text="Draw Line", command=self.start_line_capture).pack(side=tk.LEFT, padx=6)
+        ttk.Button(controls, text="Detect Sweep", command=self.detect_current_sweep).pack(side=tk.LEFT, padx=6)
+        ttk.Button(controls, text="Mark 0 Sweep", command=self.mark_zero_sweep).pack(side=tk.LEFT, padx=2)
+        ttk.Button(controls, text="Detect All", command=self.detect_all_sweeps).pack(side=tk.LEFT, padx=2)
+        ttk.Button(controls, text="Save CSV", command=self.save_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Button(controls, text="Save All Labels", command=self.save_all_labels).pack(side=tk.LEFT, padx=2)
 
         self.status = ttk.Label(self.root, text="Ready.")
         self.status.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+
+        list_frame = ttk.Frame(self.root)
+        list_frame.pack(side=tk.TOP, fill=tk.BOTH, padx=6, pady=4)
+        ttk.Label(list_frame, text="Cells (completed marked with [x]):").pack(anchor="w")
+        self.cell_list = tk.Listbox(list_frame, height=6)
+        self.cell_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.cell_list.yview)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        self.cell_list.configure(yscrollcommand=scrollbar.set)
 
         fig_frame = ttk.Frame(self.root)
         fig_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -221,6 +292,139 @@ class LineSpikeGUI:
 
         self.canvas.mpl_connect("button_press_event", self.on_click)
 
+    def _load_progress(self) -> None:
+        if not self.progress_path.exists():
+            self.completed = {}
+            self.last_state = {}
+            return
+        try:
+            data = json.loads(self.progress_path.read_text())
+        except Exception:
+            self.completed = {}
+            self.last_state = {}
+            return
+        completed = {}
+        for group, ids in data.get("completed", {}).items():
+            if isinstance(group, str) and isinstance(ids, list):
+                completed[group] = set(str(x) for x in ids)
+        self.completed = completed
+        last = data.get("last", {})
+        if isinstance(last, dict):
+            self.last_state = last
+        else:
+            self.last_state = {}
+
+    def _save_progress(self) -> None:
+        self.progress_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "completed": {g: sorted(list(ids)) for g, ids in self.completed.items()},
+            "last": self.last_state,
+        }
+        self.progress_path.write_text(json.dumps(data, indent=2))
+
+    def _persist_last_state(self) -> None:
+        self.last_state = {
+            "group": self.group,
+            "recording_id": self._current_recording_id(),
+            "label": self._current_label(),
+            "sweep": int(self.sweep_index),
+        }
+        self._save_progress()
+
+    def _is_completed(self, group: str, rec_id: str) -> bool:
+        return rec_id in self.completed.get(group, set())
+
+    def _set_group(self, group: str, preferred_recording: Optional[str], resume_ok: bool) -> None:
+        self.group = group
+        self.group_var.set(group)
+        group_df = self.df[self.df["Group"] == group]
+        self.recording_ids = sorted(group_df["Recording_ID"].unique().tolist())
+        if not self.recording_ids:
+            messagebox.showwarning("No Recordings", f"No recordings found for group '{group}'.")
+            return
+
+        keep_sweep = False
+        if preferred_recording and preferred_recording in self.recording_ids and not self._is_completed(group, preferred_recording):
+            self.recording_index = self.recording_ids.index(preferred_recording)
+            keep_sweep = resume_ok and preferred_recording == self.last_state.get("recording_id")
+        else:
+            self.recording_index = self._first_incomplete_index()
+            self.sweep_index = 0
+            keep_sweep = False
+
+        self._update_record_list()
+        self._update_progress_labels()
+        self._load_recording(keep_sweep=keep_sweep)
+
+    def _first_incomplete_index(self) -> int:
+        for idx, rec_id in enumerate(self.recording_ids):
+            if not self._is_completed(self.group, rec_id):
+                return idx
+        return 0
+
+    def _update_record_list(self) -> None:
+        if not hasattr(self, "cell_list"):
+            return
+        self.cell_list.delete(0, tk.END)
+        current = self._current_recording_id()
+        for rec_id in self.recording_ids:
+            done = self._is_completed(self.group, rec_id)
+            marker = "x" if done else " "
+            prefix = ">" if rec_id == current else " "
+            self.cell_list.insert(tk.END, f"{prefix}[{marker}] {rec_id}")
+
+    def _update_progress_labels(self) -> None:
+        group_total = len(self.recording_ids)
+        group_done = sum(1 for rec_id in self.recording_ids if self._is_completed(self.group, rec_id))
+        all_pairs = self.df[["Group", "Recording_ID"]].drop_duplicates()
+        overall_total = len(all_pairs)
+        overall_done = sum(len(ids) for ids in self.completed.values())
+        self.cell_label.config(text=f"Cell: {self._current_recording_id()} ({self.group})")
+        remaining = overall_total - overall_done
+        self.progress_label.config(
+            text=f"Group {group_done}/{group_total} | Remaining overall: {remaining}"
+        )
+
+    def _next_incomplete_cell(self, group_only: bool = True) -> Optional[Tuple[str, str]]:
+        if group_only:
+            group_df = self.df[self.df["Group"] == self.group]
+            recs = sorted(group_df["Recording_ID"].unique().tolist())
+            for rec_id in recs:
+                if not self._is_completed(self.group, rec_id):
+                    return (self.group, rec_id)
+            return None
+
+        if not self.groups:
+            return None
+        start_idx = self.groups.index(self.group)
+        for offset in range(len(self.groups)):
+            grp = self.groups[(start_idx + offset) % len(self.groups)]
+            group_df = self.df[self.df["Group"] == grp]
+            recs = sorted(group_df["Recording_ID"].unique().tolist())
+            for rec_id in recs:
+                if not self._is_completed(grp, rec_id):
+                    return (grp, rec_id)
+        return None
+
+    def _mark_completed(self, group: str, rec_id: str) -> None:
+        self.completed.setdefault(group, set()).add(rec_id)
+        self._save_progress()
+        self._update_record_list()
+        self._update_progress_labels()
+
+    def _advance_after_completion(self) -> None:
+        next_cell = self._next_incomplete_cell(group_only=True)
+        if not next_cell:
+            messagebox.showinfo(
+                "Group Complete",
+                f"All cells in '{self.group}' are completed. Select another group to continue.",
+            )
+            return
+        next_group, next_rec = next_cell
+        self.sweep_index = 0
+        self.label_var.set("Before")
+        self._set_group(next_group, preferred_recording=next_rec, resume_ok=False)
+
     def _current_recording_id(self) -> str:
         return self.recording_ids[self.recording_index]
 
@@ -228,7 +432,11 @@ class LineSpikeGUI:
         return self.label_var.get()
 
     def _abf_path(self, rec_id: str, label: str) -> Path:
-        sub = self.df[(self.df["Recording_ID"] == rec_id) & (self.df["Label"] == label)]
+        sub = self.df[
+            (self.df["Group"] == self.group)
+            & (self.df["Recording_ID"] == rec_id)
+            & (self.df["Label"] == label)
+        ]
         if sub.empty:
             raise ValueError(f"No ABF for {rec_id} {label}")
         return Path(sub["File_Path"].iloc[0])
@@ -285,22 +493,48 @@ class LineSpikeGUI:
         self.ax.set_ylabel("Voltage (mV)")
         self.ax.grid(True, alpha=0.2, linewidth=0.5)
         self.canvas.draw()
+        self._update_record_list()
+        self._update_progress_labels()
+        self._persist_last_state()
 
     def _update_status(self, message: str) -> None:
         self.status.config(text=message)
+
+    def on_group_change(self, *_: object) -> None:
+        new_group = self.group_var.get()
+        if new_group == self.group:
+            return
+        current_rec = self._current_recording_id()
+        if not self._is_completed(self.group, current_rec):
+            any_confirmed = any(
+                key[0] == current_rec and self.confirmed.get(key, False)
+                for key in self.confirmed
+            )
+            if any_confirmed:
+                messagebox.showwarning("Cell Not Complete", "Finish the current cell before switching groups.")
+                self.group_var.set(self.group)
+                return
+        self._set_group(new_group, preferred_recording=None, resume_ok=False)
 
     def on_label_change(self, *_: object) -> None:
         self._load_recording(keep_sweep=True)
 
     def prev_recording(self) -> None:
-        if self.recording_index > 0:
-            self.recording_index -= 1
-        self._load_recording(keep_sweep=False)
+        messagebox.showinfo("Navigation", "Use Next Cell after completing the current cell.")
 
     def next_recording(self) -> None:
-        if self.recording_index < len(self.recording_ids) - 1:
-            self.recording_index += 1
-        self._load_recording(keep_sweep=False)
+        if not self._is_completed(self.group, self._current_recording_id()):
+            messagebox.showwarning("Cell Not Complete", "Finish the current cell before moving on.")
+            return
+        next_cell = self._next_incomplete_cell(group_only=True)
+        if not next_cell:
+            messagebox.showinfo(
+                "Group Complete",
+                f"All cells in '{self.group}' are completed. Select another group to continue.",
+            )
+            return
+        next_group, next_rec = next_cell
+        self._set_group(next_group, preferred_recording=next_rec, resume_ok=False)
 
     def prev_sweep(self) -> None:
         label = self._current_label()
@@ -388,7 +622,7 @@ class LineSpikeGUI:
     def _detect_for_sweep(self, sweep: int) -> Dict[str, object]:
         line = self._current_line()
         if line is None:
-            raise RuntimeError("No line defined. Use Draw Line or Auto Line.")
+            raise RuntimeError("No line defined. Use Draw Line before Detect.")
         return self._detect_for_sweep_with(self.abf, line, sweep)
 
     def detect_current_sweep(self) -> None:
@@ -426,17 +660,6 @@ class LineSpikeGUI:
             total += len(data["peak_indices"])
         self._update_status(f"Detected {total} peaks across {len(self.abf.sweepList)} sweeps.")
         self._draw_sweep()
-
-    def _auto_line_for_label(self, rec_id: str, label: str) -> Tuple[Tuple[float, float], Tuple[float, float]]:
-        abf = pyabf.ABF(str(self._abf_path(rec_id, label)))
-        abf.setSweep(sweepNumber=0, channel=self.channel)
-        time_s = abf.sweepX
-        voltage = abf.sweepY
-        mask = self._window_mask(time_s)
-        threshold = float(np.nanmean(voltage[mask]) + self.params.height_k * np.nanstd(voltage[mask]))
-        t0 = float(time_s[mask][0])
-        t1 = float(time_s[mask][-1])
-        return (t0, threshold), (t1, threshold)
 
     def save_csv(self) -> None:
         if not self.results:
@@ -558,15 +781,18 @@ class LineSpikeGUI:
         base = f"{slug_group}__{rec_id}__all_labels"
         summary_path = out_dir / f"{base}__spike_summaries.csv"
         events_path = out_dir / f"{base}__spike_events.csv"
+        if missing["Before"] or missing["After"]:
+            msg = f"Missing sweeps - Before: {missing['Before']} After: {missing['After']}."
+            self._update_status(msg)
+            messagebox.showwarning("Missing Sweeps", msg)
+            return
+
         pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
         pd.DataFrame(event_rows).to_csv(events_path, index=False)
+        self._mark_completed(self.group, rec_id)
         msg = f"Saved ALL labels CSV to {summary_path} and {events_path}."
-        if missing["Before"] or missing["After"]:
-            msg += f" Missing sweeps - Before: {missing['Before']} After: {missing['After']}."
         self._update_status(msg)
-        if missing["Before"] or missing["After"]:
-            messagebox.showwarning("Missing Sweeps", msg)
-        self._draw_sweep()
+        self._advance_after_completion()
 
     def run(self) -> None:
         self.root.mainloop()
@@ -575,8 +801,8 @@ class LineSpikeGUI:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="GUI spike detection for BLADe patch ABFs.")
     p.add_argument("--base-dir", type=str, required=True, help="Folder containing group directories of .abf files.")
-    p.add_argument("--group", type=str, required=True, help="Group name (e.g., 'L + ACR2-CTZ').")
-    p.add_argument("--recording-id", type=str, default=None, help="Recording ID to start with (e.g., CTZ-1).")
+    p.add_argument("--group", type=str, default=None, help="Optional group to start with.")
+    p.add_argument("--recording-id", type=str, default=None, help="Optional recording ID to start with.")
     p.add_argument("--label", type=str, default="Before", help="Starting label (Before or After).")
     p.add_argument("--output-dir", type=str, default="./patch_spike_output_gui", help="Output folder.")
     p.add_argument("--channel", type=int, default=0, help="ABF channel index (default: 0).")
@@ -604,12 +830,9 @@ def main() -> None:
     if df.empty:
         raise RuntimeError(f"No ABF files found under {base_dir}")
 
-    if args.group not in df["Group"].unique():
-        raise ValueError(f"Group '{args.group}' not found under {base_dir}")
-
-    example = df[(df["Group"] == args.group)].head(1)
+    example = df.head(1)
     if example.empty:
-        raise RuntimeError(f"No recordings found for group '{args.group}'")
+        raise RuntimeError("No recordings found in the ABF index.")
 
     example_path = Path(example["File_Path"].iloc[0])
     abf = pyabf.ABF(str(example_path))
@@ -630,8 +853,8 @@ def main() -> None:
 
     app = LineSpikeGUI(
         base_dir=base_dir,
-        group=args.group,
         output_dir=output_dir,
+        group=args.group,
         recording_id=args.recording_id,
         label=args.label,
         channel=args.channel,
