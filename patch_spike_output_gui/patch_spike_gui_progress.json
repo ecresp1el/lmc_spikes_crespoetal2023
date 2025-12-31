@@ -33,11 +33,27 @@
       "Veh-7",
       "Veh-8",
       "Veh-9"
+    ],
+    "L + ACR2-CTZ": [
+      "CTZ-1",
+      "CTZ-10",
+      "CTZ-11",
+      "CTZ-12",
+      "CTZ-13",
+      "CTZ-14",
+      "CTZ-2",
+      "CTZ-3",
+      "CTZ-4",
+      "CTZ-5",
+      "CTZ-6",
+      "CTZ-7",
+      "CTZ-8",
+      "CTZ-9"
     ]
   },
   "last": {
-    "group": "L + CS-Veh",
-    "recording_id": "Veh-9",
+    "group": "L + ACR2-CTZ",
+    "recording_id": "CTZ-9",
     "label": "After",
     "sweep": 9
   }
