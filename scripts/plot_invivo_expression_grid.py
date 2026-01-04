@@ -48,6 +48,20 @@ Flags
 - --chan-cmap C:CMAP      Colormap name per channel (defaults: C1:Blues C2:Greens C3:Reds)
 - --name-contains SUBSTR  Only use files whose names include these substrings
                           (repeatable; case-insensitive). Default filters: "zoomed", "step2".
+- --name-exclude SUBSTR   Exclude files whose names include these substrings (repeatable; case-insensitive).
+- --no-name-filter        Ignore default name filters (use full-size images if available)
+- --roi x,y,w,h[,angle]   Crop a shared ROI for all conditions/channels (pixels)
+- --roi-interactive       Draw ROI interactively on a reference condition/channel
+- --roi-grid              Select ROI in a grid view of all conditions/channels (left-drag, right-drag to rotate, press 's')
+- --roi-per-condition     Allow a separate ROI per condition (shared across channels)
+- --roi-size W,H          Fixed ROI size for interactive selection (pixels)
+- --roi-ref-condition     Condition name for ROI selection (default: first condition)
+- --roi-ref-channel       Channel for ROI selection (RGB|C1|C2|C3; default: RGB)
+- --roi-json PATH         Load/save ROI JSON {"x":int,"y":int,"w":int,"h":int}
+- --roi-preview           Show ROI overlay + crop for all conditions before applying
+- --roi-confirm           Ask to confirm ROI after preview (reselect if interactive)
+- --preview-final         Show the final normalized grid before saving
+- --confirm-final         Ask to confirm the final grid (reselect ROI if interactive)
 
 Troubleshooting
 ---------------
@@ -58,6 +72,7 @@ Troubleshooting
 
 import argparse
 import glob
+import json
 import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -68,6 +83,8 @@ from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 from matplotlib.ticker import FuncFormatter
 from matplotlib import patches
+from matplotlib import transforms
+from matplotlib.widgets import RectangleSelector
 import tifffile
 
 
@@ -202,20 +219,38 @@ def parse_kv(items: List[str], sep: str) -> Dict[str, str]:
     return out
 
 
-def load_matching_tiff(folder: Path, file_id: str, channel_tag: str, contains: Optional[List[str]] = None) -> Tuple[np.ndarray, str]:
+def load_matching_tiff(
+    folder: Path,
+    file_id: str,
+    channel_tag: str,
+    contains: Optional[List[str]] = None,
+    exclude: Optional[List[str]] = None,
+    prefer_fullsize: bool = False,
+) -> Tuple[np.ndarray, str]:
     pattern = str(folder / f"*{file_id}*_{channel_tag}*.tif*")
     matches = glob.glob(pattern)
     # Optional filename substring filtering (case-insensitive)
     if contains:
         tokens = [t.lower() for t in contains if t]
         matches = [m for m in matches if all(tok in os.path.basename(m).lower() for tok in tokens)]
+    if exclude:
+        tokens = [t.lower() for t in exclude if t]
+        matches = [m for m in matches if not any(tok in os.path.basename(m).lower() for tok in tokens)]
     if not matches:
         raise FileNotFoundError(
             f"No file found for id={file_id} chan={channel_tag} in {folder}"
             + (f" with substrings {contains}" if contains else "")
         )
-    # Prefer shortest filename or most recent? Keep first for now
-    chosen = matches[0]
+    if prefer_fullsize and len(matches) > 1:
+        avoid = ('zoomed', 'step', 'crop', 'roi', 'merged')
+        def score(p: str) -> Tuple[int, int]:
+            name = os.path.basename(p).lower()
+            penalty = sum(1 for tok in avoid if tok in name)
+            return (penalty, len(name))
+        chosen = sorted(matches, key=score)[0]
+    else:
+        # Prefer shortest filename or most recent? Keep first for now
+        chosen = matches[0]
     img = tifffile.imread(chosen)
     # Ensure 2D
     if img.ndim > 2:
@@ -227,6 +262,461 @@ def load_matching_tiff(folder: Path, file_id: str, channel_tag: str, contains: O
 def compute_global_percentiles(imgs: List[np.ndarray], low: float, high: float) -> Tuple[float, float]:
     flat = np.concatenate([np.ravel(im) for im in imgs]).astype(float)
     return float(np.percentile(flat, low)), float(np.percentile(flat, high))
+
+
+def parse_roi_text(val: str) -> Tuple[Tuple[int, int, int, int], float]:
+    parts = val.replace(',', ' ').split()
+    if len(parts) < 4:
+        raise ValueError(f"Expected 4 values (x,y,w,h), got: {val}")
+    x, y, w, h = [int(float(v)) for v in parts[:4]]
+    angle = float(parts[4]) if len(parts) >= 5 else 0.0
+    return (x, y, w, h), angle
+
+
+def parse_roi_size(val: str) -> Tuple[int, int]:
+    parts = val.replace(',', ' ').split()
+    if len(parts) < 2:
+        raise ValueError(f"Expected 2 values (w,h), got: {val}")
+    w, h = [int(float(v)) for v in parts[:2]]
+    return w, h
+
+
+def preview_norm(arr: np.ndarray, low: float, high: float) -> np.ndarray:
+    vmin, vmax = compute_global_percentiles([arr.astype(float)], low=low, high=high)
+    if vmax <= vmin:
+        return np.zeros_like(arr, dtype=float)
+    return np.clip((arr.astype(float) - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
+
+def apply_roi_crop(arr: np.ndarray, roi: Tuple[int, int, int, int], angle_deg: float) -> np.ndarray:
+    x, y, w, h = roi
+    if abs(angle_deg) < 1e-6:
+        return arr[y:y + h, x:x + w]
+    from scipy.ndimage import map_coordinates
+    orig_dtype = arr.dtype
+    theta = np.deg2rad(angle_deg)
+    yy, xx = np.mgrid[0:h, 0:w]
+    cx = x + (w - 1) / 2.0
+    cy = y + (h - 1) / 2.0
+    x_off = xx - (w - 1) / 2.0
+    y_off = yy - (h - 1) / 2.0
+    x_src = cx + x_off * np.cos(theta) - y_off * np.sin(theta)
+    y_src = cy + x_off * np.sin(theta) + y_off * np.cos(theta)
+    coords = np.vstack([y_src.ravel(), x_src.ravel()])
+    out = map_coordinates(arr.astype(float), coords, order=1, mode='constant', cval=0.0)
+    out = out.reshape((h, w))
+    if np.issubdtype(orig_dtype, np.integer):
+        info = np.iinfo(orig_dtype)
+        out = np.clip(out, info.min, info.max)
+        return out.astype(orig_dtype)
+    if np.issubdtype(orig_dtype, np.floating):
+        return out.astype(orig_dtype)
+    return out
+
+
+def apply_roi_crop_rgb(rgb: np.ndarray, roi: Tuple[int, int, int, int], angle_deg: float) -> np.ndarray:
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError("apply_roi_crop_rgb expects HxWx3 RGB array")
+    chans = [apply_roi_crop(rgb[..., i], roi, angle_deg) for i in range(3)]
+    return np.stack(chans, axis=-1)
+
+
+def rgb_preview_for_condition(cond_imgs: Dict[str, np.ndarray], low: float, high: float) -> np.ndarray:
+    ref = next(iter(cond_imgs.values()))
+    r = preview_norm(cond_imgs.get('C3', ref), low, high)
+    g = preview_norm(cond_imgs.get('C2', ref), low, high)
+    b = preview_norm(cond_imgs.get('C1', ref), low, high)
+    return np.stack([r, g, b], axis=-1)
+
+
+def interactive_roi_grid(
+    grouped: Dict[str, Dict[str, np.ndarray]],
+    cond_names: List[str],
+    channels: List[str],
+    chan_tags: Dict[str, str],
+    chan_cmaps: Dict[str, str],
+    ref_cond: str,
+    ref_ch: str,
+    low: float,
+    high: float,
+    per_condition: bool,
+    roi_size: Optional[Tuple[int, int]],
+    initial_rois: Optional[object] = None,
+) -> Optional[object]:
+    nrows = len(cond_names)
+    ncols = len(channels) + 1  # + RGB
+    if nrows == 0:
+        return None
+
+    previews: Dict[str, Dict[str, np.ndarray]] = {}
+    for cond in cond_names:
+        previews[cond] = {}
+        for ch in channels:
+            arr = grouped[cond][ch]
+            previews[cond][ch] = preview_norm(arr, low, high)
+        previews[cond]['RGB'] = rgb_preview_for_condition(grouped[cond], low, high)
+
+    base_w = 4.0
+    base_h = 3.5
+    fig_w = base_w * ncols
+    fig_h = base_h * nrows
+    max_w = 14.0
+    max_h = 9.0
+    scale = min(
+        1.0,
+        (max_w / fig_w) if fig_w > 0 else 1.0,
+        (max_h / fig_h) if fig_h > 0 else 1.0,
+    )
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w * scale, fig_h * scale))
+    if nrows == 1:
+        axes = np.array([axes])
+
+    size_txt = f" fixed={roi_size[0]}x{roi_size[1]}" if roi_size else ""
+    info = fig.text(0.01, 0.01, f"ROI: (none){size_txt}", fontsize=10, color='black')
+
+    rects = []
+    axis_map: Dict[plt.Axes, Tuple[str, str]] = {}
+    for i, cond in enumerate(cond_names):
+        for j, ch in enumerate(channels + ['RGB']):
+            ax = axes[i, j]
+            if ch == 'RGB':
+                ax.imshow(previews[cond][ch])
+                title = f"{cond} — RGB"
+            else:
+                ax.imshow(previews[cond][ch], cmap=chan_cmaps.get(ch, 'gray'))
+                title = f"{cond} — {chan_tags.get(ch, ch)}"
+            ax.set_title(title, fontsize=10)
+            ax.axis('off')
+            rect = patches.Rectangle((0, 0), 1, 1, fill=False, edgecolor='yellow', linewidth=2)
+            rect.set_visible(False)
+            ax.add_patch(rect)
+            rects.append((cond, ch, rect, ax))
+            axis_map[ax] = (cond, ch)
+
+    # Determine reference axis for ROI selection (used for global mode)
+    if ref_cond not in cond_names:
+        ref_cond = cond_names[0]
+    ref_row = cond_names.index(ref_cond)
+    if ref_ch == 'RGB' or ref_ch not in channels:
+        ref_col = ncols - 1
+    else:
+        ref_col = (channels + ['RGB']).index(ref_ch)
+    ref_ax = axes[ref_row, ref_col]
+
+    roi_map: Dict[str, Tuple[Tuple[int, int, int, int], float]] = {}
+    sel = {
+        'roi': None,
+        'angle': 0.0,
+        'confirmed': False,
+        'drawing': False,
+        'rotating': False,
+        'moving': False,
+        'mode': 'move',
+        'x0': None,
+        'y0': None,
+        'rot_anchor': 0.0,
+        'angle_start': 0.0,
+        'move_roi': None,
+        'move_angle': 0.0,
+        'active_cond': None,
+    }
+
+    def _apply_rect(rect: patches.Rectangle, ax: plt.Axes, roi: Tuple[int, int, int, int], angle: float) -> None:
+        x, y, w, h = roi
+        rect.set_xy((x, y))
+        rect.set_width(w)
+        rect.set_height(h)
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        rot = transforms.Affine2D().rotate_deg_around(cx, cy, angle)
+        rect.set_transform(rot + ax.transData)
+        rect.set_visible(True)
+
+    def _refresh_rects() -> None:
+        if per_condition:
+            for cond, ch, rect, ax in rects:
+                if cond not in roi_map:
+                    rect.set_visible(False)
+                    continue
+                roi, angle = roi_map[cond]
+                _apply_rect(rect, ax, roi, angle)
+        else:
+            if sel['roi'] is None:
+                for _, _, rect, _ in rects:
+                    rect.set_visible(False)
+            else:
+                for _, _, rect, ax in rects:
+                    _apply_rect(rect, ax, sel['roi'], sel['angle'])
+
+        mode_txt = f" | mode={sel.get('mode', 'move')}"
+        if per_condition:
+            cond = sel['active_cond']
+            if cond and cond in roi_map:
+                r, a = roi_map[cond]
+                info.set_text(f"Active: {cond} | ROI: x={r[0]} y={r[1]} w={r[2]} h={r[3]} angle={a:.1f}°{size_txt}{mode_txt}")
+            else:
+                info.set_text(f"Active: {cond} | ROI: (none){size_txt}{mode_txt}")
+        else:
+            if sel['roi'] is None:
+                info.set_text(f"ROI: (none){size_txt}{mode_txt}")
+            else:
+                r = sel['roi']
+                info.set_text(f"ROI: x={r[0]} y={r[1]} w={r[2]} h={r[3]} angle={sel['angle']:.1f}°{size_txt}{mode_txt}")
+        fig.canvas.draw_idle()
+
+    def _set_roi_for_cond(cond: str, roi: Tuple[int, int, int, int], angle: float) -> None:
+        if per_condition:
+            roi_map[cond] = (roi, angle)
+        else:
+            sel['roi'] = roi
+            sel['angle'] = angle
+        _refresh_rects()
+
+    def _point_in_roi(px: float, py: float, roi: Tuple[int, int, int, int], angle: float) -> bool:
+        x, y, w, h = roi
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        dx = px - cx
+        dy = py - cy
+        theta = -np.deg2rad(angle)
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+        xr = dx * cos_t - dy * sin_t
+        yr = dx * sin_t + dy * cos_t
+        return (abs(xr) <= (w / 2.0)) and (abs(yr) <= (h / 2.0))
+
+    def on_press(event):
+        if event.inaxes is None:
+            return
+        if not per_condition and event.inaxes != ref_ax:
+            return
+        if event.inaxes not in axis_map:
+            return
+        cond, _ = axis_map[event.inaxes]
+        sel['active_cond'] = cond
+        if event.button == 1:
+            sel['drawing'] = False
+            sel['rotating'] = False
+            sel['moving'] = False
+            sel['x0'] = event.xdata
+            sel['y0'] = event.ydata
+            if per_condition and cond in roi_map:
+                cur_roi, cur_ang = roi_map[cond]
+            else:
+                cur_roi, cur_ang = (sel['roi'], sel['angle'])
+            mode = sel.get('mode', 'move')
+            if mode == 'draw':
+                sel['drawing'] = True
+                sel['angle'] = 0.0
+            elif mode == 'rotate':
+                if cur_roi is None:
+                    return
+                sel['rotating'] = True
+                sel['drawing'] = False
+                sel['moving'] = False
+                x, y, w, h = cur_roi
+                cx = x + (w / 2.0)
+                cy = y + (h / 2.0)
+                if event.xdata is None or event.ydata is None:
+                    return
+                sel['rot_anchor'] = np.degrees(np.arctan2(event.ydata - cy, event.xdata - cx))
+                sel['angle_start'] = cur_ang
+            elif cur_roi is not None:
+                sel['moving'] = True
+                sel['move_roi'] = cur_roi
+                sel['move_angle'] = cur_ang
+            else:
+                sel['drawing'] = True
+                sel['angle'] = 0.0
+        elif event.button == 3:
+            if per_condition and cond in roi_map:
+                roi, ang = roi_map[cond]
+            else:
+                roi, ang = (sel['roi'], sel['angle'])
+            if roi is None:
+                return
+            sel['rotating'] = True
+            sel['drawing'] = False
+            sel['moving'] = False
+            x, y, w, h = roi
+            cx = x + (w / 2.0)
+            cy = y + (h / 2.0)
+            if event.xdata is None or event.ydata is None:
+                return
+            sel['rot_anchor'] = np.degrees(np.arctan2(event.ydata - cy, event.xdata - cx))
+            sel['angle_start'] = ang
+
+    def on_motion(event):
+        if event.inaxes is None:
+            return
+        if not per_condition and event.inaxes != ref_ax:
+            return
+        if event.inaxes not in axis_map:
+            return
+        cond, _ = axis_map[event.inaxes]
+        if event.xdata is None or event.ydata is None:
+            return
+        if sel['moving'] and sel['move_roi'] is not None:
+            x0, y0 = sel['x0'], sel['y0']
+            if x0 is None or y0 is None:
+                return
+            dx = event.xdata - x0
+            dy = event.ydata - y0
+            x, y, w, h = sel['move_roi']
+            roi = (int(round(x + dx)), int(round(y + dy)), w, h)
+            _set_roi_for_cond(cond, roi, sel['move_angle'])
+        elif sel['drawing']:
+            if roi_size:
+                w, h = roi_size
+                x_min = event.xdata - (w / 2.0)
+                y_min = event.ydata - (h / 2.0)
+            else:
+                x0, y0 = sel['x0'], sel['y0']
+                if x0 is None or y0 is None:
+                    return
+                x_min, x_max = sorted([x0, event.xdata])
+                y_min, y_max = sorted([y0, event.ydata])
+                w = max(int(round(x_max - x_min)), 1)
+                h = max(int(round(y_max - y_min)), 1)
+            roi = (int(round(x_min)), int(round(y_min)), int(round(w)), int(round(h)))
+            _set_roi_for_cond(cond, roi, sel['angle'])
+        elif sel['rotating']:
+            if per_condition and cond in roi_map:
+                roi, _ = roi_map[cond]
+            else:
+                roi = sel['roi']
+            if roi is None:
+                return
+            x, y, w, h = roi
+            cx = x + (w / 2.0)
+            cy = y + (h / 2.0)
+            ang = np.degrees(np.arctan2(event.ydata - cy, event.xdata - cx))
+            angle = sel['angle_start'] + (ang - sel['rot_anchor'])
+            _set_roi_for_cond(cond, roi, angle)
+
+    def on_release(event):
+        if event.button == 1:
+            if sel.get('mode') == 'draw':
+                sel['mode'] = 'move'
+            sel['drawing'] = False
+            sel['moving'] = False
+            sel['move_roi'] = None
+        elif event.button == 3:
+            sel['rotating'] = False
+
+    def on_key(event):
+        if event.key in ('enter', 's'):
+            if per_condition:
+                missing = [c for c in cond_names if c not in roi_map]
+                if missing:
+                    info.set_text(f"Missing ROI for: {', '.join(missing)}{size_txt}")
+                    fig.canvas.draw_idle()
+                    return
+            sel['confirmed'] = True
+            plt.close(fig)
+        elif event.key == 'n':
+            sel['mode'] = 'draw'
+            _refresh_rects()
+        elif event.key == 'm':
+            sel['mode'] = 'move'
+            _refresh_rects()
+        elif event.key == 'r':
+            sel['mode'] = 'move' if sel.get('mode') == 'rotate' else 'rotate'
+            _refresh_rects()
+        elif event.key in ('escape', 'q'):
+            plt.close(fig)
+
+    # Seed initial ROI(s) if provided
+    if per_condition and isinstance(initial_rois, dict):
+        roi_map.update(initial_rois)
+        for cond, (r, a) in roi_map.items():
+            sel['active_cond'] = cond
+            break
+    elif (not per_condition) and isinstance(initial_rois, tuple):
+        sel['roi'], sel['angle'] = initial_rois
+    _refresh_rects()
+
+    fig.canvas.mpl_connect('button_press_event', on_press)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+    fig.canvas.mpl_connect('button_release_event', on_release)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    if per_condition:
+        title = "Move: drag | Rotate: press 'r' then drag | Draw: press 'n' then drag | Save: 's'"
+    else:
+        title = f"Move: drag on {ref_cond} ({ref_ch}) | Rotate: 'r' then drag | Draw: 'n' then drag | Save: 's'"
+    fig.suptitle(title, fontsize=12)
+    plt.show()
+
+    if sel['confirmed']:
+        if per_condition:
+            return roi_map
+        return sel['roi'], sel['angle']
+    return None
+
+
+def show_roi_preview(grouped: Dict[str, Dict[str, np.ndarray]], cond_names: List[str], roi: Tuple[int, int, int, int],
+                     angle_deg: float, low: float, high: float) -> None:
+    nrows = len(cond_names)
+    if nrows == 0:
+        return
+    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(10, 4 * nrows))
+    if nrows == 1:
+        axes = np.array([axes])
+    x, y, w, h = roi
+    for i, cond in enumerate(cond_names):
+        rgb = rgb_preview_for_condition(grouped[cond], low, high)
+        crop = apply_roi_crop_rgb(rgb, roi, angle_deg)
+        ax_full = axes[i, 0]
+        ax_crop = axes[i, 1]
+        ax_full.imshow(rgb)
+        rect = patches.Rectangle((x, y), w, h, fill=False, edgecolor='yellow', linewidth=2)
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        rect.set_transform(transforms.Affine2D().rotate_deg_around(cx, cy, angle_deg) + ax_full.transData)
+        ax_full.add_patch(rect)
+        ax_full.set_title(f"{cond} — ROI overlay", fontsize=10)
+        ax_full.axis('off')
+        ax_crop.imshow(crop)
+        ax_crop.set_title(f"{cond} — ROI crop", fontsize=10)
+        ax_crop.axis('off')
+    fig.tight_layout()
+    plt.show()
+
+
+def show_roi_preview_map(
+    grouped: Dict[str, Dict[str, np.ndarray]],
+    cond_names: List[str],
+    roi_map: Dict[str, Tuple[Tuple[int, int, int, int], float]],
+    low: float,
+    high: float,
+) -> None:
+    nrows = len(cond_names)
+    if nrows == 0:
+        return
+    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(10, 4 * nrows))
+    if nrows == 1:
+        axes = np.array([axes])
+    for i, cond in enumerate(cond_names):
+        if cond not in roi_map:
+            continue
+        roi, angle_deg = roi_map[cond]
+        x, y, w, h = roi
+        rgb = rgb_preview_for_condition(grouped[cond], low, high)
+        crop = apply_roi_crop_rgb(rgb, roi, angle_deg)
+        ax_full = axes[i, 0]
+        ax_crop = axes[i, 1]
+        ax_full.imshow(rgb)
+        rect = patches.Rectangle((x, y), w, h, fill=False, edgecolor='yellow', linewidth=2)
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        rect.set_transform(transforms.Affine2D().rotate_deg_around(cx, cy, angle_deg) + ax_full.transData)
+        ax_full.add_patch(rect)
+        ax_full.set_title(f"{cond} — ROI overlay", fontsize=10)
+        ax_full.axis('off')
+        ax_crop.imshow(crop)
+        ax_crop.set_title(f"{cond} — ROI crop", fontsize=10)
+        ax_crop.axis('off')
+    fig.tight_layout()
+    plt.show()
 
 
 def _argparse() -> argparse.Namespace:
@@ -244,7 +734,22 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--chan-tag', action='append', default=['C1:DAPI','C2:EYFP','C3:tdTom'], help='C:TAG labels (repeat)')
     p.add_argument('--chan-cmap', action='append', default=['C1:Blues','C2:Greens','C3:Reds'], help='C:CMAP colormap names (repeat)')
     p.add_argument('--name-contains', action='append', default=None, help='Only use files whose names include these substrings (repeatable; case-insensitive). Default: zoomed, step2')
+    p.add_argument('--name-exclude', action='append', default=None, help='Exclude files whose names include these substrings (repeatable; case-insensitive)')
+    p.add_argument('--no-name-filter', action='store_true', help='Ignore default name-contains filters (use all matching files)')
+    p.add_argument('--prefer-fullsize', action='store_true', help='When multiple files match, prefer non-zoomed/non-cropped originals')
     p.add_argument('--align-mismatch', choices=['none','crop'], default='crop', help='If channel shapes differ within a condition: center-crop to smallest or do nothing (may error). Default: crop')
+    p.add_argument('--roi', type=str, default=None, help='Rectangular ROI as x,y,w,h[,angle_deg] in pixels (applied to all conditions/channels)')
+    p.add_argument('--roi-interactive', action='store_true', help='Pick ROI interactively on a reference condition/channel')
+    p.add_argument('--roi-grid', action='store_true', help='Pick ROI in a grid view of all conditions/channels')
+    p.add_argument('--roi-per-condition', action='store_true', help='Use a separate ROI per condition (shared across channels)')
+    p.add_argument('--roi-size', type=str, default=None, help='Fixed ROI size W,H for interactive selection')
+    p.add_argument('--roi-ref-condition', type=str, default=None, help='Condition name to use for interactive ROI (default: first condition)')
+    p.add_argument('--roi-ref-channel', choices=['RGB','C1','C2','C3'], default='RGB', help='Channel to use for ROI selection (default: RGB overlay)')
+    p.add_argument('--roi-json', type=Path, default=None, help='Path to load/save ROI JSON. If omitted and --roi-interactive is set, uses <out-root>/roi_session.json')
+    p.add_argument('--roi-preview', action='store_true', help='Preview ROI overlay + crop for all conditions')
+    p.add_argument('--roi-confirm', action='store_true', help='Ask to confirm ROI after preview (reselect if interactive)')
+    p.add_argument('--preview-final', action='store_true', help='Preview the final normalized grid before saving')
+    p.add_argument('--confirm-final', action='store_true', help='Confirm the final grid (reselect ROI if interactive)')
     p.add_argument('--save-merged', type=Path, default=None, help='Directory to save per-condition merged RGB TIFFs (8-bit). If not set, saves under out-root/merged')
     p.add_argument('--norm-mode', choices=['global','per_condition','match_ref'], default='match_ref', help='Normalization across conditions: global percentiles, per-condition percentiles, or match to a reference condition by quantile scaling')
     p.add_argument('--norm-quantile', type=float, default=99.0, help='Quantile (0-100) used for matching when norm-mode=match_ref (default 99)')
@@ -257,8 +762,12 @@ def _argparse() -> argparse.Namespace:
     p.add_argument('--out-root', type=Path, default=None, help='Root output directory where all exports are collated. Default: common parent of condition dirs + /<out base>')
     a = p.parse_args()
     # Default to requiring both 'zoomed' and 'step2' unless user provided filters
-    if a.name_contains is None:
+    if a.no_name_filter:
+        a.name_contains = []
+    elif a.name_contains is None:
         a.name_contains = ['zoomed', 'step2']
+    if a.name_exclude is None:
+        a.name_exclude = []
     return a
 
 
@@ -299,6 +808,10 @@ def main() -> int:
     merged_dir = args.save_merged if args.save_merged is not None else (out_root / 'merged')
     for d in (figures_dir, channels_raw_dir, channels_norm_dir, channels_pseudo_dir, merged_dir):
         d.mkdir(parents=True, exist_ok=True)
+    roi_json_path = args.roi_json
+    if roi_json_path is None and args.roi_interactive:
+        roi_json_path = out_root / 'roi_session.json'
+        print(f"[roi] Session ROI cache -> {roi_json_path}")
 
     # Step 1 — load and group images by condition
     grouped: Dict[str, Dict[str, np.ndarray]] = {}
@@ -312,11 +825,14 @@ def main() -> int:
         if file_id is None:
             # try given ids in order, honoring optional name filters
             tokens = [t.lower() for t in (args.name_contains or []) if t]
+            excludes = [t.lower() for t in (args.name_exclude or []) if t]
             for cand in args.ids:
                 pattern = str(folder / f"*{cand}*_C1*.tif*")
                 matches = glob.glob(pattern)
                 if tokens:
                     matches = [m for m in matches if all(tok in os.path.basename(m).lower() for tok in tokens)]
+                if excludes:
+                    matches = [m for m in matches if not any(tok in os.path.basename(m).lower() for tok in excludes)]
                 if matches:
                     file_id = cand; break
         if file_id is None:
@@ -328,7 +844,14 @@ def main() -> int:
         shapes = []
         print(f"[pick] Condition={name}  folder={folder}  ID={file_id}")
         for ch in channels:
-            img, fpath = load_matching_tiff(folder, file_id, ch, contains=args.name_contains)
+            img, fpath = load_matching_tiff(
+                folder,
+                file_id,
+                ch,
+                contains=args.name_contains,
+                exclude=args.name_exclude,
+                prefer_fullsize=args.prefer_fullsize,
+            )
             grouped[name][ch] = img
             chosen_files[name][ch] = fpath
             shapes.append(img.shape)
@@ -358,219 +881,502 @@ def main() -> int:
             else:
                 print(f"[warn] align-mismatch=none; proceeding without alignment. RGB stack may fail.")
 
-    # Step 2 — build display arrays using selected normalization mode (maps to 0..1)
     cond_names = list(grouped.keys())
-    disp: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in cond_names}
-    # Limits for raw units (used for labeling if requested)
-    raw_limits_global: Dict[str, Tuple[float,float]] = {}
-    raw_limits_percond: Dict[str, Dict[str, Tuple[float,float]]] = {name: {} for name in cond_names}
-
-    def apply_gamma(x: np.ndarray) -> np.ndarray:
-        g = float(args.gamma)
-        if g <= 0:
-            return x
-        return np.power(x, 1.0 / g)
-
-    if args.norm_mode == 'global':
-        # global limits per channel across all conditions
-        for ch in channels:
-            imgs = [grouped[name][ch] for name in cond_names]
-            vmin, vmax = compute_global_percentiles(imgs, low=float(args.low), high=float(args.high))
-            raw_limits_global[ch] = (vmin, vmax)
-            for name in cond_names:
-                arr = grouped[name][ch].astype(float)
-                nrm = np.clip((arr - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
-                disp[name][ch] = apply_gamma(nrm)
-                raw_limits_percond[name][ch] = (vmin, vmax)
-    elif args.norm_mode == 'per_condition':
-        for ch in channels:
-            for name in cond_names:
-                arr = grouped[name][ch].astype(float)
-                vmin, vmax = compute_global_percentiles([arr], low=float(args.low), high=float(args.high))
-                raw_limits_percond[name][ch] = (vmin, vmax)
-                nrm = np.clip((arr - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
-                disp[name][ch] = apply_gamma(nrm)
-    else:  # match_ref
-        ref = args.ref_condition or cond_names[0]
-        if ref not in grouped:
-            print(f"[warn] Reference condition '{ref}' not found. Falling back to '{cond_names[0]}'")
-            ref = cond_names[0]
-        q = float(args.norm_quantile)
-        # scale each condition to match the reference quantile per channel
-        scaled: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in cond_names}
-        for ch in channels:
-            ref_arr = grouped[ref][ch].astype(float)
-            ref_q = float(np.percentile(ref_arr, q))
-            for name in cond_names:
-                arr = grouped[name][ch].astype(float)
-                cond_q = float(np.percentile(arr, q))
-                scale = ref_q / (cond_q + 1e-12)
-                scaled[name][ch] = arr * scale
-        # now compute global limits across scaled arrays per channel, then normalize
-        for ch in channels:
-            imgs = [scaled[name][ch] for name in cond_names]
-            vmin, vmax = compute_global_percentiles(imgs, low=float(args.low), high=float(args.high))
-            raw_limits_global[ch] = (vmin, vmax)
-            for name in cond_names:
-                arr = scaled[name][ch]
-                nrm = np.clip((arr - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
-                disp[name][ch] = apply_gamma(nrm)
-                raw_limits_percond[name][ch] = (vmin, vmax)
-
-    # Step 3 — plot grid
-    nrows = len(grouped)
-    ncols = len(channels) + 1  # channels + RGB
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4*ncols, 3.6*nrows))
-    if nrows == 1:
-        axes = np.array([axes])
-
-    for i, cond in enumerate(cond_names):
-        aligned_shape = None
-        for j, ch in enumerate(channels):
-            ax = axes[i, j]
-            img_disp = disp[cond][ch]
-            im = ax.imshow(img_disp, cmap=chan_cmaps.get(ch, 'gray'), vmin=0.0, vmax=1.0)
-            ax.set_title(f"{cond} — {chan_tags.get(ch, ch)}", fontsize=10)
-            ax.axis('off')
-            if args.colorbar_mode != 'none':
-                cbar = fig.colorbar(im, ax=ax, shrink=0.65)
-                cbar.ax.tick_params(labelsize=8)
-                if args.colorbar_mode == 'normalized':
-                    cbar.set_label('Normalized (a.u.)', fontsize=8)
-                else:  # raw labels on a normalized bar
-                    vmin_raw, vmax_raw = raw_limits_percond[cond][ch]
-                    span = (vmax_raw - vmin_raw)
-                    def to_raw(x):
-                        return vmin_raw + x * span
-                    cbar.formatter = FuncFormatter(lambda x, pos: f"{to_raw(x):.0f}")
-                    cbar.set_label('Raw intensity', fontsize=8)
-                    cbar.update_ticks()
-        # RGB overlay in last column
-        ax = axes[i, ncols-1]
-        def _norm(chkey: str) -> np.ndarray:
-            return disp[cond][chkey]
-        # R=tdTom (C3), G=EYFP (C2), B=DAPI (C1)
-        r = _norm('C3') if 'C3' in channels else np.zeros_like(grouped[cond][channels[0]])
-        g = _norm('C2') if 'C2' in channels else np.zeros_like(r)
-        b = _norm('C1') if 'C1' in channels else np.zeros_like(r)
+    grouped_base = {
+        name: {ch: np.array(grouped[name][ch], copy=True) for ch in channels}
+        for name in cond_names
+    }
+    roi_size = None
+    if args.roi_size:
         try:
-            rgb = np.stack([r, g, b], axis=-1)
-        except ValueError as e:
-            print(f"[error] Cannot create RGB for condition '{cond}' due to shape mismatch: R{r.shape} G{g.shape} B{b.shape}.")
-            print("        Selected files:")
-            for ch in channels:
-                fpath = chosen_files.get(cond, {}).get(ch)
-                if fpath is not None:
-                    print(f"         {ch}: {fpath}  shape={grouped[cond][ch].shape}")
-            raise
-        ax.imshow(rgb)
-        ax.set_title(f"{cond} — RGB", fontsize=10)
-        ax.axis('off')
-
-        # Draw scalebar on RGB panel if pixel size is known
-        if args.scalebar_um < 0:
-            pass  # disabled
-        else:
-            px_um_x, px_um_y = cond_px_um.get(cond, (None, None))
-            if px_um_x is not None and px_um_y is not None:
-                H, W = rgb.shape[:2]
-                # auto-pick length ≈ 1/5 of width, snapped to nice values
-                if args.scalebar_um == 0.0:
-                    width_um = W * px_um_x
-                    candidates = [10, 20, 50, 100, 200, 500, 1000]
-                    target = width_um * 0.2
-                    bar_um = max([c for c in candidates if c <= target] or [candidates[0]])
-                else:
-                    bar_um = float(args.scalebar_um)
-                bar_px = max(int(round(bar_um / px_um_x)), 1)
-                # placement
-                pad = max(int(round(min(H, W) * 0.02)), 6)
-                thick = max(int(round(min(H, W) * 0.006)), 2)
-                if args.scalebar_pos == 'lower right':
-                    x0 = W - pad - bar_px; y0 = H - pad - thick
-                elif args.scalebar_pos == 'lower left':
-                    x0 = pad; y0 = H - pad - thick
-                elif args.scalebar_pos == 'upper left':
-                    x0 = pad; y0 = pad
-                else:  # upper right
-                    x0 = W - pad - bar_px; y0 = pad
-                rect = patches.Rectangle((x0, y0), bar_px, thick, linewidth=0, edgecolor=None, facecolor=args.scalebar_color)
-                ax.add_patch(rect)
-                # label
-                label = f"{int(bar_um) if abs(bar_um - int(bar_um)) < 1e-6 else bar_um:g} µm"
-                va = 'bottom' if 'lower' in args.scalebar_pos else 'top'
-                ax.text(x0 + bar_px/2, y0 - 4 if 'lower' in args.scalebar_pos else y0 + thick + 4,
-                        label, color=args.scalebar_color, ha='center', va=va, fontsize=9, weight='bold')
-
-        # Optionally save per-condition merged RGB TIFF (8-bit)
-        # Save merged RGB with preserved resolution
-        rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-        out_tif = merged_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_merged_rgb.tif"
-        try:
-            write_tiff_preserve_resolution(out_tif, rgb8, cond_res[cond])
-            print(f"[save] Wrote merged RGB -> {out_tif}")
+            roi_size = parse_roi_size(args.roi_size)
         except Exception as ex:
-            print(f"[warn] Failed to write merged RGB TIFF for {cond}: {ex}")
+            raise SystemExit(f"Failed to parse --roi-size '{args.roi_size}': {ex}")
+    preview_final = bool(args.preview_final or args.confirm_final)
+    roi_per_condition_default = bool(args.roi_per_condition)
+    force_interactive = False
+    last_roi = None
+    last_roi_angle = 0.0
+    last_roi_map: Dict[str, Tuple[Tuple[int, int, int, int], float]] = {}
 
-        # Save raw, normalized grayscale, and pseudocolor per-channel images
-        for ch in channels:
-            raw_arr = grouped[cond][ch]
-            raw_path = channels_raw_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_raw.tif"
-            try:
-                write_tiff_preserve_resolution(raw_path, raw_arr, cond_res[cond])
-            except Exception as ex:
-                print(f"[warn] Failed to write raw channel {ch} for {cond}: {ex}")
+    while True:
+        grouped = {
+            name: {ch: np.array(grouped_base[name][ch], copy=True) for ch in channels}
+            for name in cond_names
+        }
 
-            # Save grayscale normalized
-            norm_arr = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-            norm_path = channels_norm_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_norm.tif"
-            try:
-                write_tiff_preserve_resolution(norm_path, norm_arr, cond_res[cond])
-            except Exception as ex:
-                print(f"[warn] Failed to write grayscale normalized channel {ch} for {cond}: {ex}")
+        roi: Optional[Tuple[int, int, int, int]] = None
+        roi_angle = 0.0
+        roi_map: Dict[str, Tuple[Tuple[int, int, int, int], float]] = {}
+        roi_per_condition = roi_per_condition_default
 
-        # Verify shape and resolution preserved for merged vs display arrays
-        try:
-            with tifffile.TiffFile(str(out_tif)) as tf:
-                sh = tf.pages[0].shape
-            xres, yres, unit = read_tiff_resolution(str(out_tif))
-            px_um_x2, px_um_y2 = try_pixel_size_um(str(out_tif))
-            ok_shape = sh[:2] == rgb.shape[:2]
-            ok_res = (cond_px_um[cond] == (None, None)) or (
-                px_um_x2 is not None and px_um_y2 is not None and
-                abs(px_um_x2 - (cond_px_um[cond][0] or px_um_x2)) < 1e-6 and
-                abs(px_um_y2 - (cond_px_um[cond][1] or px_um_y2)) < 1e-6
-            )
-            if ok_shape and ok_res:
-                print(f"[check] {cond}: shape preserved {sh[:2]}, pixel size preserved {px_um_x2}×{px_um_y2} µm")
+        initial_rois = None
+        if force_interactive:
+            if last_roi_map:
+                roi_per_condition = True
+                roi_map = {k: v for k, v in last_roi_map.items()}
+                initial_rois = roi_map
+            elif last_roi is not None:
+                roi = last_roi
+                roi_angle = last_roi_angle
+                initial_rois = (roi, roi_angle)
+
+        if not force_interactive:
+            if roi_json_path is not None and roi_json_path.exists():
+                try:
+                    data = json.loads(roi_json_path.read_text())
+                    if isinstance(data, dict) and 'rois' in data:
+                        roi_per_condition = True
+                        for k, v in data.get('rois', {}).items():
+                            roi_map[k] = (
+                                (int(v['x']), int(v['y']), int(v['w']), int(v['h'])),
+                                float(v.get('angle_deg', v.get('angle', 0.0))),
+                            )
+                        print(f"[roi] Loaded per-condition ROI map from {roi_json_path}")
+                    else:
+                        roi = (int(data['x']), int(data['y']), int(data['w']), int(data['h']))
+                        roi_angle = float(data.get('angle_deg', data.get('angle', 0.0)))
+                        angle_txt = f" angle={roi_angle:.1f}°" if abs(roi_angle) > 1e-6 else ""
+                        print(f"[roi] Loaded ROI from {roi_json_path}: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}{angle_txt}")
+                except Exception as ex:
+                    print(f"[warn] Failed to load ROI from {roi_json_path}: {ex}")
+            if roi is None and args.roi:
+                try:
+                    roi, roi_angle = parse_roi_text(args.roi)
+                    angle_txt = f" angle={roi_angle:.1f}°" if abs(roi_angle) > 1e-6 else ""
+                    print(f"[roi] Using ROI from --roi: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}{angle_txt}")
+                except Exception as ex:
+                    print(f"[warn] Failed to parse --roi '{args.roi}': {ex}")
+            if roi_per_condition and roi is not None and not roi_map:
+                for name in cond_names:
+                    roi_map[name] = (roi, roi_angle)
+
+        should_open_roi = args.roi_interactive and (
+            force_interactive or args.roi_grid or (roi is None and not roi_map)
+        )
+        if should_open_roi:
+            ref_cond = args.roi_ref_condition or (cond_names[0] if cond_names else None)
+            if ref_cond is None or ref_cond not in grouped:
+                print("[warn] Cannot run interactive ROI — reference condition not found. Skipping.")
             else:
-                print(f"[ERROR] {cond}: shape/resolution changed! shape_saved={sh[:2]} vs rgb={rgb.shape[:2]}, px_saved={px_um_x2, px_um_y2} vs base={cond_px_um[cond]}")
-        except Exception as ex:
-            print(f"[warn] Could not verify saved merged file shape/resolution for {cond}: {ex}")
+                if args.roi_grid:
+                    res = interactive_roi_grid(
+                        grouped,
+                        cond_names,
+                        channels,
+                        chan_tags,
+                        chan_cmaps,
+                        ref_cond,
+                        args.roi_ref_channel,
+                        args.low,
+                        args.high,
+                        roi_per_condition,
+                        roi_size,
+                        initial_rois if initial_rois is not None else (
+                            roi_map if roi_per_condition else ((roi, roi_angle) if roi is not None else None)
+                        ),
+                    )
+                    if res is None:
+                        if roi_per_condition and roi_map:
+                            print('[warn] No ROI selected; keeping previous ROI map')
+                        elif roi is not None:
+                            print('[warn] No ROI selected; keeping previous ROI')
+                        else:
+                            print('[warn] No ROI selected; proceeding without cropping')
+                    else:
+                        if roi_per_condition:
+                            roi_map = res
+                            if roi_json_path is not None:
+                                try:
+                                    payload = {
+                                        'per_condition': True,
+                                        'rois': {
+                                            k: {
+                                                'x': v[0][0],
+                                                'y': v[0][1],
+                                                'w': v[0][2],
+                                                'h': v[0][3],
+                                                'angle_deg': v[1],
+                                            } for k, v in roi_map.items()
+                                        },
+                                    }
+                                    roi_json_path.write_text(json.dumps(payload, indent=2))
+                                    print(f"[roi] Saved ROI map to {roi_json_path}")
+                                except Exception as ex:
+                                    print(f"[warn] Failed to save ROI JSON: {ex}")
+                        else:
+                            roi, roi_angle = res
+                            if roi_json_path is not None:
+                                try:
+                                    roi_json_path.write_text(json.dumps({
+                                        'x': roi[0],
+                                        'y': roi[1],
+                                        'w': roi[2],
+                                        'h': roi[3],
+                                        'angle_deg': roi_angle,
+                                    }, indent=2))
+                                    print(f"[roi] Saved ROI to {roi_json_path}")
+                                except Exception as ex:
+                                    print(f"[warn] Failed to save ROI JSON: {ex}")
+                else:
+                    while True:
+                        ref_ch = args.roi_ref_channel
+                        sel = {'roi': None}
+                        if ref_ch == 'RGB':
+                            r = preview_norm(grouped[ref_cond].get('C3', next(iter(grouped[ref_cond].values()))), args.low, args.high)
+                            g = preview_norm(grouped[ref_cond].get('C2', next(iter(grouped[ref_cond].values()))), args.low, args.high)
+                            b = preview_norm(grouped[ref_cond].get('C1', next(iter(grouped[ref_cond].values()))), args.low, args.high)
+                            preview = np.stack([r, g, b], axis=-1)
+                            cmap = None
+                        else:
+                            if ref_ch not in grouped[ref_cond]:
+                                print(f"[warn] ROI ref channel {ref_ch} not found; using C1.")
+                                ref_ch = 'C1'
+                            preview = preview_norm(grouped[ref_cond][ref_ch], args.low, args.high)
+                            cmap = chan_cmaps.get(ref_ch, 'gray')
 
-            # Save RGB pseudocolor normalized
-            pseudo_path = channels_pseudo_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_pseudo.tif"
-            rgb_tints = {
-                "C1": (0.2, 0.4, 1.0),  # soft blue for DAPI
-                "C2": (0.3, 1.0, 0.3),  # soft green for EYFP
-                "C3": (1.0, 0.3, 0.3),  # soft red for tdTom
-            }
-            norm_rgb = np.zeros((*disp[cond][ch].shape, 3), dtype=np.uint8)
-            tint = rgb_tints.get(ch, (1.0, 1.0, 1.0))
-            for i in range(3):
-                norm_rgb[..., i] = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 * tint[i] + 0.5).astype(np.uint8)
-            try:
-                tifffile.imwrite(pseudo_path, norm_rgb)
-            except Exception as ex:
-                print(f"[warn] Failed to write pseudocolor normalized channel {ch} for {cond}: {ex}")
+                        def onselect(eclick, erelease):
+                            x0, y0 = eclick.xdata, eclick.ydata
+                            x1, y1 = erelease.xdata, erelease.ydata
+                            if None in (x0, y0, x1, y1):
+                                return
+                            x_min, x_max = sorted([x0, x1])
+                            y_min, y_max = sorted([y0, y1])
+                            sel['roi'] = (int(round(x_min)), int(round(y_min)),
+                                          int(round(x_max - x_min)), int(round(y_max - y_min)))
 
-    fig.tight_layout()
-    out_svg = figures_dir / f"{args.out.name}.svg"
-    out_pdf = figures_dir / f"{args.out.name}.pdf"
-    fig.savefig(out_svg)
-    fig.savefig(out_pdf)
-    print(f"Wrote -> {out_svg} and {out_pdf}")
-    return 0
+                        fig_roi, ax_roi = plt.subplots(1, 1, figsize=(6, 6))
+                        if cmap is None:
+                            ax_roi.imshow(preview)
+                        else:
+                            ax_roi.imshow(preview, cmap=cmap)
+                        ax_roi.set_title(f"Select ROI on {ref_cond} ({ref_ch}); close window to confirm", fontsize=10)
+                        ax_roi.axis('off')
+                        RectangleSelector(
+                            ax_roi,
+                            onselect,
+                            useblit=True,
+                            button=[1],
+                            minspanx=5,
+                            minspany=5,
+                            interactive=True,
+                            drag_from_anywhere=False,
+                        )
+                        plt.show()
+                        if sel['roi'] is None:
+                            print('[warn] No ROI selected; proceeding without cropping')
+                            break
+                        roi = sel['roi']
+                        roi_angle = 0.0
+                        print(f"[roi] Selected ROI: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}")
+                        if args.roi_preview or args.roi_confirm:
+                            show_roi_preview(grouped, cond_names, roi, roi_angle, args.low, args.high)
+                        if args.roi_confirm:
+                            try:
+                                resp = input("Use this ROI for all conditions? [y/N]: ").strip().lower()
+                            except EOFError:
+                                resp = 'y'
+                            if resp in ('y', 'yes'):
+                                break
+                            print("[roi] Reselecting ROI...")
+                            roi = None
+                            continue
+                        break
+                    if roi is not None and roi_json_path is not None:
+                        try:
+                            roi_json_path.write_text(json.dumps({
+                                'x': roi[0],
+                                'y': roi[1],
+                                'w': roi[2],
+                                'h': roi[3],
+                                'angle_deg': roi_angle,
+                            }, indent=2))
+                            print(f"[roi] Saved ROI to {roi_json_path}")
+                        except Exception as ex:
+                            print(f"[warn] Failed to save ROI JSON: {ex}")
+                force_interactive = False
+
+        if (args.roi_preview or args.roi_confirm) and not args.roi_interactive:
+            if roi_per_condition and roi_map:
+                show_roi_preview_map(grouped, cond_names, roi_map, args.low, args.high)
+            elif roi is not None:
+                show_roi_preview(grouped, cond_names, roi, roi_angle, args.low, args.high)
+            if args.roi_confirm:
+                try:
+                    resp = input("Use this ROI for all conditions? [y/N]: ").strip().lower()
+                except EOFError:
+                    resp = 'y'
+                if resp not in ('y', 'yes'):
+                    raise SystemExit("ROI not confirmed. Re-run with a different ROI.")
+
+        if roi_per_condition and roi_map:
+            missing = [c for c in cond_names if c not in roi_map]
+            if missing:
+                raise SystemExit(f"Missing ROI for conditions: {', '.join(missing)}")
+            for name in cond_names:
+                roi_it, ang = roi_map[name]
+                x, y, w, h = roi_it
+                if w <= 0 or h <= 0:
+                    raise SystemExit(f"Invalid ROI size for {name}: w={w} h={h}")
+                for ch in channels:
+                    arr = grouped[name][ch]
+                    H, W = arr.shape[:2]
+                    if x < 0 or y < 0 or (x + w) > W or (y + h) > H:
+                        raise SystemExit(f"ROI {roi_it} does not fit in {name}/{ch} with shape {arr.shape}")
+                for ch in channels:
+                    grouped[name][ch] = apply_roi_crop(grouped[name][ch], roi_it, ang)
+                angle_txt = f" angle={ang:.1f}°" if abs(ang) > 1e-6 else ""
+                print(f"[roi] Applied ROI for {name}: x={x} y={y} w={w} h={h}{angle_txt}")
+        elif roi is not None:
+            x, y, w, h = roi
+            if w <= 0 or h <= 0:
+                raise SystemExit(f"Invalid ROI size: w={w} h={h}")
+            for name in cond_names:
+                for ch in channels:
+                    arr = grouped[name][ch]
+                    H, W = arr.shape[:2]
+                    if x < 0 or y < 0 or (x + w) > W or (y + h) > H:
+                        raise SystemExit(f"ROI {roi} does not fit in {name}/{ch} with shape {arr.shape}")
+            for name in cond_names:
+                for ch in channels:
+                    grouped[name][ch] = apply_roi_crop(grouped[name][ch], roi, roi_angle)
+            angle_txt = f" angle={roi_angle:.1f}°" if abs(roi_angle) > 1e-6 else ""
+            print(f"[roi] Applied ROI crop to all conditions/channels: x={x} y={y} w={w} h={h}{angle_txt}")
+
+        # Step 2 — build display arrays using selected normalization mode (maps to 0..1)
+        disp: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in cond_names}
+        # Limits for raw units (used for labeling if requested)
+        raw_limits_global: Dict[str, Tuple[float,float]] = {}
+        raw_limits_percond: Dict[str, Dict[str, Tuple[float,float]]] = {name: {} for name in cond_names}
+
+        def apply_gamma(x: np.ndarray) -> np.ndarray:
+            g = float(args.gamma)
+            if g <= 0:
+                return x
+            return np.power(x, 1.0 / g)
+
+        if args.norm_mode == 'global':
+            # global limits per channel across all conditions
+            for ch in channels:
+                imgs = [grouped[name][ch] for name in cond_names]
+                vmin, vmax = compute_global_percentiles(imgs, low=float(args.low), high=float(args.high))
+                raw_limits_global[ch] = (vmin, vmax)
+                for name in cond_names:
+                    arr = grouped[name][ch].astype(float)
+                    nrm = np.clip((arr - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
+                    disp[name][ch] = apply_gamma(nrm)
+                    raw_limits_percond[name][ch] = (vmin, vmax)
+        elif args.norm_mode == 'per_condition':
+            for ch in channels:
+                for name in cond_names:
+                    arr = grouped[name][ch].astype(float)
+                    vmin, vmax = compute_global_percentiles([arr], low=float(args.low), high=float(args.high))
+                    raw_limits_percond[name][ch] = (vmin, vmax)
+                    nrm = np.clip((arr - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
+                    disp[name][ch] = apply_gamma(nrm)
+        else:  # match_ref
+            ref = args.ref_condition or cond_names[0]
+            if ref not in grouped:
+                print(f"[warn] Reference condition '{ref}' not found. Falling back to '{cond_names[0]}'")
+                ref = cond_names[0]
+            q = float(args.norm_quantile)
+            # scale each condition to match the reference quantile per channel
+            scaled: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in cond_names}
+            for ch in channels:
+                ref_arr = grouped[ref][ch].astype(float)
+                ref_q = float(np.percentile(ref_arr, q))
+                for name in cond_names:
+                    arr = grouped[name][ch].astype(float)
+                    cond_q = float(np.percentile(arr, q))
+                    scale = ref_q / (cond_q + 1e-12)
+                    scaled[name][ch] = arr * scale
+            # now compute global limits across scaled arrays per channel, then normalize
+            for ch in channels:
+                imgs = [scaled[name][ch] for name in cond_names]
+                vmin, vmax = compute_global_percentiles(imgs, low=float(args.low), high=float(args.high))
+                raw_limits_global[ch] = (vmin, vmax)
+                for name in cond_names:
+                    arr = scaled[name][ch]
+                    nrm = np.clip((arr - vmin) / (vmax - vmin + 1e-12), 0.0, 1.0)
+                    disp[name][ch] = apply_gamma(nrm)
+                    raw_limits_percond[name][ch] = (vmin, vmax)
+
+        def render_grid(do_save: bool, show: bool) -> None:
+            nrows = len(grouped)
+            ncols = len(channels) + 1  # channels + RGB
+            fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4*ncols, 3.6*nrows))
+            if nrows == 1:
+                axes = np.array([axes])
+
+            for i, cond in enumerate(cond_names):
+                for j, ch in enumerate(channels):
+                    ax = axes[i, j]
+                    img_disp = disp[cond][ch]
+                    im = ax.imshow(img_disp, cmap=chan_cmaps.get(ch, 'gray'), vmin=0.0, vmax=1.0)
+                    ax.set_title(f"{cond} — {chan_tags.get(ch, ch)}", fontsize=10)
+                    ax.axis('off')
+                    if args.colorbar_mode != 'none':
+                        cbar = fig.colorbar(im, ax=ax, shrink=0.65)
+                        cbar.ax.tick_params(labelsize=8)
+                        if args.colorbar_mode == 'normalized':
+                            cbar.set_label('Normalized (a.u.)', fontsize=8)
+                        else:  # raw labels on a normalized bar
+                            vmin_raw, vmax_raw = raw_limits_percond[cond][ch]
+                            span = (vmax_raw - vmin_raw)
+                            def to_raw(x):
+                                return vmin_raw + x * span
+                            cbar.formatter = FuncFormatter(lambda x, pos: f"{to_raw(x):.0f}")
+                            cbar.set_label('Raw intensity', fontsize=8)
+                            cbar.update_ticks()
+                # RGB overlay in last column
+                ax = axes[i, ncols-1]
+                def _norm(chkey: str) -> np.ndarray:
+                    return disp[cond][chkey]
+                # R=tdTom (C3), G=EYFP (C2), B=DAPI (C1)
+                r = _norm('C3') if 'C3' in channels else np.zeros_like(grouped[cond][channels[0]])
+                g = _norm('C2') if 'C2' in channels else np.zeros_like(r)
+                b = _norm('C1') if 'C1' in channels else np.zeros_like(r)
+                try:
+                    rgb = np.stack([r, g, b], axis=-1)
+                except ValueError as e:
+                    print(f"[error] Cannot create RGB for condition '{cond}' due to shape mismatch: R{r.shape} G{g.shape} B{b.shape}.")
+                    print("        Selected files:")
+                    for ch in channels:
+                        fpath = chosen_files.get(cond, {}).get(ch)
+                        if fpath is not None:
+                            print(f"         {ch}: {fpath}  shape={grouped[cond][ch].shape}")
+                    raise
+                ax.imshow(rgb)
+                ax.set_title(f"{cond} — RGB", fontsize=10)
+                ax.axis('off')
+
+                # Draw scalebar on RGB panel if pixel size is known
+                if args.scalebar_um < 0:
+                    pass  # disabled
+                else:
+                    px_um_x, px_um_y = cond_px_um.get(cond, (None, None))
+                    if px_um_x is not None and px_um_y is not None:
+                        H, W = rgb.shape[:2]
+                        # auto-pick length ≈ 1/5 of width, snapped to nice values
+                        if args.scalebar_um == 0.0:
+                            width_um = W * px_um_x
+                            candidates = [10, 20, 50, 100, 200, 500, 1000]
+                            target = width_um * 0.2
+                            bar_um = max([c for c in candidates if c <= target] or [candidates[0]])
+                        else:
+                            bar_um = float(args.scalebar_um)
+                        bar_px = max(int(round(bar_um / px_um_x)), 1)
+                        # placement
+                        pad = max(int(round(min(H, W) * 0.02)), 6)
+                        thick = max(int(round(min(H, W) * 0.006)), 2)
+                        if args.scalebar_pos == 'lower right':
+                            x0 = W - pad - bar_px; y0 = H - pad - thick
+                        elif args.scalebar_pos == 'lower left':
+                            x0 = pad; y0 = H - pad - thick
+                        elif args.scalebar_pos == 'upper left':
+                            x0 = pad; y0 = pad
+                        else:  # upper right
+                            x0 = W - pad - bar_px; y0 = pad
+                        rect = patches.Rectangle((x0, y0), bar_px, thick, linewidth=0, edgecolor=None, facecolor=args.scalebar_color)
+                        ax.add_patch(rect)
+                        # label
+                        label = f"{int(bar_um) if abs(bar_um - int(bar_um)) < 1e-6 else bar_um:g} µm"
+                        va = 'bottom' if 'lower' in args.scalebar_pos else 'top'
+                        ax.text(x0 + bar_px/2, y0 - 4 if 'lower' in args.scalebar_pos else y0 + thick + 4,
+                                label, color=args.scalebar_color, ha='center', va=va, fontsize=9, weight='bold')
+
+                if do_save:
+                    # Save merged RGB with preserved resolution
+                    rgb8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+                    out_tif = merged_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_merged_rgb.tif"
+                    try:
+                        write_tiff_preserve_resolution(out_tif, rgb8, cond_res[cond])
+                        print(f"[save] Wrote merged RGB -> {out_tif}")
+                    except Exception as ex:
+                        print(f"[warn] Failed to write merged RGB TIFF for {cond}: {ex}")
+
+                    # Verify shape and resolution preserved for merged vs display arrays
+                    try:
+                        with tifffile.TiffFile(str(out_tif)) as tf:
+                            sh = tf.pages[0].shape
+                        xres, yres, unit = read_tiff_resolution(str(out_tif))
+                        px_um_x2, px_um_y2 = try_pixel_size_um(str(out_tif))
+                        ok_shape = sh[:2] == rgb.shape[:2]
+                        ok_res = (cond_px_um[cond] == (None, None)) or (
+                            px_um_x2 is not None and px_um_y2 is not None and
+                            abs(px_um_x2 - (cond_px_um[cond][0] or px_um_x2)) < 1e-6 and
+                            abs(px_um_y2 - (cond_px_um[cond][1] or px_um_y2)) < 1e-6
+                        )
+                        if ok_shape and ok_res:
+                            print(f"[check] {cond}: shape preserved {sh[:2]}, pixel size preserved {px_um_x2}×{px_um_y2} µm")
+                        else:
+                            print(f"[ERROR] {cond}: shape/resolution changed! shape_saved={sh[:2]} vs rgb={rgb.shape[:2]}, px_saved={px_um_x2, px_um_y2} vs base={cond_px_um[cond]}")
+                    except Exception as ex:
+                        print(f"[warn] Could not verify saved merged file shape/resolution for {cond}: {ex}")
+
+                    # Save raw, normalized grayscale, and pseudocolor per-channel images
+                    for ch in channels:
+                        raw_arr = grouped[cond][ch]
+                        raw_path = channels_raw_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_raw.tif"
+                        try:
+                            write_tiff_preserve_resolution(raw_path, raw_arr, cond_res[cond])
+                        except Exception as ex:
+                            print(f"[warn] Failed to write raw channel {ch} for {cond}: {ex}")
+
+                        # Save grayscale normalized
+                        norm_arr = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+                        norm_path = channels_norm_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_norm.tif"
+                        try:
+                            write_tiff_preserve_resolution(norm_path, norm_arr, cond_res[cond])
+                        except Exception as ex:
+                            print(f"[warn] Failed to write grayscale normalized channel {ch} for {cond}: {ex}")
+
+                        # Save RGB pseudocolor normalized
+                        pseudo_path = channels_pseudo_dir / f"{cond}_{chosen_id.get(cond, 'unknown')}_{ch}_pseudo.tif"
+                        rgb_tints = {
+                            "C1": (0.2, 0.4, 1.0),  # soft blue for DAPI
+                            "C2": (0.3, 1.0, 0.3),  # soft green for EYFP
+                            "C3": (1.0, 0.3, 0.3),  # soft red for tdTom
+                        }
+                        norm_rgb = np.zeros((*disp[cond][ch].shape, 3), dtype=np.uint8)
+                        tint = rgb_tints.get(ch, (1.0, 1.0, 1.0))
+                        for i in range(3):
+                            norm_rgb[..., i] = (np.clip(disp[cond][ch], 0.0, 1.0) * 255.0 * tint[i] + 0.5).astype(np.uint8)
+                        try:
+                            tifffile.imwrite(pseudo_path, norm_rgb)
+                        except Exception as ex:
+                            print(f"[warn] Failed to write pseudocolor normalized channel {ch} for {cond}: {ex}")
+
+            fig.tight_layout()
+            if do_save:
+                out_svg = figures_dir / f"{args.out.name}.svg"
+                out_pdf = figures_dir / f"{args.out.name}.pdf"
+                fig.savefig(out_svg)
+                fig.savefig(out_pdf)
+                print(f"Wrote -> {out_svg} and {out_pdf}")
+            if show:
+                plt.show()
+            plt.close(fig)
+
+        if preview_final:
+            render_grid(do_save=False, show=True)
+            if args.confirm_final:
+                try:
+                    resp = input("Save this final grid and outputs? [y/N]: ").strip().lower()
+                except EOFError:
+                    resp = 'y'
+                if resp not in ('y', 'yes'):
+                    if args.roi_interactive:
+                        last_roi = roi
+                        last_roi_angle = roi_angle
+                        last_roi_map = {k: v for k, v in roi_map.items()}
+                        force_interactive = True
+                        continue
+                    print("[final] Not confirmed; no outputs written.")
+                    return 1
+
+        render_grid(do_save=True, show=False)
+        return 0
 
 
 if __name__ == '__main__':

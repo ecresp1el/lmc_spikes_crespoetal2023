@@ -1,0 +1,26 @@
+{
+  "per_condition": true,
+  "rois": {
+    "Luciferin+NMDA": {
+      "x": 421,
+      "y": 1090,
+      "w": 900,
+      "h": 300,
+      "angle_deg": -10.8
+    },
+    "Luciferin": {
+      "x": 300,
+      "y": 570,
+      "w": 900,
+      "h": 300,
+      "angle_deg": 46.6
+    },
+    "NMDA": {
+      "x": 1123,
+      "y": 377,
+      "w": 900,
+      "h": 300,
+      "angle_deg": -10.6
+    }
+  }
+}
