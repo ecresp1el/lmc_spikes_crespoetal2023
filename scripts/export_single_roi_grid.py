@@ -16,10 +16,18 @@ except ImportError:  # pragma: no cover
     ND2File = None
 
 try:
-    from scipy.ndimage import rotate, gaussian_filter
+    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+    from matplotlib.figure import Figure
+except ImportError:  # pragma: no cover
+    Figure = None
+    FigureCanvas = None
+
+try:
+    from scipy.ndimage import rotate, gaussian_filter, median_filter
 except ImportError:  # pragma: no cover
     rotate = None
     gaussian_filter = None
+    median_filter = None
 
 try:
     import tifffile
@@ -286,6 +294,55 @@ def colorize_channel(channel: np.ndarray, color: Tuple[float, float, float]) -> 
     for idx in range(3):
         rgb[..., idx] = channel * color[idx]
     return np.clip(rgb, 0.0, 1.0)
+
+
+def render_colorbar(
+    height: int,
+    width: int,
+    color: Tuple[float, float, float],
+    vmin: float,
+    vmax: float,
+    text_size: int,
+) -> np.ndarray:
+    bar = np.ones((height, width, 3), dtype=np.float32)
+    gradient = np.linspace(1.0, 0.0, height).reshape(height, 1)
+    grad_w = max(4, int(width * 0.4))
+    for idx in range(3):
+        bar[:, :grad_w, idx] = gradient * color[idx]
+
+    if Figure is None or FigureCanvas is None:
+        return bar
+
+    dpi = 100
+    fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="white")
+    FigureCanvas(fig)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    ax.imshow(bar, interpolation="nearest")
+    ax.text(
+        1,
+        1,
+        f"{vmax:.1f}",
+        ha="left",
+        va="top",
+        fontsize=text_size,
+        color="black",
+        bbox={"facecolor": "white", "edgecolor": "none", "pad": 1},
+    )
+    ax.text(
+        1,
+        height - 2,
+        f"{vmin:.1f}",
+        ha="left",
+        va="bottom",
+        fontsize=text_size,
+        color="black",
+        bbox={"facecolor": "white", "edgecolor": "none", "pad": 1},
+    )
+    fig.canvas.draw()
+    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    img = buf.reshape(height, width, 3)
+    return (img / 255.0).astype(np.float32)
 
 
 def compose_merge(norm_channels: Dict[str, np.ndarray]) -> np.ndarray:
@@ -688,6 +745,46 @@ def parse_args() -> argparse.Namespace:
         help="Override clip-below percentile for EL222 only.",
     )
     parser.add_argument(
+        "--despeckle-size",
+        type=int,
+        default=0,
+        help="Median filter size for despeckle (0 disables).",
+    )
+    parser.add_argument(
+        "--despeckle-channels",
+        nargs="+",
+        default=["EL222"],
+        help="Channels to apply despeckle (default: EL222).",
+    )
+    parser.add_argument(
+        "--colorbar",
+        action="store_true",
+        help="Append a per-channel colorbar to major panels (not merged or insets).",
+    )
+    parser.add_argument(
+        "--colorbar-width",
+        type=int,
+        default=40,
+        help="Width of the colorbar in pixels (default: 40).",
+    )
+    parser.add_argument(
+        "--colorbar-text-size",
+        type=int,
+        default=8,
+        help="Font size for colorbar labels (default: 8).",
+    )
+    parser.add_argument(
+        "--colorbar-height-frac",
+        type=float,
+        default=0.25,
+        help="Height fraction of the panel used for colorbar (default: 0.25).",
+    )
+    parser.add_argument(
+        "--print-ranges",
+        action="store_true",
+        help="Print vmin/vmax ranges used for each channel.",
+    )
+    parser.add_argument(
         "--eyfp-from-report",
         action="store_true",
         help="Use EYFP bounds from report-path when available.",
@@ -763,6 +860,11 @@ def main() -> None:
         print("Illumination correction unavailable (install scipy). Proceeding without correction.")
         illum_sigma = 0.0
     illum_targets = {channel_key(name) for name in args.illumination_channels}
+    despeckle_size = max(0, int(args.despeckle_size))
+    if despeckle_size > 0 and median_filter is None:
+        print("Median filter unavailable (install scipy). Proceeding without despeckle.")
+        despeckle_size = 0
+    despeckle_targets = {channel_key(name) for name in args.despeckle_channels}
     bg_pct = max(0.0, float(args.bg_pct))
     bg_targets = {channel_key(name) for name in args.bg_channels}
     clip_pct = max(0.0, float(args.clip_below_pct))
@@ -780,7 +882,9 @@ def main() -> None:
     if args.report_path and args.report_path.exists():
         report = json.loads(args.report_path.read_text())
         bounds = report.get("bounds", {})
-        tdtom_bounds = bounds.get("tdTom")
+        report_per_group = bool(report.get("per_group_all"))
+        if not report_per_group:
+            tdtom_bounds = bounds.get("tdTom")
         if args.eyfp_from_report:
             pooled = report.get("eyfp_bounds_pooled")
             if pooled:
@@ -793,6 +897,7 @@ def main() -> None:
 
     scaled_channels: Dict[str, np.ndarray] = {}
     pseudo_channels: Dict[str, np.ndarray] = {}
+    bounds_used: Dict[str, Tuple[float, float]] = {}
 
     for idx, name in enumerate(args.channel_names):
         key = channel_key(name)
@@ -823,14 +928,21 @@ def main() -> None:
                 pct = clip_pct
             if pct > 0:
                 channel = clip_below_percentile(channel, pct)
+        if despeckle_size > 0 and key in despeckle_targets:
+            channel = median_filter(channel, size=despeckle_size)
         if smooth_sigma > 0 and gaussian_filter is not None:
             channel = gaussian_filter(channel, sigma=smooth_sigma)
+        bounds = None
         if not auto_only and key == "gfp" and eyfp_bounds is not None:
-            scaled = apply_bounds(channel, tuple(eyfp_bounds))
+            bounds = tuple(eyfp_bounds)
+            scaled = apply_bounds(channel, bounds)
         elif not auto_only and key == "tdtom" and tdtom_bounds is not None:
-            scaled = apply_bounds(channel, tuple(tdtom_bounds))
+            bounds = tuple(tdtom_bounds)
+            scaled = apply_bounds(channel, bounds)
         else:
-            scaled, _ = scale_channel(channel, args.low_pct, args.high_pct)
+            scaled, bounds = scale_channel(channel, args.low_pct, args.high_pct)
+        if bounds is not None:
+            bounds_used[key] = bounds
         if key == "tdtom":
             gain = float(args.tdtom_gain) if not auto_only else 1.0
             scaled = np.clip(scaled * gain, 0.0, 1.0)
@@ -849,9 +961,45 @@ def main() -> None:
     grid_order = ["gfp", "tdtom", "el222"]
     if args.include_dapi:
         grid_order = ["dapi"] + grid_order
-    base_images = [pseudo_channels[key] for key in grid_order if key in pseudo_channels]
+    base_images = []
+    for key in grid_order:
+        if key not in pseudo_channels:
+            continue
+        panel = pseudo_channels[key]
+        if args.colorbar and key in bounds_used:
+            color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
+            vmin, vmax = bounds_used[key]
+            bar_h = max(10, int(panel.shape[0] * float(args.colorbar_height_frac)))
+            bar_w = max(10, int(args.colorbar_width))
+            bar_w = min(bar_w, panel.shape[1])
+            bar = render_colorbar(
+                bar_h,
+                bar_w,
+                color,
+                vmin,
+                vmax,
+                int(args.colorbar_text_size),
+            )
+            panel = panel.copy()
+            y0 = panel.shape[0] - bar_h
+            y1 = panel.shape[0]
+            x0 = 0
+            x1 = bar_w
+            panel[y0:y1, x0:x1] = bar
+        base_images.append(panel)
     base_images.append(pseudo_merge)
     base_row = make_grid(base_images, args.padding)
+
+    if args.print_ranges and bounds_used:
+        group = None
+        try:
+            group = roi_dir.parent.name
+        except Exception:
+            group = None
+        label = f"[{group}]" if group else "[roi]"
+        for key, bounds in bounds_used.items():
+            vmin, vmax = bounds
+            print(f"{label} {key} vmin={vmin:.2f} vmax={vmax:.2f} ({args.low_pct:g}-{args.high_pct:g})")
 
     last_report_path = roi_dir / "nd2_export" / "grid_export_report.json"
     last_report = None
@@ -970,6 +1118,8 @@ def main() -> None:
         "auto_scale_only": auto_only,
         "illumination_sigma": illum_sigma,
         "illumination_channels": sorted(illum_targets),
+        "despeckle_size": despeckle_size,
+        "despeckle_channels": sorted(despeckle_targets),
         "bg_pct": bg_pct,
         "bg_channels": sorted(bg_targets),
         "eyfp_bg_pct": eyfp_bg_pct,

@@ -84,10 +84,25 @@ def parse_args() -> argparse.Namespace:
         help="Groups to pool for EYFP bounds (default: ctz nmda).",
     )
     parser.add_argument(
+        "--eyfp-per-group",
+        action="store_true",
+        help="Autoscale EYFP per group (no pooled EYFP).",
+    )
+    parser.add_argument(
         "--tdtom-ref-groups",
         nargs="+",
         default=["ctznmda", "ctz", "nmda"],
         help="Groups to pool for tdTom bounds (default: ctznmda ctz nmda).",
+    )
+    parser.add_argument(
+        "--tdtom-per-image",
+        action="store_true",
+        help="Do not pool tdTom across groups (per-image autoscale).",
+    )
+    parser.add_argument(
+        "--per-group-all",
+        action="store_true",
+        help="Autoscale every channel per group (no pooled bounds).",
     )
     parser.add_argument(
         "--grid-tag",
@@ -113,6 +128,8 @@ def main() -> None:
     args, extra_args = parse_args()
     extra_args = [arg for arg in extra_args if arg != "--"]
     inset_args = extra_args if extra_args else DEFAULT_INSET_ARGS
+    if (args.per_group_all or args.eyfp_per_group) and "--eyfp-from-report" in inset_args:
+        inset_args = [arg for arg in inset_args if arg != "--eyfp-from-report"]
     if "--include-dapi" not in inset_args:
         inset_args = inset_args + ["--include-dapi"]
 
@@ -139,14 +156,19 @@ def main() -> None:
         "tdTom",
         "EL222",
         "--use-last",
-        "--eyfp-ref-groups",
-        *args.eyfp_ref_groups,
-        "--tdtom-ref-groups",
-        *args.tdtom_ref_groups,
         "--grid-only",
         "--out-tag",
         grid_tag,
     ]
+    if args.per_group_all:
+        grid_cmd.append("--per-group-all")
+    else:
+        if args.eyfp_per_group:
+            grid_cmd.append("--eyfp-per-group")
+        else:
+            grid_cmd.extend(["--eyfp-ref-groups", *args.eyfp_ref_groups])
+    if not args.tdtom_per_image:
+        grid_cmd.extend(["--tdtom-ref-groups", *args.tdtom_ref_groups])
     if args.pick_per_group:
         grid_cmd.append("--pick-per-group")
 
@@ -183,14 +205,18 @@ def main() -> None:
     grid_defaults = {
         "groups": ["ctznmda", "ctz", "nmda"],
         "eyfp_ref_groups": ["ctz", "nmda"],
+        "eyfp_per_group": False,
         "tdtom_ref_groups": ["ctznmda", "ctz", "nmda"],
+        "per_group_all": False,
         "grid_tag": "pooled_eyfp_tdtom",
         "padding": 20,
     }
     grid_actual = {
         "groups": group_args,
-        "eyfp_ref_groups": args.eyfp_ref_groups,
-        "tdtom_ref_groups": args.tdtom_ref_groups,
+        "eyfp_ref_groups": [] if args.eyfp_per_group or args.per_group_all else args.eyfp_ref_groups,
+        "eyfp_per_group": bool(args.eyfp_per_group),
+        "tdtom_ref_groups": [] if args.tdtom_per_image else args.tdtom_ref_groups,
+        "per_group_all": bool(args.per_group_all),
         "grid_tag": grid_tag,
         "padding": args.padding,
     }

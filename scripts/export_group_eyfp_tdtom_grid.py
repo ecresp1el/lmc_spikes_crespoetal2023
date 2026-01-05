@@ -528,6 +528,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Groups to pool for EYFP bounds (overrides eyfp-per-group).",
     )
+    parser.add_argument(
+        "--per-group-all",
+        action="store_true",
+        help="Autoscale each channel per group (no pooled bounds).",
+    )
     parser.add_argument("--z-project", choices=["max", "first"], default="max", help="Z projection mode.")
     parser.add_argument("--low-pct", type=float, default=1.0, help="Low percentile for autoscale.")
     parser.add_argument("--high-pct", type=float, default=99.0, help="High percentile for autoscale.")
@@ -702,6 +707,7 @@ def main() -> None:
     eyfp_per_group = bool(args.eyfp_per_group)
     eyfp_ref_groups = [item.strip() for item in (args.eyfp_ref_groups or []) if item.strip()]
     tdtom_ref_groups = [item.strip() for item in (args.tdtom_ref_groups or []) if item.strip()]
+    per_group_all = bool(args.per_group_all)
 
     select_set = {name.lower() for name in args.select}
     channel_map = {name: idx for idx, name in enumerate(args.channel_names)}
@@ -817,6 +823,9 @@ def main() -> None:
         raise SystemExit(f"Reference group {ref_group} not loaded.")
 
     tdtom_bounds_pooled: Tuple[float, float] | None = None
+    if per_group_all and (tdtom_ref_groups or args.tdtom_hist_match):
+        print("per-group-all enabled; ignoring tdTom pooling and hist-match.")
+        tdtom_ref_groups = []
     if tdtom_ref_groups:
         missing = [group for group in tdtom_ref_groups if group not in raw_by_group]
         if missing:
@@ -855,7 +864,13 @@ def main() -> None:
     bounds_by_channel: Dict[str, Tuple[float, float]] = {}
     eyfp_bounds_by_group: Dict[str, Tuple[float, float]] = {}
     eyfp_bounds_pooled: Tuple[float, float] | None = None
+    per_group_bounds: Dict[str, Dict[str, Tuple[float, float]]] = {}
     auto_meta: Dict[str, Dict[str, float]] = {}
+    if per_group_all and (eyfp_ref_groups or not eyfp_per_group):
+        print("per-group-all enabled; ignoring EYFP pooled/ref settings.")
+        eyfp_ref_groups = []
+        eyfp_per_group = True
+
     if eyfp_ref_groups:
         missing = [group for group in eyfp_ref_groups if group not in raw_by_group]
         if missing:
@@ -899,7 +914,13 @@ def main() -> None:
             _, bounds = scale_channel(channel, args.low_pct, args.high_pct)
             bounds_by_channel[name] = bounds
 
-    if eyfp_bounds_pooled is None and eyfp_per_group:
+    if per_group_all:
+        for group, channels in raw_by_group.items():
+            per_group_bounds[group] = {}
+            for name, channel in channels.items():
+                _, bounds = scale_channel(channel, args.low_pct, args.high_pct)
+                per_group_bounds[group][name] = bounds
+    elif eyfp_bounds_pooled is None and eyfp_per_group:
         for group, channels in raw_by_group.items():
             for name, channel in channels.items():
                 if channel_key(name) != "gfp":
@@ -913,7 +934,9 @@ def main() -> None:
         scaled_by_group[group] = {}
         pseudo_by_group[group] = {}
         for name, channel in raw_by_group[group].items():
-            if eyfp_per_group and channel_key(name) == "gfp":
+            if per_group_all:
+                bounds = per_group_bounds[group][name]
+            elif eyfp_per_group and channel_key(name) == "gfp":
                 bounds = eyfp_bounds_by_group.get(group, bounds_by_channel[name])
             elif eyfp_bounds_pooled is not None and channel_key(name) == "gfp":
                 bounds = eyfp_bounds_pooled
@@ -972,6 +995,7 @@ def main() -> None:
         "tdtom_ref_groups": tdtom_ref_groups,
         "tdtom_bounds_pooled": list(tdtom_bounds_pooled) if tdtom_bounds_pooled else None,
         "tdtom_hist_match": bool(args.tdtom_hist_match),
+        "per_group_all": per_group_all,
         "hist_bins": int(args.hist_bins),
         "bounds": bounds_by_channel,
         "auto_bounds": auto_bounds_enabled,
