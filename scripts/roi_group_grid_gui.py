@@ -1,0 +1,622 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.widgets import Button, CheckButtons, Slider
+
+try:
+    from scipy.ndimage import gaussian_filter
+except ImportError:  # pragma: no cover - optional smoothing
+    gaussian_filter = None
+
+plt.rcParams["font.family"] = "Arial"
+plt.rcParams["svg.fonttype"] = "none"
+
+GROUPS = ["ctznmda", "ctz", "nmda"]
+CHANNEL_ORDER = ["dapi", "gfp", "tdtom", "el222"]
+CHANNEL_LABELS = {
+    "dapi": "DAPI",
+    "gfp": "GFP",
+    "tdtom": "tdTom",
+    "el222": "EL222",
+}
+CHANNEL_COLORS = {
+    "dapi": (0.0, 0.0, 1.0),
+    "gfp": (0.0, 1.0, 0.0),
+    "tdtom": (1.0, 0.0, 0.0),
+    "el222": (1.0, 0.0, 1.0),
+}
+
+
+def pick_directory(initial_dir: Path) -> Path | None:
+    if sys.platform == "darwin":
+        script = (
+            'POSIX path of (choose folder with prompt "Select ROI folder" '
+            f'default location POSIX file "{initial_dir}")'
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            chosen = result.stdout.strip()
+            if chosen:
+                return Path(chosen)
+
+    try:
+        from tkinter import Tk, filedialog
+    except Exception as exc:
+        print(f"Tkinter is not available for folder selection: {exc}")
+        return None
+
+    root = Tk()
+    root.withdraw()
+    path = filedialog.askdirectory(
+        title="Select ROI folder",
+        initialdir=str(initial_dir),
+        parent=root,
+    )
+    root.destroy()
+    return Path(path) if path else None
+
+
+def pick_save_path(initial_dir: Path, default_name: str) -> Path | None:
+    if sys.platform == "darwin":
+        script = (
+            'POSIX path of (choose file name with prompt "Save SVG" '
+            f'default name "{default_name}" default location POSIX file "{initial_dir}")'
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            chosen = result.stdout.strip()
+            if chosen:
+                return Path(chosen)
+
+    try:
+        from tkinter import Tk, filedialog
+    except Exception as exc:
+        print(f"Tkinter is not available for file selection: {exc}")
+        return None
+
+    root = Tk()
+    root.withdraw()
+    path = filedialog.asksaveasfilename(
+        title="Save SVG",
+        initialdir=str(initial_dir),
+        defaultextension=".svg",
+        filetypes=[("SVG", "*.svg")],
+        parent=root,
+    )
+    root.destroy()
+    return Path(path) if path else None
+
+
+def channel_key(name: str) -> str:
+    lower = name.lower()
+    if "dapi" in lower:
+        return "dapi"
+    if "eyfp" in lower or "gfp" in lower:
+        return "gfp"
+    if "tdtom" in lower or "tdtomato" in lower:
+        return "tdtom"
+    if "el222" in lower:
+        return "el222"
+    return lower
+
+
+def load_roi_folder(folder: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
+    if not folder.exists():
+        raise FileNotFoundError(f"Folder not found: {folder}")
+
+    arrays: Dict[str, np.ndarray] = {}
+    labels: Dict[str, str] = {}
+    for path in sorted(folder.glob("roi_raw_ch*_*.npy")):
+        parts = path.stem.split("_", 3)
+        if len(parts) < 4:
+            continue
+        name = parts[3]
+        key = channel_key(name)
+        arrays[key] = np.load(path)
+        labels[key] = name
+
+    if not arrays:
+        raise ValueError(f"No roi_raw_ch*.npy files found in {folder}")
+
+    return arrays, labels
+
+
+def percentile_bounds(values: List[np.ndarray], low: float, high: float) -> Tuple[float, float]:
+    stacked = np.concatenate([val.ravel() for val in values])
+    vmin, vmax = np.percentile(stacked, [low, high])
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+    return float(vmin), float(vmax)
+
+
+def normalize_channel(channel: np.ndarray, bounds: Tuple[float, float]) -> np.ndarray:
+    vmin, vmax = bounds
+    return np.clip((channel - vmin) / (vmax - vmin), 0.0, 1.0)
+
+
+def compose_merge(norm_channels: Dict[str, np.ndarray]) -> np.ndarray:
+    ref = next(iter(norm_channels.values()))
+    merged = np.zeros((*ref.shape, 3), dtype=np.float32)
+    for key, channel in norm_channels.items():
+        color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
+        for idx in range(3):
+            merged[..., idx] += channel * color[idx]
+    return np.clip(merged, 0.0, 1.0)
+
+
+def phase_correlation_shift(ref: np.ndarray, img: np.ndarray) -> Tuple[int, int]:
+    ref_f = np.fft.fft2(ref)
+    img_f = np.fft.fft2(img)
+    cross_power = ref_f * img_f.conj()
+    denom = np.maximum(np.abs(cross_power), 1e-8)
+    cross_power /= denom
+    corr = np.fft.ifft2(cross_power)
+    max_idx = np.unravel_index(np.argmax(np.abs(corr)), corr.shape)
+    shifts = np.array(max_idx, dtype=int)
+    shape = np.array(ref.shape)
+    shifts[shifts > shape // 2] -= shape[shifts > shape // 2]
+    return -int(shifts[0]), -int(shifts[1])
+
+
+def shift_image(image: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    height, width = image.shape
+    result = np.zeros_like(image)
+
+    src_y0 = max(0, -dy)
+    src_y1 = min(height, height - dy)
+    dst_y0 = max(0, dy)
+    dst_y1 = min(height, height + dy)
+
+    src_x0 = max(0, -dx)
+    src_x1 = min(width, width - dx)
+    dst_x0 = max(0, dx)
+    dst_x1 = min(width, width + dx)
+
+    if src_y1 <= src_y0 or src_x1 <= src_x0:
+        return result
+
+    result[dst_y0:dst_y1, dst_x0:dst_x1] = image[src_y0:src_y1, src_x0:src_x1]
+    return result
+
+
+def apply_smoothing(channel: np.ndarray, enabled: bool, sigma: float) -> np.ndarray:
+    if not enabled:
+        return channel
+    if gaussian_filter is None:
+        return channel
+    return gaussian_filter(channel, sigma=float(sigma))
+
+
+def prepare_group_channels(
+    group_arrays: Dict[str, np.ndarray],
+    smooth_enabled: bool,
+    sigma: float,
+) -> Dict[str, np.ndarray]:
+    output = {}
+    for key, arr in group_arrays.items():
+        output[key] = apply_smoothing(arr, smooth_enabled, sigma)
+    return output
+
+
+def align_groups(
+    group_channels: Dict[str, Dict[str, np.ndarray]],
+    ref_group: str,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    if ref_group not in group_channels or "dapi" not in group_channels[ref_group]:
+        return group_channels
+
+    ref_dapi = group_channels[ref_group]["dapi"]
+    aligned = {}
+    for group, channels in group_channels.items():
+        if group == ref_group or "dapi" not in channels:
+            aligned[group] = channels
+            continue
+        shift = phase_correlation_shift(ref_dapi, channels["dapi"])
+        aligned_channels = {}
+        for key, arr in channels.items():
+            aligned_channels[key] = shift_image(arr, shift[0], shift[1])
+        aligned[group] = aligned_channels
+    return aligned
+
+
+def crop_to_min_shape(group_channels: Dict[str, Dict[str, np.ndarray]]) -> Dict[str, Dict[str, np.ndarray]]:
+    heights = []
+    widths = []
+    for channels in group_channels.values():
+        for arr in channels.values():
+            heights.append(arr.shape[0])
+            widths.append(arr.shape[1])
+    if not heights or not widths:
+        return group_channels
+    min_h = min(heights)
+    min_w = min(widths)
+
+    cropped = {}
+    for group, channels in group_channels.items():
+        cropped[group] = {key: arr[:min_h, :min_w] for key, arr in channels.items()}
+    return cropped
+
+
+def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
+    fig = plt.figure(figsize=(18, 9))
+    grid = fig.add_gridspec(
+        1,
+        2,
+        width_ratios=[3.5, 1.2],
+        wspace=0.06,
+    )
+    grid_ax = fig.add_subplot(grid[0, 0])
+    grid_ax.axis("off")
+    grid_box = grid_ax.get_position()
+
+    control_ax = fig.add_subplot(grid[0, 1])
+    control_ax.axis("off")
+    control_box = control_ax.get_position()
+
+    def add_grid_axes(x0: float, y0: float, width: float, height: float) -> plt.Axes:
+        return fig.add_axes(
+            [
+                grid_box.x0 + x0 * grid_box.width,
+                grid_box.y0 + y0 * grid_box.height,
+                width * grid_box.width,
+                height * grid_box.height,
+            ]
+        )
+
+    def add_control_axes(x0: float, y0: float, width: float, height: float) -> plt.Axes:
+        return fig.add_axes(
+            [
+                control_box.x0 + x0 * control_box.width,
+                control_box.y0 + y0 * control_box.height,
+                width * control_box.width,
+                height * control_box.height,
+            ]
+        )
+
+    group_paths: Dict[str, Path | None] = {group: None for group in GROUPS}
+    group_arrays: Dict[str, Dict[str, np.ndarray]] = {}
+    group_labels: Dict[str, Dict[str, str]] = {}
+
+    status_message = {"text": "Select ROI folders for each group."}
+
+    help_ax = add_control_axes(0.05, 0.76, 0.90, 0.22)
+    help_ax.axis("off")
+    help_text = (
+        "Grid builder:\n"
+        "- Select ROI folder for each group.\n"
+        "- Adjust smoothing + alignment.\n"
+        "- Adjust percentiles for global normalization.\n"
+        "- Save SVG when satisfied.\n"
+    )
+    help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
+    status_artist = help_ax.text(
+        0.0,
+        0.05,
+        f"Status: {status_message['text']}",
+        va="bottom",
+        ha="left",
+        fontsize=9,
+    )
+
+    def set_status(message: str) -> None:
+        status_message["text"] = message
+        status_artist.set_text(f"Status: {message}")
+        fig.canvas.draw_idle()
+
+    group_buttons = {}
+    group_labels_text = {}
+    start_y = 0.68
+    for idx, group in enumerate(GROUPS):
+        y0 = start_y - idx * 0.07
+        ax = add_control_axes(0.05, y0, 0.45, 0.05)
+        btn = Button(ax, f"Select {group}")
+        group_buttons[group] = btn
+
+        label_ax = add_control_axes(0.52, y0, 0.43, 0.05)
+        label_ax.axis("off")
+        label_text = label_ax.text(0.0, 0.5, "None", va="center", ha="left", fontsize=8)
+        group_labels_text[group] = label_text
+
+        def make_select(group_name: str):
+            def _select(_event):
+                path = pick_directory(initial_dir)
+                if not path:
+                    return
+                try:
+                    arrays, labels = load_roi_folder(path)
+                except Exception as exc:
+                    set_status(f"Failed to load {path.name}: {exc}")
+                    return
+                group_paths[group_name] = path
+                group_arrays[group_name] = arrays
+                group_labels[group_name] = labels
+                group_labels_text[group_name].set_text(path.name)
+                set_status(f"Loaded {path.name} for {group_name}.")
+                update_grid()
+            return _select
+
+        btn.on_clicked(make_select(group))
+
+    align_ax = add_control_axes(0.05, 0.45, 0.40, 0.08)
+    align_checks = CheckButtons(align_ax, ["Align by DAPI"], [False])
+
+    smooth_ax = add_control_axes(0.52, 0.45, 0.40, 0.08)
+    smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [False])
+
+    sigma_ax = add_control_axes(0.05, 0.40, 0.87, 0.03)
+    sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.0, valstep=0.1)
+
+    low_ax = add_control_axes(0.05, 0.34, 0.87, 0.03)
+    high_ax = add_control_axes(0.05, 0.30, 0.87, 0.03)
+    low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
+    high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
+
+    save_ax = add_control_axes(0.05, 0.22, 0.87, 0.05)
+    save_button = Button(save_ax, "Save SVG")
+
+    grid_images = {}
+    row_labels = {}
+
+    def build_grid_axes(num_cols: int) -> None:
+        grid_images.clear()
+        row_labels.clear()
+        for group_idx, group in enumerate(GROUPS):
+            for col_idx in range(num_cols):
+                x0 = col_idx / num_cols
+                y0 = 1.0 - (group_idx + 1) / len(GROUPS)
+                ax = add_grid_axes(
+                    x0 + 0.02,
+                    y0 + 0.05,
+                    1 / num_cols - 0.03,
+                    1 / len(GROUPS) - 0.07,
+                )
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_title("")
+                grid_images[(group, col_idx)] = ax.imshow(
+                    np.zeros((10, 10)),
+                    cmap="gray",
+                    interpolation="nearest",
+                )
+
+    def update_grid() -> None:
+        available_groups = [group for group in GROUPS if group in group_arrays]
+        if len(available_groups) == 0:
+            set_status("Select ROI folders for each group.")
+            return
+
+        smooth_enabled = smooth_checks.get_status()[0]
+        if smooth_enabled and gaussian_filter is None:
+            set_status("Gaussian smoothing unavailable (install scipy).")
+            smooth_enabled = False
+        sigma = sigma_slider.val
+        align_enabled = align_checks.get_status()[0]
+
+        prepared = {
+            group: prepare_group_channels(group_arrays[group], smooth_enabled, sigma)
+            for group in available_groups
+        }
+
+        if align_enabled:
+            prepared = align_groups(prepared, available_groups[0])
+
+        prepared = crop_to_min_shape(prepared)
+
+        bounds = {}
+        low_pct = low_slider.val
+        high_pct = max(low_pct + 0.5, high_slider.val)
+
+        if "dapi" in CHANNEL_ORDER:
+            dapi_vals = [prepared[g]["dapi"] for g in available_groups if "dapi" in prepared[g]]
+            if dapi_vals:
+                bounds["dapi"] = percentile_bounds(dapi_vals, low_pct, high_pct)
+
+        gfp_vals = [prepared[g]["gfp"] for g in available_groups if "gfp" in prepared[g]]
+        if gfp_vals:
+            bounds["gfp"] = percentile_bounds(gfp_vals, low_pct, high_pct)
+
+        tdtom_vals = []
+        for key in ("tdtom", "el222"):
+            for group in available_groups:
+                if key in prepared[group]:
+                    tdtom_vals.append(prepared[group][key])
+        if tdtom_vals:
+            shared_bounds = percentile_bounds(tdtom_vals, low_pct, high_pct)
+            bounds["tdtom"] = shared_bounds
+            bounds["el222"] = shared_bounds
+
+        num_cols = len(CHANNEL_ORDER) + 1
+        if not grid_images:
+            build_grid_axes(num_cols)
+
+        for group in GROUPS:
+            for col_idx in range(num_cols):
+                img = grid_images[(group, col_idx)]
+                ax = img.axes
+                ax.set_title("")
+
+        for group_idx, group in enumerate(GROUPS):
+            if group not in prepared:
+                for col_idx in range(num_cols):
+                    img = grid_images[(group, col_idx)]
+                    img.set_data(np.zeros((10, 10)))
+                continue
+
+            group_norm = {}
+            for key in CHANNEL_ORDER:
+                if key in prepared[group] and key in bounds:
+                    group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
+
+            for col_idx, key in enumerate(CHANNEL_ORDER):
+                img = grid_images[(group, col_idx)]
+                ax = img.axes
+                if key not in group_norm:
+                    img.set_data(np.zeros((10, 10)))
+                else:
+                    img.set_data(group_norm[key])
+                img.set_cmap("gray")
+                ax.set_title(f"{CHANNEL_LABELS.get(key, key).upper()}" if group_idx == 0 else "")
+
+            merge = compose_merge(group_norm) if group_norm else np.zeros((10, 10, 3))
+            merge_img = grid_images[(group, num_cols - 1)]
+            merge_img.set_data(merge)
+            merge_img.set_cmap(None)
+            merge_img.axes.set_title("MERGED" if group_idx == 0 else "")
+
+        for group in GROUPS:
+            row_ax = grid_images[(group, 0)].axes
+            if group not in row_labels:
+                row_labels[group] = row_ax.text(
+                    -0.05,
+                    0.5,
+                    group.upper(),
+                    transform=row_ax.transAxes,
+                    ha="right",
+                    va="center",
+                    fontsize=10,
+                )
+            else:
+                row_labels[group].set_text(group.upper())
+
+        fig.canvas.draw_idle()
+        set_status("Preview updated.")
+
+    def save_svg(_event) -> None:
+        available_groups = [group for group in GROUPS if group in group_arrays]
+        if len(available_groups) != len(GROUPS):
+            set_status("Select ROI folders for all three groups before saving.")
+            return
+        if out_dir is None:
+            initial = initial_dir
+        else:
+            initial = out_dir
+        path = pick_save_path(initial, "roi_group_grid.svg")
+        if not path:
+            set_status("Save canceled.")
+            return
+        if path.suffix.lower() != ".svg":
+            path = path.with_suffix(".svg")
+
+        smooth_enabled = smooth_checks.get_status()[0]
+        sigma = sigma_slider.val
+        align_enabled = align_checks.get_status()[0]
+        low_pct = low_slider.val
+        high_pct = max(low_pct + 0.5, high_slider.val)
+
+        prepared = {
+            group: prepare_group_channels(group_arrays[group], smooth_enabled, sigma)
+            for group in available_groups
+        }
+        if align_enabled:
+            prepared = align_groups(prepared, available_groups[0])
+        prepared = crop_to_min_shape(prepared)
+
+        bounds = {}
+        dapi_vals = [prepared[g]["dapi"] for g in available_groups if "dapi" in prepared[g]]
+        if dapi_vals:
+            bounds["dapi"] = percentile_bounds(dapi_vals, low_pct, high_pct)
+        gfp_vals = [prepared[g]["gfp"] for g in available_groups if "gfp" in prepared[g]]
+        if gfp_vals:
+            bounds["gfp"] = percentile_bounds(gfp_vals, low_pct, high_pct)
+        tdtom_vals = []
+        for key in ("tdtom", "el222"):
+            for group in available_groups:
+                if key in prepared[group]:
+                    tdtom_vals.append(prepared[group][key])
+        if tdtom_vals:
+            shared_bounds = percentile_bounds(tdtom_vals, low_pct, high_pct)
+            bounds["tdtom"] = shared_bounds
+            bounds["el222"] = shared_bounds
+
+        num_cols = len(CHANNEL_ORDER) + 1
+        save_fig = plt.figure(figsize=(num_cols * 2.4, len(GROUPS) * 2.4))
+        save_grid = save_fig.add_gridspec(len(GROUPS), num_cols, wspace=0.02, hspace=0.02)
+
+        for row_idx, group in enumerate(GROUPS):
+            group_norm = {}
+            if group in prepared:
+                for key in CHANNEL_ORDER:
+                    if key in prepared[group] and key in bounds:
+                        group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
+
+            for col_idx, key in enumerate(CHANNEL_ORDER):
+                ax = save_fig.add_subplot(save_grid[row_idx, col_idx])
+                ax.set_xticks([])
+                ax.set_yticks([])
+                if key in group_norm:
+                    ax.imshow(group_norm[key], cmap="gray", interpolation="nearest")
+                else:
+                    ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
+                if row_idx == 0:
+                    ax.set_title(CHANNEL_LABELS.get(key, key).upper(), fontsize=10)
+                if col_idx == 0:
+                    ax.set_ylabel(group.upper(), rotation=0, labelpad=30, fontsize=10, va="center")
+
+            ax = save_fig.add_subplot(save_grid[row_idx, num_cols - 1])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            merge = compose_merge(group_norm) if group_norm else np.zeros((10, 10, 3))
+            ax.imshow(merge, interpolation="nearest")
+            if row_idx == 0:
+                ax.set_title("MERGED", fontsize=10)
+
+        save_fig.savefig(path, format="svg")
+        plt.close(save_fig)
+        set_status(f"Saved SVG to {path}")
+
+    save_button.on_clicked(save_svg)
+
+    def on_slider_change(_):
+        update_grid()
+
+    low_slider.on_changed(on_slider_change)
+    high_slider.on_changed(on_slider_change)
+    sigma_slider.on_changed(on_slider_change)
+    align_checks.on_clicked(lambda _: update_grid())
+    smooth_checks.on_clicked(lambda _: update_grid())
+
+    plt.show()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build a cross-group ROI grid from saved ROI output folders.",
+    )
+    parser.add_argument(
+        "--nd2-dir",
+        type=Path,
+        default=Path.cwd(),
+        help="Starting directory for folder pickers.",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Default output directory for saving the SVG.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    build_gui(args.nd2_dir, args.out_dir)
+
+
+if __name__ == "__main__":
+    main()
