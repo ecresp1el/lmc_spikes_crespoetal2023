@@ -1042,7 +1042,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="ND2 ROI GUI for 4-channel EL222 visualization with rotated ROI controls.",
     )
-    parser.add_argument("path", type=Path, help="Path to .nd2 file")
+    parser.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Optional path to .nd2 file (omit to use the Load ND2 button).",
+    )
     parser.add_argument(
         "--channels",
         type=int,
@@ -1110,8 +1116,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-
-    channels = load_nd2_channels(args.path, args.channels, args.z_project)
+    if args.path is not None:
+        channels = load_nd2_channels(args.path, args.channels, args.z_project)
+    else:
+        num_channels = len(args.channels)
+        channels = np.zeros((num_channels, 256, 256), dtype=np.float32)
 
     if len(args.channel_names) != channels.shape[0]:
         raise SystemExit(
@@ -1150,7 +1159,10 @@ def main() -> None:
         "  Load ND2 opens a file picker (requires a save)\n"
     )
 
-    initial_dir = args.nd2_dir if args.nd2_dir else args.path.parent
+    if args.path is not None:
+        initial_dir = args.nd2_dir if args.nd2_dir else args.path.parent
+    else:
+        initial_dir = args.nd2_dir if args.nd2_dir else Path.cwd()
     load_config = {
         "channel_indices": args.channels,
         "z_project": args.z_project,
