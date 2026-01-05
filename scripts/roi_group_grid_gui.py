@@ -507,6 +507,23 @@ def resolve_bounds(
     return bounds, warnings
 
 
+def per_image_bounds(
+    prepared: Dict[str, Dict[str, np.ndarray]],
+    group: str,
+    key: str,
+    low_pct: float,
+    high_pct: float,
+    el_override: bool,
+    el_low: float,
+    el_high: float,
+) -> Tuple[float, float] | None:
+    if group not in prepared or key not in prepared[group]:
+        return None
+    if key == "el222" and el_override:
+        return percentile_bounds([prepared[group][key]], el_low, el_high)
+    return percentile_bounds([prepared[group][key]], low_pct, high_pct)
+
+
 def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     fig = plt.figure(figsize=(18, 9))
     grid = fig.add_gridspec(
@@ -550,6 +567,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     original_images: Dict[str, np.ndarray] = {}
 
     status_message = {"text": "Select ROI folders for each group."}
+    auto_scale_state = {"enabled": True}
 
     help_ax = add_control_axes(0.05, 0.76, 0.90, 0.22)
     help_ax.axis("off")
@@ -562,6 +580,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         "- Background subtract per channel if needed.\n"
         "- Adjust percentiles for global normalization.\n"
         "- Use EL222 override to set its scale separately.\n"
+        "- Auto-scale per image overrides global scaling.\n"
         "- Save SVG when satisfied.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
@@ -631,6 +650,17 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             print(
                 f"  - {CHANNEL_LABELS.get(key, key)}: min={arr_min:.3f} "
                 f"max={arr_max:.3f} mean={arr_mean:.3f}"
+            )
+
+    def log_bounds(group_name: str, bounds_map: Dict[str, Tuple[float, float]]) -> None:
+        print(f"[{group_name}] Display bounds:")
+        for key in CHANNEL_ORDER:
+            if key not in bounds_map:
+                print(f"  - {CHANNEL_LABELS.get(key, key)}: MISSING")
+                continue
+            vmin, vmax = bounds_map[key]
+            print(
+                f"  - {CHANNEL_LABELS.get(key, key)}: vmin={vmin:.3f} vmax={vmax:.3f}"
             )
 
     group_buttons = {}
@@ -730,6 +760,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
     high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
 
+    auto_ax = add_control_axes(0.52, 0.24, 0.40, 0.05)
+    auto_button = Button(auto_ax, "Auto-scale per image: ON")
+
     save_ax = add_control_axes(0.05, 0.01, 0.87, 0.05)
     save_button = Button(save_ax, "Save SVG")
 
@@ -803,6 +836,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         el_override = el_override_checks.get_status()[0]
         el_low_pct = el_low_slider.val
         el_high_pct = max(el_low_pct + 0.5, el_high_slider.val)
+        auto_enabled = auto_scale_state["enabled"]
         prepared = {
             group: prepare_group_channels(
                 group_arrays[group],
@@ -851,9 +885,28 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 continue
 
             group_norm = {}
+            bounds_map = {}
             for key in CHANNEL_ORDER:
-                if key in prepared[group] and key in bounds:
-                    group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
+                if key in prepared[group]:
+                    if auto_enabled:
+                        per_bounds = per_image_bounds(
+                            prepared,
+                            group,
+                            key,
+                            low_pct,
+                            high_pct,
+                            el_override,
+                            el_low_pct,
+                            el_high_pct,
+                        )
+                        if per_bounds is not None:
+                            bounds_map[key] = per_bounds
+                            group_norm[key] = normalize_channel(prepared[group][key], per_bounds)
+                    else:
+                        if key in bounds:
+                            bounds_map[key] = bounds[key]
+                            group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
+            log_bounds(group, bounds_map)
             log_norm_stats(group, group_norm)
 
             orig_img = original_images.get(group)
@@ -891,10 +944,10 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                         empty_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)} flat")
                 cax = grid_cbar_axes.get((group, col_idx + 1))
                 if cax is not None:
-                    if scale_enabled and key in bounds and key in group_norm:
+                    if scale_enabled and key in bounds_map and key in group_norm:
                         cax.set_visible(True)
                         cmap = channel_cmap(key) if pseudo_enabled else plt.get_cmap("gray")
-                        norm = Normalize(vmin=bounds[key][0], vmax=bounds[key][1])
+                        norm = Normalize(vmin=bounds_map[key][0], vmax=bounds_map[key][1])
                         cbar = grid_cbar_objs.get((group, col_idx + 1))
                         sm = ScalarMappable(norm=norm, cmap=cmap)
                         if cbar is None:
@@ -943,6 +996,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             notes.append(f"BG%={bg_pct:.1f} on {', '.join(sorted(bg_channels))}")
         if el_override:
             notes.append(f"EL222%={el_low_pct:.1f}-{el_high_pct:.1f}")
+        notes.append("Auto-scale on" if auto_enabled else "Auto-scale off")
         if scale_enabled:
             notes.append("Scale bars on")
         if notes:
@@ -982,6 +1036,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         el_override = el_override_checks.get_status()[0]
         el_low_pct = el_low_slider.val
         el_high_pct = max(el_low_pct + 0.5, el_high_slider.val)
+        auto_enabled = auto_scale_state["enabled"]
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
 
@@ -1014,10 +1069,28 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         for row_idx, group in enumerate(GROUPS):
             group_norm = {}
+            bounds_map = {}
             if group in prepared:
                 for key in CHANNEL_ORDER:
-                    if key in prepared[group] and key in bounds:
-                        group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
+                    if key in prepared[group]:
+                        if auto_enabled:
+                            per_bounds = per_image_bounds(
+                                prepared,
+                                group,
+                                key,
+                                low_pct,
+                                high_pct,
+                                el_override,
+                                el_low_pct,
+                                el_high_pct,
+                            )
+                            if per_bounds is not None:
+                                bounds_map[key] = per_bounds
+                                group_norm[key] = normalize_channel(prepared[group][key], per_bounds)
+                        else:
+                            if key in bounds:
+                                bounds_map[key] = bounds[key]
+                                group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
 
             ax = save_fig.add_subplot(save_grid[row_idx, 0])
             ax.set_xticks([])
@@ -1050,7 +1123,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     ax.set_title(CHANNEL_LABELS.get(key, key).upper(), fontsize=10)
                 if col_idx == 0:
                     ax.set_ylabel(group.upper(), rotation=0, labelpad=30, fontsize=10, va="center")
-                if scale_enabled and key in bounds and key in group_norm:
+                if scale_enabled and key in group_norm:
                     cax = inset_axes(
                         ax,
                         width="4%",
@@ -1061,7 +1134,16 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                         borderpad=0,
                     )
                     cmap = channel_cmap(key) if pseudo_enabled else plt.get_cmap("gray")
-                    sm = ScalarMappable(norm=Normalize(vmin=bounds[key][0], vmax=bounds[key][1]), cmap=cmap)
+                    if key in bounds_map:
+                        sm = ScalarMappable(
+                            norm=Normalize(vmin=bounds_map[key][0], vmax=bounds_map[key][1]),
+                            cmap=cmap,
+                        )
+                    else:
+                        sm = ScalarMappable(
+                            norm=Normalize(vmin=bounds[key][0], vmax=bounds[key][1]),
+                            cmap=cmap,
+                        )
                     cbar = save_fig.colorbar(sm, cax=cax)
                     cbar.ax.tick_params(labelsize=6, length=2)
 
@@ -1081,6 +1163,15 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             set_status(f"Saved SVG to {path}")
 
     save_button.on_clicked(save_svg)
+
+    def toggle_auto_scale(_event) -> None:
+        auto_scale_state["enabled"] = not auto_scale_state["enabled"]
+        label = "Auto-scale per image: ON" if auto_scale_state["enabled"] else "Auto-scale per image: OFF"
+        auto_button.label.set_text(label)
+        set_status(label)
+        update_grid()
+
+    auto_button.on_clicked(toggle_auto_scale)
 
     def on_slider_change(_):
         update_grid()
