@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.widgets import Button, CheckButtons, Slider
+from matplotlib.patches import Rectangle
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.cm import ScalarMappable
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
@@ -343,6 +344,25 @@ def colorize_channel(channel: np.ndarray, color: Tuple[float, float, float]) -> 
     return np.clip(rgb, 0.0, 1.0)
 
 
+def clamp_roi(roi: Tuple[int, int, int, int], shape: Tuple[int, int]) -> Tuple[int, int, int, int]:
+    x0, y0, w, h = roi
+    height, width = int(shape[0]), int(shape[1])
+    w = max(5, int(round(w)))
+    h = max(5, int(round(h)))
+    x0 = int(round(x0))
+    y0 = int(round(y0))
+    x0 = max(0, min(x0, width - 1))
+    y0 = max(0, min(y0, height - 1))
+    w = min(w, width - x0)
+    h = min(h, height - y0)
+    return x0, y0, w, h
+
+
+def extract_roi(image: np.ndarray, roi: Tuple[int, int, int, int]) -> np.ndarray:
+    x0, y0, w, h = roi
+    return image[y0 : y0 + h, x0 : x0 + w]
+
+
 def phase_correlation_shift(ref: np.ndarray, img: np.ndarray) -> Tuple[int, int]:
     ref_f = np.fft.fft2(ref)
     img_f = np.fft.fft2(img)
@@ -568,7 +588,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
 
     status_message = {"text": "Select ROI folders for each group."}
     auto_scale_state = {"enabled": True}
-    zoom_state = {"xlim": None, "ylim": None, "syncing": False}
+    roi_state = {"size": None, "boxes": {group: None for group in groups}}
 
     help_ax = add_control_axes(0.05, 0.76, 0.90, 0.22)
     help_ax.axis("off")
@@ -583,7 +603,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         "- Adjust percentiles for global normalization.\n"
         "- Use EL222 override to set its scale separately.\n"
         "- Auto-scale per image overrides global scaling.\n"
-        "- Sync zoom keeps the view matched across groups.\n"
+        "- ROI crop keeps same-size boxes across groups.\n"
         "- Save SVG when satisfied.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
@@ -735,8 +755,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
     view_ax = add_control_axes(0.52, 0.46, 0.40, 0.06)
     view_checks = CheckButtons(
         view_ax,
-        ["Pseudo channels", "Scale bars", "Sync zoom"],
-        [False, True, True],
+        ["Pseudo channels", "Scale bars", "ROI crop"],
+        [False, True, False],
     )
 
     sigma_ax = add_control_axes(0.05, 0.42, 0.87, 0.03)
@@ -771,8 +791,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
     auto_ax = add_control_axes(0.52, 0.24, 0.40, 0.05)
     auto_button = Button(auto_ax, "Auto-scale per image: ON")
 
-    reset_zoom_ax = add_control_axes(0.52, 0.19, 0.40, 0.05)
-    reset_zoom_button = Button(reset_zoom_ax, "Reset zoom")
+    reset_roi_ax = add_control_axes(0.52, 0.19, 0.40, 0.05)
+    reset_roi_button = Button(reset_roi_ax, "Reset ROI")
 
     save_ax = add_control_axes(0.05, 0.01, 0.87, 0.05)
     save_button = Button(save_ax, "Save SVG")
@@ -781,6 +801,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
     row_labels = {}
     grid_cbar_axes: Dict[Tuple[str, int], plt.Axes] = {}
     grid_cbar_objs: Dict[Tuple[str, int], object] = {}
+    roi_patches: Dict[str, Rectangle] = {}
+    axes_to_group: Dict[plt.Axes, str] = {}
 
     def build_grid_axes(num_cols: int) -> None:
         grid_images.clear()
@@ -800,6 +822,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 ax.set_xticks([])
                 ax.set_yticks([])
                 ax.set_title("")
+                axes_to_group[ax] = group
                 for spine in ax.spines.values():
                     spine.set_visible(True)
                     spine.set_linewidth(0.4)
@@ -809,6 +832,11 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                     cmap="gray",
                     interpolation="nearest",
                 )
+                if col_idx == num_cols - 1 and group not in roi_patches:
+                    patch = Rectangle((0, 0), 1, 1, fill=False, edgecolor="yellow", linewidth=1.2)
+                    patch.set_visible(False)
+                    ax.add_patch(patch)
+                    roi_patches[group] = patch
                 if 0 < col_idx <= len(CHANNEL_ORDER):
                     cax = inset_axes(
                         ax,
@@ -822,24 +850,11 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                     cax.set_visible(False)
                     grid_cbar_axes[(group, col_idx)] = cax
 
-    def all_grid_axes() -> List[plt.Axes]:
-        axes = []
-        seen = set()
-        for img in grid_images.values():
-            ax = img.axes
-            if ax not in seen:
-                axes.append(ax)
-                seen.add(ax)
-        return axes
-
-    def apply_zoom(xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
-        zoom_state["syncing"] = True
-        for ax in all_grid_axes():
-            ax.set_xlim(xlim)
-            ax.set_ylim(ylim)
-        zoom_state["xlim"] = xlim
-        zoom_state["ylim"] = ylim
-        zoom_state["syncing"] = False
+    def group_shape(group: str) -> Tuple[int, int] | None:
+        if group in group_arrays:
+            for arr in group_arrays[group].values():
+                return arr.shape[:2]
+        return None
 
     def update_grid() -> None:
         available_groups = [group for group in groups if group in group_arrays]
@@ -855,6 +870,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         view_flags = view_checks.get_status()
         pseudo_enabled = view_flags[0]
         scale_enabled = view_flags[1]
+        roi_enabled = view_flags[2]
         sync_zoom = view_flags[2]
         bg_enabled = bg_checks.get_status()[0]
         bg_pct = bg_pct_slider.val
@@ -940,6 +956,16 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
             log_bounds(group, bounds_map)
             log_norm_stats(group, group_norm)
 
+            roi_box = roi_state["boxes"].get(group)
+            base_shape = None
+            if group_norm:
+                base_shape = next(iter(group_norm.values())).shape[:2]
+            elif prepared.get(group):
+                base_shape = next(iter(prepared[group].values())).shape[:2]
+            if roi_enabled and roi_box and base_shape is not None:
+                roi_box = clamp_roi(roi_box, base_shape)
+                roi_state["boxes"][group] = roi_box
+
             orig_img = original_images.get(group)
             orig_panel = grid_images[(group, 0)]
             if orig_img is None:
@@ -947,6 +973,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 missing_notes.append(f"{group}: Original")
             else:
                 display = normalize_display(orig_img, low_pct, high_pct)
+                if roi_enabled and roi_box and base_shape is not None:
+                    if display.shape[:2] == base_shape:
+                        display = extract_roi(display, roi_box)
                 orig_panel.set_data(display)
                 if display.ndim == 2:
                     orig_panel.set_cmap("gray")
@@ -965,10 +994,16 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 else:
                     if pseudo_enabled:
                         color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
-                        img.set_data(colorize_channel(group_norm[key], color))
+                        channel_view = group_norm[key]
+                        if roi_enabled and roi_box:
+                            channel_view = extract_roi(channel_view, roi_box)
+                        img.set_data(colorize_channel(channel_view, color))
                         img.set_cmap(None)
                     else:
-                        img.set_data(group_norm[key])
+                        channel_view = group_norm[key]
+                        if roi_enabled and roi_box:
+                            channel_view = extract_roi(channel_view, roi_box)
+                        img.set_data(channel_view)
                         img.set_cmap("gray")
                     img.set_clim(0.0, 1.0)
                     if np.nanmax(group_norm[key]) <= 0:
@@ -995,10 +1030,22 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 ax.set_title(f"{CHANNEL_LABELS.get(key, key).upper()}" if group_idx == 0 else "")
 
             merge = compose_merge(group_norm) if group_norm else np.zeros((10, 10, 3))
+            if roi_enabled and roi_box:
+                merge = extract_roi(merge, roi_box)
             merge_img = grid_images[(group, num_cols - 1)]
             merge_img.set_data(merge)
             merge_img.set_cmap(None)
             merge_img.axes.set_title("MERGED" if group_idx == 0 else "")
+
+            patch = roi_patches.get(group)
+            if patch is not None:
+                if roi_box and not roi_enabled:
+                    patch.set_visible(True)
+                    patch.set_xy((roi_box[0], roi_box[1]))
+                    patch.set_width(roi_box[2])
+                    patch.set_height(roi_box[3])
+                else:
+                    patch.set_visible(False)
 
         for group in groups:
             row_ax = grid_images[(group, 0)].axes
@@ -1031,6 +1078,11 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         if el_override:
             notes.append(f"EL222%={el_low_pct:.1f}-{el_high_pct:.1f}")
         notes.append("Auto-scale on" if auto_enabled else "Auto-scale off")
+        if roi_enabled:
+            if roi_state["size"] is None:
+                notes.append("ROI crop on (drag to set size)")
+            else:
+                notes.append(f"ROI {int(roi_state['size'][0])}x{int(roi_state['size'][1])}")
         if scale_enabled:
             notes.append("Scale bars on")
         if notes:
@@ -1038,34 +1090,62 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         else:
             set_status("Preview updated.")
 
-    def reset_zoom(_event) -> None:
-        zoom_state["xlim"] = None
-        zoom_state["ylim"] = None
-        for img in grid_images.values():
-            ax = img.axes
-            arr = img.get_array()
-            if arr is None:
-                continue
-            shape = arr.shape
-            if len(shape) >= 2:
-                height, width = shape[0], shape[1]
-                ax.set_xlim(-0.5, width - 0.5)
-                ax.set_ylim(height - 0.5, -0.5)
-        fig.canvas.draw_idle()
+    roi_drag = {"start": None}
 
-    def on_release(event) -> None:
-        if zoom_state["syncing"]:
-            return
+    def on_press(event) -> None:
         view_flags = view_checks.get_status()
         if len(view_flags) < 3 or not view_flags[2]:
             return
-        if not grid_images or event.inaxes is None:
+        if event.inaxes is None or event.button != 1:
             return
-        axes_set = {img.axes for img in grid_images.values()}
-        if event.inaxes not in axes_set:
+        if event.xdata is None or event.ydata is None:
             return
-        apply_zoom(event.inaxes.get_xlim(), event.inaxes.get_ylim())
-        fig.canvas.draw_idle()
+        group = axes_to_group.get(event.inaxes)
+        if group is None:
+            return
+        roi_drag["start"] = (group, event.xdata, event.ydata)
+
+    def on_release(event) -> None:
+        if roi_drag["start"] is None:
+            return
+        group, x0, y0 = roi_drag["start"]
+        roi_drag["start"] = None
+        if event.inaxes is None:
+            return
+        if axes_to_group.get(event.inaxes) != group:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        x1, y1 = event.xdata, event.ydata
+
+        if roi_state["size"] is None:
+            w = abs(x1 - x0)
+            h = abs(y1 - y0)
+            if w < 5 or h < 5:
+                set_status("Drag to set ROI size (min 5 px).")
+                return
+            roi_state["size"] = (w, h)
+            x = min(x0, x1)
+            y = min(y0, y1)
+        else:
+            w, h = roi_state["size"]
+            x = x1 - w / 2
+            y = y1 - h / 2
+
+        roi_state["boxes"][group] = (
+            int(round(x)),
+            int(round(y)),
+            int(round(w)),
+            int(round(h)),
+        )
+        set_status(f"ROI set for {group}: {int(round(w))}x{int(round(h))}.")
+        update_grid()
+
+    def reset_roi(_event) -> None:
+        roi_state["size"] = None
+        roi_state["boxes"] = {group: None for group in groups}
+        set_status("ROI reset. Drag to set ROI size.")
+        update_grid()
 
     def auto_load_from_root(root: Path) -> None:
         if not root.exists():
@@ -1111,8 +1191,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         view_flags = view_checks.get_status()
         pseudo_enabled = view_flags[0]
         scale_enabled = view_flags[1]
-        sync_zoom = view_flags[2] if len(view_flags) > 2 else False
-        zoom_limits = sync_zoom and zoom_state["xlim"] is not None and zoom_state["ylim"] is not None
+        roi_enabled = view_flags[2] if len(view_flags) > 2 else False
         bg_enabled = bg_checks.get_status()[0]
         bg_pct = bg_pct_slider.val
         bg_flags = bg_chan_checks.get_status()
@@ -1180,6 +1259,14 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                                 bounds_map[key] = bounds[key]
                                 group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
 
+            roi_box = roi_state["boxes"].get(group)
+            base_shape = None
+            if group_norm:
+                base_shape = next(iter(group_norm.values())).shape[:2]
+            if roi_enabled and roi_box and base_shape is not None:
+                roi_box = clamp_roi(roi_box, base_shape)
+                roi_state["boxes"][group] = roi_box
+
             ax = save_fig.add_subplot(save_grid[row_idx, 0])
             ax.set_xticks([])
             ax.set_yticks([])
@@ -1188,13 +1275,13 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
             else:
                 display = normalize_display(orig_img, low_pct, high_pct)
+                if roi_enabled and roi_box and base_shape is not None:
+                    if display.shape[:2] == base_shape:
+                        display = extract_roi(display, roi_box)
                 if display.ndim == 2:
                     ax.imshow(display, cmap="gray", interpolation="nearest")
                 else:
                     ax.imshow(display, interpolation="nearest")
-            if zoom_limits:
-                ax.set_xlim(zoom_state["xlim"])
-                ax.set_ylim(zoom_state["ylim"])
             if row_idx == 0:
                 ax.set_title("ORIGINAL", fontsize=10)
 
@@ -1205,14 +1292,17 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 if key in group_norm:
                     if pseudo_enabled:
                         color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
-                        ax.imshow(colorize_channel(group_norm[key], color), interpolation="nearest")
+                        channel_view = group_norm[key]
+                        if roi_enabled and roi_box:
+                            channel_view = extract_roi(channel_view, roi_box)
+                        ax.imshow(colorize_channel(channel_view, color), interpolation="nearest")
                     else:
-                        ax.imshow(group_norm[key], cmap="gray", interpolation="nearest")
+                        channel_view = group_norm[key]
+                        if roi_enabled and roi_box:
+                            channel_view = extract_roi(channel_view, roi_box)
+                        ax.imshow(channel_view, cmap="gray", interpolation="nearest")
                 else:
                     ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
-                if zoom_limits:
-                    ax.set_xlim(zoom_state["xlim"])
-                    ax.set_ylim(zoom_state["ylim"])
                 if row_idx == 0:
                     ax.set_title(CHANNEL_LABELS.get(key, key).upper(), fontsize=10)
                 if col_idx == 0:
@@ -1245,10 +1335,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
             ax.set_xticks([])
             ax.set_yticks([])
             merge = compose_merge(group_norm) if group_norm else np.zeros((10, 10, 3))
+            if roi_enabled and roi_box:
+                merge = extract_roi(merge, roi_box)
             ax.imshow(merge, interpolation="nearest")
-            if zoom_limits:
-                ax.set_xlim(zoom_state["xlim"])
-                ax.set_ylim(zoom_state["ylim"])
             if row_idx == 0:
                 ax.set_title("MERGED", fontsize=10)
 
@@ -1260,7 +1349,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
             set_status(f"Saved SVG to {path}")
 
     save_button.on_clicked(save_svg)
-    reset_zoom_button.on_clicked(reset_zoom)
+    reset_roi_button.on_clicked(reset_roi)
+    fig.canvas.mpl_connect("button_press_event", on_press)
     fig.canvas.mpl_connect("button_release_event", on_release)
 
     def toggle_auto_scale(_event) -> None:
