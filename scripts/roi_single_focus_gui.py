@@ -173,7 +173,8 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
     help_text = (
         "Single ROI focus:\n"
         "- Load a ROI folder from previous outputs.\n"
-        "- Draw a smaller ROI on the merged view.\n"
+        "- Drag on merged view to set ROI size.\n"
+        "- Drag inside ROI to move it (size stays fixed).\n"
         "- Adjust ROI sliders if needed.\n"
         "- Apply smoothing if needed.\n"
         "- Save an Illustrator-ready SVG of the full + ROI panels.\n"
@@ -331,6 +332,47 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         spancoords="pixels",
         interactive=False,
     )
+    move_state = {"active": False, "offset": (0.0, 0.0)}
+
+    def inside_roi(x: float, y: float) -> bool:
+        return (
+            roi_state["x"] <= x <= roi_state["x"] + roi_state["w"]
+            and roi_state["y"] <= y <= roi_state["y"] + roi_state["h"]
+        )
+
+    def on_press(event) -> None:
+        if event.inaxes is None or event.button != 1:
+            return
+        if event.inaxes != selector.ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        if inside_roi(event.xdata, event.ydata):
+            move_state["active"] = True
+            move_state["offset"] = (
+                event.xdata - roi_state["x"],
+                event.ydata - roi_state["y"],
+            )
+            selector.set_active(False)
+
+    def on_motion(event) -> None:
+        if not move_state["active"]:
+            return
+        if event.inaxes != selector.ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        offset_x, offset_y = move_state["offset"]
+        new_x = int(round(event.xdata - offset_x))
+        new_y = int(round(event.ydata - offset_y))
+        set_roi(new_x, new_y, roi_state["w"], roi_state["h"])
+
+    def on_release(event) -> None:
+        if not move_state["active"]:
+            return
+        move_state["active"] = False
+        selector.set_active(True)
+        update_display()
 
     def load_folder(_event) -> None:
         path = pick_directory(initial_dir)
@@ -432,6 +474,10 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
     roi_h_slider.on_changed(lambda _=None: update_display())
     pseudo_checks.on_clicked(lambda _=None: update_display())
     smooth_checks.on_clicked(lambda _=None: update_display())
+
+    fig.canvas.mpl_connect("button_press_event", on_press)
+    fig.canvas.mpl_connect("motion_notify_event", on_motion)
+    fig.canvas.mpl_connect("button_release_event", on_release)
 
     if roi_dir:
         try:
