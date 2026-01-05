@@ -19,6 +19,10 @@ try:
     from scipy.ndimage import gaussian_filter
 except ImportError:  # pragma: no cover - optional smoothing
     gaussian_filter = None
+try:
+    import tifffile
+except ImportError:  # pragma: no cover - optional image support
+    tifffile = None
 
 plt.rcParams["font.family"] = "Arial"
 plt.rcParams["svg.fonttype"] = "none"
@@ -107,6 +111,54 @@ def pick_save_path(initial_dir: Path, default_name: str) -> Path | None:
     return Path(path) if path else None
 
 
+def pick_image_path(initial_dir: Path) -> Path | None:
+    if sys.platform == "darwin":
+        script = (
+            'POSIX path of (choose file with prompt "Select image file" '
+            f'default location POSIX file "{initial_dir}")'
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            chosen = result.stdout.strip()
+            if chosen:
+                return Path(chosen)
+
+    try:
+        from tkinter import Tk, filedialog
+    except Exception as exc:
+        print(f"Tkinter is not available for image selection: {exc}")
+        return None
+
+    root = Tk()
+    root.withdraw()
+    path = filedialog.askopenfilename(
+        title="Select image file",
+        initialdir=str(initial_dir),
+        filetypes=[
+            ("Image files", "*.png *.jpg *.jpeg *.tif *.tiff"),
+            ("All files", "*.*"),
+        ],
+        parent=root,
+    )
+    root.destroy()
+    return Path(path) if path else None
+
+
+def load_image(path: Path) -> np.ndarray:
+    if path.suffix.lower() in {".tif", ".tiff"} and tifffile is not None:
+        img = tifffile.imread(path)
+    else:
+        img = plt.imread(path)
+    img = np.asarray(img)
+    if img.ndim == 3 and img.shape[-1] == 4:
+        img = img[..., :3]
+    return img
+
+
 def channel_key(name: str) -> str:
     lower = name.lower()
     compact = re.sub(r"[^a-z0-9]+", "", lower)
@@ -166,6 +218,19 @@ def percentile_bounds(values: List[np.ndarray], low: float, high: float) -> Tupl
 def normalize_channel(channel: np.ndarray, bounds: Tuple[float, float]) -> np.ndarray:
     vmin, vmax = bounds
     return np.clip((channel - vmin) / (vmax - vmin), 0.0, 1.0)
+
+
+def normalize_display(image: np.ndarray, low_pct: float, high_pct: float) -> np.ndarray:
+    if image.ndim == 2:
+        vmin, vmax = np.percentile(image, [low_pct, high_pct])
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        return np.clip((image - vmin) / (vmax - vmin), 0.0, 1.0)
+    image = image.astype(np.float32, copy=False)
+    max_val = float(np.nanmax(image)) if image.size else 1.0
+    if max_val <= 0:
+        max_val = 1.0
+    return np.clip(image / max_val, 0.0, 1.0)
 
 
 def compose_merge(norm_channels: Dict[str, np.ndarray]) -> np.ndarray:
@@ -393,6 +458,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     group_paths: Dict[str, Path | None] = {group: None for group in GROUPS}
     group_arrays: Dict[str, Dict[str, np.ndarray]] = {}
     group_labels: Dict[str, Dict[str, str]] = {}
+    original_paths: Dict[str, Path | None] = {group: None for group in GROUPS}
+    original_images: Dict[str, np.ndarray] = {}
 
     status_message = {"text": "Select ROI folders for each group."}
 
@@ -431,6 +498,19 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             summary += f" | Missing: {', '.join(missing)}"
         return summary
 
+    def short_name(value: Path | None, limit: int = 14) -> str:
+        if value is None:
+            return "None"
+        name = value.name
+        if len(name) <= limit:
+            return name
+        return f"{name[:6]}...{name[-6:]}"
+
+    def update_label(group_name: str) -> None:
+        roi_name = short_name(group_paths.get(group_name))
+        img_name = short_name(original_paths.get(group_name))
+        group_labels_text[group_name].set_text(f"{roi_name} | {img_name}")
+
     def log_channel_stats(group_name: str, channels: Dict[str, np.ndarray]) -> None:
         print(f"[{group_name}] Loaded channels:")
         for key in CHANNEL_ORDER:
@@ -465,17 +545,22 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             )
 
     group_buttons = {}
+    original_buttons = {}
     group_labels_text = {}
     start_y = 0.68
     for idx, group in enumerate(GROUPS):
         y0 = start_y - idx * 0.07
-        ax = add_control_axes(0.05, y0, 0.45, 0.05)
-        btn = Button(ax, f"Select {group}")
+        ax = add_control_axes(0.05, y0, 0.32, 0.05)
+        btn = Button(ax, f"ROI {group}")
         group_buttons[group] = btn
 
-        label_ax = add_control_axes(0.52, y0, 0.43, 0.05)
+        orig_ax = add_control_axes(0.39, y0, 0.26, 0.05)
+        orig_btn = Button(orig_ax, f"Image {group}")
+        original_buttons[group] = orig_btn
+
+        label_ax = add_control_axes(0.67, y0, 0.28, 0.05)
         label_ax.axis("off")
-        label_text = label_ax.text(0.0, 0.5, "None", va="center", ha="left", fontsize=8)
+        label_text = label_ax.text(0.0, 0.5, "None | None", va="center", ha="left", fontsize=7)
         group_labels_text[group] = label_text
 
         def make_select(group_name: str):
@@ -494,7 +579,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 group_paths[group_name] = path
                 group_arrays[group_name] = arrays
                 group_labels[group_name] = labels
-                group_labels_text[group_name].set_text(path.name)
+                update_label(group_name)
                 log_channel_stats(group_name, arrays)
                 set_status(f"Loaded {path.name} for {group_name}. {channel_summary(arrays)}")
                 update_grid()
@@ -502,42 +587,61 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         btn.on_clicked(make_select(group))
 
-    smooth_ax = add_control_axes(0.05, 0.52, 0.40, 0.08)
+        def make_select_image(group_name: str):
+            def _select(_event):
+                path = pick_image_path(initial_dir)
+                if not path:
+                    return
+                try:
+                    image = load_image(path)
+                except Exception as exc:
+                    set_status(f"Failed to load image {path.name}: {exc}")
+                    return
+                original_paths[group_name] = path
+                original_images[group_name] = image
+                update_label(group_name)
+                set_status(f"Loaded image {path.name} for {group_name}.")
+                update_grid()
+            return _select
+
+        orig_btn.on_clicked(make_select_image(group))
+
+    smooth_ax = add_control_axes(0.05, 0.46, 0.40, 0.06)
     smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [False])
 
-    view_ax = add_control_axes(0.52, 0.52, 0.40, 0.08)
+    view_ax = add_control_axes(0.52, 0.46, 0.40, 0.06)
     view_checks = CheckButtons(view_ax, ["Pseudo channels", "Scale bars"], [False, True])
 
-    sigma_ax = add_control_axes(0.05, 0.47, 0.87, 0.03)
+    sigma_ax = add_control_axes(0.05, 0.42, 0.87, 0.03)
     sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.2, valstep=0.1)
 
-    bg_ax = add_control_axes(0.05, 0.40, 0.40, 0.06)
+    bg_ax = add_control_axes(0.05, 0.36, 0.40, 0.05)
     bg_checks = CheckButtons(bg_ax, ["Background"], [True])
 
-    bg_chan_ax = add_control_axes(0.52, 0.39, 0.40, 0.10)
+    bg_chan_ax = add_control_axes(0.52, 0.33, 0.40, 0.10)
     bg_chan_checks = CheckButtons(
         bg_chan_ax,
         ["DAPI", "GFP", "tdTom", "EL222"],
         [False, True, False, True],
     )
 
-    bg_pct_ax = add_control_axes(0.05, 0.34, 0.87, 0.03)
+    bg_pct_ax = add_control_axes(0.05, 0.29, 0.87, 0.03)
     bg_pct_slider = Slider(bg_pct_ax, "BG %", 0, 20, valinit=5.0, valstep=0.5)
 
-    el_override_ax = add_control_axes(0.05, 0.30, 0.40, 0.06)
+    el_override_ax = add_control_axes(0.05, 0.24, 0.40, 0.05)
     el_override_checks = CheckButtons(el_override_ax, ["EL222 own scale"], [False])
 
-    el_low_ax = add_control_axes(0.05, 0.26, 0.87, 0.03)
-    el_high_ax = add_control_axes(0.05, 0.22, 0.87, 0.03)
+    el_low_ax = add_control_axes(0.05, 0.20, 0.87, 0.03)
+    el_high_ax = add_control_axes(0.05, 0.16, 0.87, 0.03)
     el_low_slider = Slider(el_low_ax, "EL Low %", 0, 20, valinit=1.0, valstep=0.5)
     el_high_slider = Slider(el_high_ax, "EL High %", 80, 100, valinit=99.0, valstep=0.5)
 
-    low_ax = add_control_axes(0.05, 0.18, 0.87, 0.03)
-    high_ax = add_control_axes(0.05, 0.14, 0.87, 0.03)
+    low_ax = add_control_axes(0.05, 0.12, 0.87, 0.03)
+    high_ax = add_control_axes(0.05, 0.08, 0.87, 0.03)
     low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
     high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
 
-    save_ax = add_control_axes(0.05, 0.08, 0.87, 0.05)
+    save_ax = add_control_axes(0.05, 0.01, 0.87, 0.05)
     save_button = Button(save_ax, "Save SVG")
 
     grid_images = {}
@@ -572,7 +676,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     cmap="gray",
                     interpolation="nearest",
                 )
-                if col_idx < len(CHANNEL_ORDER):
+                if 0 < col_idx <= len(CHANNEL_ORDER):
                     cax = inset_axes(
                         ax,
                         width="4%",
@@ -637,7 +741,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             el_high_pct,
         )
 
-        num_cols = len(CHANNEL_ORDER) + 1
+        num_cols = len(CHANNEL_ORDER) + 2
         if not grid_images:
             build_grid_axes(num_cols)
 
@@ -663,8 +767,22 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
             log_norm_stats(group, group_norm)
 
+            orig_img = original_images.get(group)
+            orig_panel = grid_images[(group, 0)]
+            if orig_img is None:
+                orig_panel.set_data(np.zeros((10, 10)))
+                missing_notes.append(f"{group}: Original")
+            else:
+                display = normalize_display(orig_img, low_pct, high_pct)
+                orig_panel.set_data(display)
+                if display.ndim == 2:
+                    orig_panel.set_cmap("gray")
+                else:
+                    orig_panel.set_cmap(None)
+                orig_panel.set_clim(0.0, 1.0)
+
             for col_idx, key in enumerate(CHANNEL_ORDER):
-                img = grid_images[(group, col_idx)]
+                img = grid_images[(group, col_idx + 1)]
                 ax = img.axes
                 if key not in group_norm:
                     img.set_data(np.zeros((10, 10)))
@@ -680,7 +798,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     img.set_clim(0.0, 1.0)
                     if np.nanmax(group_norm[key]) <= 0:
                         empty_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)} flat")
-                cax = grid_cbar_axes.get((group, col_idx))
+                cax = grid_cbar_axes.get((group, col_idx + 1))
                 if cax is not None:
                     if scale_enabled and key in bounds and key in group_norm:
                         cax.set_visible(True)
@@ -691,7 +809,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                         if cbar is None:
                             cbar = fig.colorbar(sm, cax=cax)
                             cbar.ax.tick_params(labelsize=6, length=2)
-                            grid_cbar_objs[(group, col_idx)] = cbar
+                            grid_cbar_objs[(group, col_idx + 1)] = cbar
                         else:
                             cbar.mappable.set_norm(norm)
                             cbar.mappable.set_cmap(cmap)
@@ -799,8 +917,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             el_high_pct,
         )
 
-        num_cols = len(CHANNEL_ORDER) + 1
-        save_fig = plt.figure(figsize=(num_cols * 2.4, len(GROUPS) * 2.4))
+        num_cols = len(CHANNEL_ORDER) + 2
+        save_fig = plt.figure(figsize=(num_cols * 2.2, len(GROUPS) * 2.4))
         save_grid = save_fig.add_gridspec(len(GROUPS), num_cols, wspace=0.02, hspace=0.02)
 
         for row_idx, group in enumerate(GROUPS):
@@ -810,8 +928,23 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     if key in prepared[group] and key in bounds:
                         group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
 
+            ax = save_fig.add_subplot(save_grid[row_idx, 0])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            orig_img = original_images.get(group)
+            if orig_img is None:
+                ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
+            else:
+                display = normalize_display(orig_img, low_pct, high_pct)
+                if display.ndim == 2:
+                    ax.imshow(display, cmap="gray", interpolation="nearest")
+                else:
+                    ax.imshow(display, interpolation="nearest")
+            if row_idx == 0:
+                ax.set_title("ORIGINAL", fontsize=10)
+
             for col_idx, key in enumerate(CHANNEL_ORDER):
-                ax = save_fig.add_subplot(save_grid[row_idx, col_idx])
+                ax = save_fig.add_subplot(save_grid[row_idx, col_idx + 1])
                 ax.set_xticks([])
                 ax.set_yticks([])
                 if key in group_norm:
