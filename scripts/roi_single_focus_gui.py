@@ -153,6 +153,7 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
 
     status = {"text": "Select a ROI folder."}
     channel_data: Dict[str, np.ndarray] = {}
+    current_folder: Path | None = None
     roi_state = {"x": 0, "y": 0, "w": 50, "h": 50}
 
     def set_status(text: str) -> None:
@@ -167,7 +168,7 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         "- Load a ROI folder from previous outputs.\n"
         "- Draw a smaller ROI on the merged view.\n"
         "- Adjust ROI sliders if needed.\n"
-        "- Save sub-ROI for representative figures.\n"
+        "- Save an Illustrator-ready SVG of the full + ROI panels.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
     status_artist = help_ax.text(0.0, 0.05, f"Status: {status['text']}", va="bottom", ha="left", fontsize=9)
@@ -194,8 +195,8 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
     roi_w_slider = Slider(roi_w_ax, "ROI W", 5, 50, valinit=50, valstep=1)
     roi_h_slider = Slider(roi_h_ax, "ROI H", 5, 50, valinit=50, valstep=1)
 
-    save_ax = add_control_axes(0.05, 0.22, 0.90, 0.05)
-    save_button = Button(save_ax, "Save Sub-ROI")
+    save_svg_ax = add_control_axes(0.05, 0.22, 0.90, 0.05)
+    save_svg_button = Button(save_svg_ax, "Save Figure (SVG)")
 
     full_axes = []
     crop_axes = []
@@ -237,18 +238,22 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         roi_w_slider.set_val(roi_state["w"])
         roi_h_slider.set_val(roi_state["h"])
 
-    def update_display() -> None:
-        if not channel_data:
-            return
+    def compute_norm_channels() -> Dict[str, np.ndarray]:
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
         gamma = gamma_slider.val
-        pseudo_enabled = pseudo_checks.get_status()[0]
-
         norm_channels: Dict[str, np.ndarray] = {}
         for key, channel in channel_data.items():
             bounds = percentile_bounds(channel, low_pct, high_pct)
             norm_channels[key] = normalize_channel(channel, bounds, gamma)
+        return norm_channels
+
+    def update_display() -> None:
+        if not channel_data:
+            return
+        pseudo_enabled = pseudo_checks.get_status()[0]
+
+        norm_channels = compute_norm_channels()
 
         merge = compose_merge(norm_channels)
         roi = (roi_state["x"], roi_state["y"], roi_state["w"], roi_state["h"])
@@ -307,6 +312,8 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
             return
         nonlocal channel_data
         channel_data = arrays
+        nonlocal current_folder
+        current_folder = path
         num_channels = len([key for key in CHANNEL_ORDER if key in channel_data])
         if num_channels == 0:
             set_status("No recognized channels in folder.")
@@ -319,40 +326,61 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         update_display()
         set_status(f"Loaded {path.name}. Draw a smaller ROI.")
 
-    def save_roi(_event) -> None:
+    def save_svg(_event) -> None:
         if not channel_data:
             set_status("Load a ROI folder first.")
             return
-        target = out_dir if out_dir else Path.cwd() / "roi_subroi_outputs"
-        target.mkdir(parents=True, exist_ok=True)
+        target_dir = out_dir if out_dir else Path.cwd()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        base = current_folder.name if current_folder else "roi_sub"
+        svg_path = target_dir / f"{base}_subroi.svg"
+
+        norm_channels = compute_norm_channels()
         roi = (roi_state["x"], roi_state["y"], roi_state["w"], roi_state["h"])
-        low_pct = low_slider.val
-        high_pct = max(low_pct + 0.5, high_slider.val)
-        gamma = gamma_slider.val
-        norm_channels: Dict[str, np.ndarray] = {}
-        for key, channel in channel_data.items():
-            bounds = percentile_bounds(channel, low_pct, high_pct)
-            norm_channels[key] = normalize_channel(channel, bounds, gamma)
-        for idx, key in enumerate(CHANNEL_ORDER):
-            if key not in channel_data:
-                continue
-            raw_crop = extract_roi(channel_data[key], roi)
-            np.save(target / f"roi_sub_raw_ch{idx}_{key}.npy", raw_crop.astype(np.float32))
-            plt.imsave(
-                target / f"roi_sub_gray_ch{idx}_{key}.png",
-                extract_roi(norm_channels[key], roi),
-                cmap="gray",
-            )
-            plt.imsave(
-                target / f"roi_sub_pseudo_ch{idx}_{key}.png",
-                colorize_channel(extract_roi(norm_channels[key], roi), CHANNEL_COLORS[key]),
-            )
+        pseudo_enabled = pseudo_checks.get_status()[0]
+
+        keys = [key for key in CHANNEL_ORDER if key in norm_channels]
+        num_channels = len(keys)
+        if num_channels == 0:
+            set_status("No channels available for SVG export.")
+            return
+
+        out_fig = plt.figure(figsize=(2.6 * (num_channels + 1), 5.2))
+        out_grid = out_fig.add_gridspec(2, num_channels + 1, wspace=0.05, hspace=0.1)
+
+        for idx, key in enumerate(keys):
+            ax_full = out_fig.add_subplot(out_grid[0, idx])
+            ax_crop = out_fig.add_subplot(out_grid[1, idx])
+            ax_full.set_xticks([])
+            ax_full.set_yticks([])
+            ax_crop.set_xticks([])
+            ax_crop.set_yticks([])
+            ax_full.set_title(CHANNEL_LABELS.get(key, key))
+            ax_crop.set_title(f"ROI {CHANNEL_LABELS.get(key, key)}")
+            if pseudo_enabled:
+                ax_full.imshow(colorize_channel(norm_channels[key], CHANNEL_COLORS[key]))
+                ax_crop.imshow(colorize_channel(extract_roi(norm_channels[key], roi), CHANNEL_COLORS[key]))
+            else:
+                ax_full.imshow(norm_channels[key], cmap="gray")
+                ax_crop.imshow(extract_roi(norm_channels[key], roi), cmap="gray")
+
         merge = compose_merge(norm_channels)
-        plt.imsave(target / "roi_sub_merge.png", extract_roi(merge, roi))
-        set_status(f"Saved sub-ROI outputs to {target}")
+        ax_full = out_fig.add_subplot(out_grid[0, num_channels])
+        ax_crop = out_fig.add_subplot(out_grid[1, num_channels])
+        for ax in (ax_full, ax_crop):
+            ax.set_xticks([])
+            ax.set_yticks([])
+        ax_full.set_title("Merged")
+        ax_crop.set_title("ROI Merged")
+        ax_full.imshow(merge)
+        ax_crop.imshow(extract_roi(merge, roi))
+
+        out_fig.savefig(svg_path, format="svg", dpi=300)
+        plt.close(out_fig)
+        set_status(f"Saved SVG to {svg_path}")
 
     load_button.on_clicked(load_folder)
-    save_button.on_clicked(save_roi)
+    save_svg_button.on_clicked(save_svg)
     low_slider.on_changed(lambda _=None: update_display())
     high_slider.on_changed(lambda _=None: update_display())
     gamma_slider.on_changed(lambda _=None: update_display())

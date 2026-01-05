@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - optional image support
 plt.rcParams["font.family"] = "Arial"
 plt.rcParams["svg.fonttype"] = "none"
 
-GROUPS = ["ctznmda", "ctz", "nmda"]
+DEFAULT_GROUPS = ["ctznmda", "ctz", "nmda"]
 CHANNEL_ORDER = ["dapi", "gfp", "tdtom", "el222"]
 CHANNEL_LABELS = {
     "dapi": "DAPI",
@@ -524,7 +524,7 @@ def per_image_bounds(
     return percentile_bounds([prepared[group][key]], low_pct, high_pct)
 
 
-def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
+def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, groups: List[str]) -> None:
     fig = plt.figure(figsize=(18, 9))
     grid = fig.add_gridspec(
         1,
@@ -560,19 +560,21 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             ]
         )
 
-    group_paths: Dict[str, Path | None] = {group: None for group in GROUPS}
+    group_paths: Dict[str, Path | None] = {group: None for group in groups}
     group_arrays: Dict[str, Dict[str, np.ndarray]] = {}
     group_labels: Dict[str, Dict[str, str]] = {}
-    original_paths: Dict[str, Path | None] = {group: None for group in GROUPS}
+    original_paths: Dict[str, Path | None] = {group: None for group in groups}
     original_images: Dict[str, np.ndarray] = {}
 
     status_message = {"text": "Select ROI folders for each group."}
     auto_scale_state = {"enabled": True}
+    zoom_state = {"xlim": None, "ylim": None, "syncing": False}
 
     help_ax = add_control_axes(0.05, 0.76, 0.90, 0.22)
     help_ax.axis("off")
     help_text = (
         "Grid builder:\n"
+        "- Auto-loads group_* folders when available.\n"
         "- Select ROI folder for each group.\n"
         "- Select original image for each group.\n"
         "- Toggle scale bars and pseudocolor if needed.\n"
@@ -581,6 +583,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         "- Adjust percentiles for global normalization.\n"
         "- Use EL222 override to set its scale separately.\n"
         "- Auto-scale per image overrides global scaling.\n"
+        "- Sync zoom keeps the view matched across groups.\n"
         "- Save SVG when satisfied.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
@@ -667,7 +670,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     original_buttons = {}
     group_labels_text = {}
     start_y = 0.68
-    for idx, group in enumerate(GROUPS):
+    for idx, group in enumerate(groups):
         y0 = start_y - idx * 0.07
         ax = add_control_axes(0.05, y0, 0.32, 0.05)
         btn = Button(ax, f"ROI {group}")
@@ -726,10 +729,15 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         orig_btn.on_clicked(make_select_image(group))
 
     smooth_ax = add_control_axes(0.05, 0.46, 0.40, 0.06)
-    smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [False])
+    smooth_default = gaussian_filter is not None
+    smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [smooth_default])
 
     view_ax = add_control_axes(0.52, 0.46, 0.40, 0.06)
-    view_checks = CheckButtons(view_ax, ["Pseudo channels", "Scale bars"], [False, True])
+    view_checks = CheckButtons(
+        view_ax,
+        ["Pseudo channels", "Scale bars", "Sync zoom"],
+        [False, True, True],
+    )
 
     sigma_ax = add_control_axes(0.05, 0.42, 0.87, 0.03)
     sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.2, valstep=0.1)
@@ -763,6 +771,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     auto_ax = add_control_axes(0.52, 0.24, 0.40, 0.05)
     auto_button = Button(auto_ax, "Auto-scale per image: ON")
 
+    reset_zoom_ax = add_control_axes(0.52, 0.19, 0.40, 0.05)
+    reset_zoom_button = Button(reset_zoom_ax, "Reset zoom")
+
     save_ax = add_control_axes(0.05, 0.01, 0.87, 0.05)
     save_button = Button(save_ax, "Save SVG")
 
@@ -776,15 +787,15 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         row_labels.clear()
         grid_cbar_axes.clear()
         grid_cbar_objs.clear()
-        for group_idx, group in enumerate(GROUPS):
+        for group_idx, group in enumerate(groups):
             for col_idx in range(num_cols):
                 x0 = col_idx / num_cols
-                y0 = 1.0 - (group_idx + 1) / len(GROUPS)
+                y0 = 1.0 - (group_idx + 1) / len(groups)
                 ax = add_grid_axes(
                     x0 + 0.02,
                     y0 + 0.05,
                     1 / num_cols - 0.03,
-                    1 / len(GROUPS) - 0.07,
+                    1 / len(groups) - 0.07,
                 )
                 ax.set_xticks([])
                 ax.set_yticks([])
@@ -811,8 +822,27 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     cax.set_visible(False)
                     grid_cbar_axes[(group, col_idx)] = cax
 
+    def all_grid_axes() -> List[plt.Axes]:
+        axes = []
+        seen = set()
+        for img in grid_images.values():
+            ax = img.axes
+            if ax not in seen:
+                axes.append(ax)
+                seen.add(ax)
+        return axes
+
+    def apply_zoom(xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
+        zoom_state["syncing"] = True
+        for ax in all_grid_axes():
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        zoom_state["xlim"] = xlim
+        zoom_state["ylim"] = ylim
+        zoom_state["syncing"] = False
+
     def update_grid() -> None:
-        available_groups = [group for group in GROUPS if group in group_arrays]
+        available_groups = [group for group in groups if group in group_arrays]
         if len(available_groups) == 0:
             set_status("Select ROI folders for each group.")
             return
@@ -825,6 +855,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         view_flags = view_checks.get_status()
         pseudo_enabled = view_flags[0]
         scale_enabled = view_flags[1]
+        sync_zoom = view_flags[2]
         bg_enabled = bg_checks.get_status()[0]
         bg_pct = bg_pct_slider.val
         bg_flags = bg_chan_checks.get_status()
@@ -868,7 +899,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         if not grid_images:
             build_grid_axes(num_cols)
 
-        for group in GROUPS:
+        for group in groups:
             for col_idx in range(num_cols):
                 img = grid_images[(group, col_idx)]
                 ax = img.axes
@@ -876,7 +907,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         missing_notes = []
         empty_notes = []
-        for group_idx, group in enumerate(GROUPS):
+        for group_idx, group in enumerate(groups):
             if group not in prepared:
                 for col_idx in range(num_cols):
                     img = grid_images[(group, col_idx)]
@@ -969,7 +1000,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             merge_img.set_cmap(None)
             merge_img.axes.set_title("MERGED" if group_idx == 0 else "")
 
-        for group in GROUPS:
+        for group in groups:
             row_ax = grid_images[(group, 0)].axes
             if group not in row_labels:
                 row_labels[group] = row_ax.text(
@@ -983,6 +1014,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 )
             else:
                 row_labels[group].set_text(group.upper())
+
+        if sync_zoom and zoom_state["xlim"] is not None and zoom_state["ylim"] is not None:
+            apply_zoom(zoom_state["xlim"], zoom_state["ylim"])
 
         fig.canvas.draw_idle()
         notes = []
@@ -1004,10 +1038,62 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         else:
             set_status("Preview updated.")
 
+    def reset_zoom(_event) -> None:
+        zoom_state["xlim"] = None
+        zoom_state["ylim"] = None
+        for img in grid_images.values():
+            ax = img.axes
+            arr = img.get_array()
+            if arr is None:
+                continue
+            shape = arr.shape
+            if len(shape) >= 2:
+                height, width = shape[0], shape[1]
+                ax.set_xlim(-0.5, width - 0.5)
+                ax.set_ylim(height - 0.5, -0.5)
+        fig.canvas.draw_idle()
+
+    def on_release(event) -> None:
+        if zoom_state["syncing"]:
+            return
+        view_flags = view_checks.get_status()
+        if len(view_flags) < 3 or not view_flags[2]:
+            return
+        if not grid_images or event.inaxes is None:
+            return
+        axes_set = {img.axes for img in grid_images.values()}
+        if event.inaxes not in axes_set:
+            return
+        apply_zoom(event.inaxes.get_xlim(), event.inaxes.get_ylim())
+        fig.canvas.draw_idle()
+
+    def auto_load_from_root(root: Path) -> None:
+        if not root.exists():
+            return
+        loaded = []
+        for group in groups:
+            candidate = root / f"group_{group}"
+            if not candidate.exists():
+                continue
+            try:
+                arrays, labels = load_roi_folder(candidate)
+            except Exception as exc:
+                set_status(f"Failed to load {candidate.name}: {exc}")
+                continue
+            group_paths[group] = candidate
+            group_arrays[group] = arrays
+            group_labels[group] = labels
+            update_label(group)
+            log_channel_stats(group, arrays)
+            loaded.append(group)
+        if loaded:
+            set_status(f"Auto-loaded groups: {', '.join(loaded)}.")
+            update_grid()
+
     def save_svg(_event) -> None:
-        available_groups = [group for group in GROUPS if group in group_arrays]
-        if len(available_groups) != len(GROUPS):
-            set_status("Select ROI folders for all three groups before saving.")
+        available_groups = [group for group in groups if group in group_arrays]
+        if len(available_groups) != len(groups):
+            set_status("Select ROI folders for all selected groups before saving.")
             return
         if out_dir is None:
             initial = initial_dir
@@ -1064,10 +1150,10 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         )
 
         num_cols = len(CHANNEL_ORDER) + 2
-        save_fig = plt.figure(figsize=(num_cols * 2.2, len(GROUPS) * 2.4))
-        save_grid = save_fig.add_gridspec(len(GROUPS), num_cols, wspace=0.02, hspace=0.02)
+        save_fig = plt.figure(figsize=(num_cols * 2.2, len(groups) * 2.4))
+        save_grid = save_fig.add_gridspec(len(groups), num_cols, wspace=0.02, hspace=0.02)
 
-        for row_idx, group in enumerate(GROUPS):
+        for row_idx, group in enumerate(groups):
             group_norm = {}
             bounds_map = {}
             if group in prepared:
@@ -1163,6 +1249,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             set_status(f"Saved SVG to {path}")
 
     save_button.on_clicked(save_svg)
+    reset_zoom_button.on_clicked(reset_zoom)
+    fig.canvas.mpl_connect("button_release_event", on_release)
 
     def toggle_auto_scale(_event) -> None:
         auto_scale_state["enabled"] = not auto_scale_state["enabled"]
@@ -1188,6 +1276,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     el_low_slider.on_changed(on_slider_change)
     el_high_slider.on_changed(on_slider_change)
 
+    auto_root = roi_root if roi_root is not None else (out_dir if out_dir is not None else initial_dir)
+    auto_load_from_root(auto_root)
+
     plt.show()
 
 
@@ -1202,6 +1293,18 @@ def parse_args() -> argparse.Namespace:
         help="Starting directory for folder pickers.",
     )
     parser.add_argument(
+        "--roi-root",
+        type=Path,
+        default=None,
+        help="Root folder containing group_* ROI folders to auto-load.",
+    )
+    parser.add_argument(
+        "--groups",
+        nargs="+",
+        default=None,
+        help="Group names to include (e.g., ctznmda nmda).",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=None,
@@ -1212,7 +1315,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    build_gui(args.nd2_dir, args.out_dir)
+    raw_groups = args.groups if args.groups else DEFAULT_GROUPS
+    parsed_groups: List[str] = []
+    for item in raw_groups:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part:
+                parsed_groups.append(part)
+    if not parsed_groups:
+        parsed_groups = list(DEFAULT_GROUPS)
+    seen = set()
+    groups = []
+    for group in parsed_groups:
+        if group not in seen:
+            groups.append(group)
+            seen.add(group)
+    build_gui(args.nd2_dir, args.out_dir, args.roi_root, groups)
 
 
 if __name__ == "__main__":
