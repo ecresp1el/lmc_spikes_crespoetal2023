@@ -300,6 +300,9 @@ def resolve_bounds(
     available_groups: List[str],
     low_pct: float,
     high_pct: float,
+    el222_override: bool,
+    el222_low: float,
+    el222_high: float,
 ) -> Tuple[Dict[str, Tuple[float, float]], List[str]]:
     bounds: Dict[str, Tuple[float, float]] = {}
     warnings: List[str] = []
@@ -316,17 +319,29 @@ def resolve_bounds(
     else:
         warnings.append("No GFP/EYFP channel found.")
 
-    shared_vals = []
-    for key in ("tdtom", "el222"):
-        for group in available_groups:
-            if key in prepared[group]:
-                shared_vals.append(prepared[group][key])
-    if shared_vals:
-        shared_bounds = percentile_bounds(shared_vals, low_pct, high_pct)
-        bounds["tdtom"] = shared_bounds
-        bounds["el222"] = shared_bounds
+    if el222_override:
+        tdtom_vals = [prepared[g]["tdtom"] for g in available_groups if "tdtom" in prepared[g]]
+        el_vals = [prepared[g]["el222"] for g in available_groups if "el222" in prepared[g]]
+        if tdtom_vals:
+            bounds["tdtom"] = percentile_bounds(tdtom_vals, low_pct, high_pct)
+        else:
+            warnings.append("No tdTom channel found.")
+        if el_vals:
+            bounds["el222"] = percentile_bounds(el_vals, el222_low, el222_high)
+        else:
+            warnings.append("No EL222 channel found.")
     else:
-        warnings.append("No tdTom/EL222 channels found.")
+        shared_vals = []
+        for key in ("tdtom", "el222"):
+            for group in available_groups:
+                if key in prepared[group]:
+                    shared_vals.append(prepared[group][key])
+        if shared_vals:
+            shared_bounds = percentile_bounds(shared_vals, low_pct, high_pct)
+            bounds["tdtom"] = shared_bounds
+            bounds["el222"] = shared_bounds
+        else:
+            warnings.append("No tdTom/EL222 channels found.")
 
     for key in CHANNEL_ORDER:
         if key in bounds:
@@ -390,6 +405,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         "- Adjust smoothing if desired.\n"
         "- Background subtract per channel if needed.\n"
         "- Adjust percentiles for global normalization.\n"
+        "- Use EL222 override to set its scale separately.\n"
         "- Save SVG when satisfied.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
@@ -508,12 +524,20 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     bg_pct_ax = add_control_axes(0.05, 0.34, 0.87, 0.03)
     bg_pct_slider = Slider(bg_pct_ax, "BG %", 0, 20, valinit=5.0, valstep=0.5)
 
-    low_ax = add_control_axes(0.05, 0.28, 0.87, 0.03)
-    high_ax = add_control_axes(0.05, 0.24, 0.87, 0.03)
+    el_override_ax = add_control_axes(0.05, 0.30, 0.40, 0.06)
+    el_override_checks = CheckButtons(el_override_ax, ["EL222 own scale"], [False])
+
+    el_low_ax = add_control_axes(0.05, 0.26, 0.87, 0.03)
+    el_high_ax = add_control_axes(0.05, 0.22, 0.87, 0.03)
+    el_low_slider = Slider(el_low_ax, "EL Low %", 0, 20, valinit=1.0, valstep=0.5)
+    el_high_slider = Slider(el_high_ax, "EL High %", 80, 100, valinit=99.0, valstep=0.5)
+
+    low_ax = add_control_axes(0.05, 0.18, 0.87, 0.03)
+    high_ax = add_control_axes(0.05, 0.14, 0.87, 0.03)
     low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
     high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
 
-    save_ax = add_control_axes(0.05, 0.16, 0.87, 0.05)
+    save_ax = add_control_axes(0.05, 0.08, 0.87, 0.05)
     save_button = Button(save_ax, "Save SVG")
 
     grid_images = {}
@@ -583,6 +607,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             for key, flag in zip(CHANNEL_ORDER, bg_flags)
             if flag
         }
+        el_override = el_override_checks.get_status()[0]
+        el_low_pct = el_low_slider.val
+        el_high_pct = max(el_low_pct + 0.5, el_high_slider.val)
         prepared = {
             group: prepare_group_channels(
                 group_arrays[group],
@@ -600,7 +627,15 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
 
-        bounds, warnings = resolve_bounds(prepared, available_groups, low_pct, high_pct)
+        bounds, warnings = resolve_bounds(
+            prepared,
+            available_groups,
+            low_pct,
+            high_pct,
+            el_override,
+            el_low_pct,
+            el_high_pct,
+        )
 
         num_cols = len(CHANNEL_ORDER) + 1
         if not grid_images:
@@ -697,6 +732,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             notes.append("Low contrast: " + "; ".join(sorted(set(empty_notes))))
         if bg_enabled:
             notes.append(f"BG%={bg_pct:.1f} on {', '.join(sorted(bg_channels))}")
+        if el_override:
+            notes.append(f"EL222%={el_low_pct:.1f}-{el_high_pct:.1f}")
         if scale_enabled:
             notes.append("Scale bars on")
         if notes:
@@ -733,6 +770,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             for key, flag in zip(CHANNEL_ORDER, bg_flags)
             if flag
         }
+        el_override = el_override_checks.get_status()[0]
+        el_low_pct = el_low_slider.val
+        el_high_pct = max(el_low_pct + 0.5, el_high_slider.val)
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
 
@@ -749,7 +789,15 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         }
         prepared = crop_to_min_shape(prepared)
 
-        bounds, warnings = resolve_bounds(prepared, available_groups, low_pct, high_pct)
+        bounds, warnings = resolve_bounds(
+            prepared,
+            available_groups,
+            low_pct,
+            high_pct,
+            el_override,
+            el_low_pct,
+            el_high_pct,
+        )
 
         num_cols = len(CHANNEL_ORDER) + 1
         save_fig = plt.figure(figsize=(num_cols * 2.4, len(GROUPS) * 2.4))
@@ -821,6 +869,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     bg_checks.on_clicked(lambda _: update_grid())
     bg_chan_checks.on_clicked(lambda _: update_grid())
     bg_pct_slider.on_changed(on_slider_change)
+    el_override_checks.on_clicked(lambda _: update_grid())
+    el_low_slider.on_changed(on_slider_change)
+    el_high_slider.on_changed(on_slider_change)
 
     plt.show()
 
