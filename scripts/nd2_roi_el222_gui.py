@@ -314,35 +314,123 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         )
         roi_patch.set_angle(ui_state.roi.angle)
 
+    def recompute_crop_norms(norm_channels: List[np.ndarray]) -> List[np.ndarray]:
+        return [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
+
+    def current_state() -> dict:
+        return {
+            "low": ui_state.display.low_pct,
+            "high": ui_state.display.high_pct,
+            "gamma": ui_state.display.gamma,
+            "gains": tuple(ui_state.display.gains),
+            "roi": (
+                ui_state.roi.center,
+                ui_state.roi.width,
+                ui_state.roi.height,
+                ui_state.roi.angle,
+            ),
+            "use_roi_scale": ui_state.use_roi_scale,
+        }
+
+    cache_norm_channels = compute_norm_channels()
+    cache_crop_norms = recompute_crop_norms(cache_norm_channels)
+    cache_merge = compose_merge(
+        cache_norm_channels, image_state.colors, ui_state.display.gains
+    )
+    cache_crop_merge = compose_merge(
+        cache_crop_norms, image_state.colors, ui_state.display.gains
+    )
+    prev_state = current_state()
+
+    full_images = []
+    for ax, channel, name, color in zip(
+        full_axes, cache_norm_channels, image_state.names, image_state.colors
+    ):
+        im = ax.imshow(channel, cmap="gray", interpolation="nearest")
+        ax.set_title(name)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(color)
+            spine.set_linewidth(2)
+        full_images.append(im)
+
+    full_merge_im = full_merge_ax.imshow(cache_merge, interpolation="nearest")
+    full_merge_ax.set_title("Merged")
+
+    crop_images = []
+    for ax, channel, name in zip(crop_axes, cache_crop_norms, image_state.names):
+        im = ax.imshow(channel, cmap="gray", interpolation="nearest")
+        ax.set_title(f"ROI {name}")
+        crop_images.append(im)
+
+    crop_merge_im = crop_merge_ax.imshow(cache_crop_merge, interpolation="nearest")
+    crop_merge_ax.set_title("ROI Merged")
+
+    update_roi_patch()
+
     def update_display(_=None) -> None:
-        norm_channels = compute_norm_channels()
-        merge = compose_merge(norm_channels, image_state.colors, ui_state.display.gains)
+        nonlocal cache_norm_channels, cache_crop_norms, cache_merge, cache_crop_merge, prev_state
+        state = current_state()
+        roi_changed = state["roi"] != prev_state["roi"]
+        scale_changed = (
+            state["low"] != prev_state["low"]
+            or state["high"] != prev_state["high"]
+            or state["gamma"] != prev_state["gamma"]
+            or state["use_roi_scale"] != prev_state["use_roi_scale"]
+        )
+        gains_changed = state["gains"] != prev_state["gains"]
 
-        for ax, channel, name, color in zip(
-            full_axes, norm_channels, image_state.names, image_state.colors
-        ):
-            ax.imshow(channel, cmap="gray")
-            ax.set_title(name)
-            for spine in ax.spines.values():
-                spine.set_edgecolor(color)
-                spine.set_linewidth(2)
+        if scale_changed or (roi_changed and state["use_roi_scale"]):
+            cache_norm_channels = compute_norm_channels()
+            for im, channel in zip(full_images, cache_norm_channels):
+                im.set_data(channel)
 
-        full_merge_ax.imshow(merge)
-        full_merge_ax.set_title("Merged")
+            cache_merge = compose_merge(
+                cache_norm_channels, image_state.colors, ui_state.display.gains
+            )
+            full_merge_im.set_data(cache_merge)
 
-        update_roi_patch()
+            cache_crop_norms = recompute_crop_norms(cache_norm_channels)
+            for im, channel in zip(crop_images, cache_crop_norms):
+                im.set_data(channel)
 
-        crop_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
-        crop_merge = extract_rotated_roi(merge, ui_state.roi)
+            cache_crop_merge = compose_merge(
+                cache_crop_norms, image_state.colors, ui_state.display.gains
+            )
+            crop_merge_im.set_data(cache_crop_merge)
+        else:
+            if roi_changed:
+                cache_crop_norms = recompute_crop_norms(cache_norm_channels)
+                for im, channel in zip(crop_images, cache_crop_norms):
+                    im.set_data(channel)
+                cache_crop_merge = compose_merge(
+                    cache_crop_norms, image_state.colors, ui_state.display.gains
+                )
+                crop_merge_im.set_data(cache_crop_merge)
 
-        for ax, channel, name in zip(crop_axes, crop_norms, image_state.names):
-            ax.imshow(channel, cmap="gray")
-            ax.set_title(f"ROI {name}")
+            if gains_changed:
+                cache_merge = compose_merge(
+                    cache_norm_channels, image_state.colors, ui_state.display.gains
+                )
+                full_merge_im.set_data(cache_merge)
+                cache_crop_merge = compose_merge(
+                    cache_crop_norms, image_state.colors, ui_state.display.gains
+                )
+                crop_merge_im.set_data(cache_crop_merge)
 
-        crop_merge_ax.imshow(crop_merge)
-        crop_merge_ax.set_title("ROI Merged")
+        if roi_changed:
+            update_roi_patch()
 
+        prev_state = state
         fig.canvas.draw_idle()
+
+    update_timer = fig.canvas.new_timer(interval=60)
+    update_timer.single_shot = True
+
+    def request_update() -> None:
+        update_timer.stop()
+        update_timer.start()
+
+    update_timer.add_callback(update_display)
 
     def on_select(click, release) -> None:
         if drag_state["active"]:
@@ -358,7 +446,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         set_slider_val(center_y_slider, ui_state.roi.center[1])
         set_slider_val(width_slider, ui_state.roi.width)
         set_slider_val(height_slider, ui_state.roi.height)
-        update_display()
+        request_update()
 
     rect_selector = RectangleSelector(
         full_merge_ax,
@@ -471,7 +559,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         ui_state.roi.width = width_slider.val
         ui_state.roi.height = height_slider.val
         ui_state.roi.angle = angle_slider.val
-        update_display()
+        request_update()
 
     low_slider.on_changed(slider_update)
     high_slider.on_changed(slider_update)
@@ -518,7 +606,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         ui_state.roi.center = new_center
         set_slider_val(center_x_slider, new_center[0])
         set_slider_val(center_y_slider, new_center[1])
-        update_display()
+        request_update()
 
     def on_release(_event) -> None:
         if not drag_state["active"]:
@@ -536,7 +624,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     def toggle_roi_scale(_):
         ui_state.use_roi_scale = not ui_state.use_roi_scale
         toggle_button.label.set_text("ROI Scale" if ui_state.use_roi_scale else "Full Scale")
-        update_display()
+        request_update()
 
     toggle_button.on_clicked(toggle_roi_scale)
 
@@ -554,17 +642,20 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         set_slider_val(width_slider, ui_state.roi.width)
         set_slider_val(height_slider, ui_state.roi.height)
         set_slider_val(angle_slider, ui_state.roi.angle)
-        update_display()
+        request_update()
 
     reset_button.on_clicked(reset_roi)
 
     def show_roi_preview() -> None:
-        norm_channels = compute_norm_channels()
-        roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
-        roi_merge = extract_rotated_roi(
-            compose_merge(norm_channels, image_state.colors, ui_state.display.gains),
-            ui_state.roi,
-        )
+        update_timer.stop()
+        update_display()
+        norm_channels = cache_norm_channels
+        roi_norms = cache_crop_norms
+        if norm_channels is None:
+            norm_channels = compute_norm_channels()
+        if roi_norms is None:
+            roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
+        roi_merge = compose_merge(roi_norms, image_state.colors, ui_state.display.gains)
 
         preview_fig = plt.figure(figsize=(3.2 * (num_channels + 1), 3.2))
         preview_grid = preview_fig.add_gridspec(1, num_channels + 1, wspace=0.05)
