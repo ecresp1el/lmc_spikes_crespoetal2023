@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import transforms
 from matplotlib.patches import Rectangle
-from matplotlib.widgets import Button, RectangleSelector, Slider
+from matplotlib.widgets import Button, Slider
 try:
     from nd2 import ND2File
 except ImportError as exc:  # pragma: no cover - runtime import guard
@@ -228,6 +228,12 @@ def extract_rotated_roi(image: np.ndarray, roi: RoiState) -> np.ndarray:
     crop_y0 = int(round(cy_local - half_h))
     crop_y1 = int(round(cy_local + half_h))
 
+    crop_x0 = max(0, crop_x0)
+    crop_y0 = max(0, crop_y0)
+    crop_x1 = min(rotated.shape[1], crop_x1)
+    crop_y1 = min(rotated.shape[0], crop_y1)
+    if crop_x1 <= crop_x0 or crop_y1 <= crop_y0:
+        return np.zeros((1, 1), dtype=rotated.dtype)
     return rotated[crop_y0:crop_y1, crop_x0:crop_x1]
 
 
@@ -289,7 +295,7 @@ def build_gui(
     roi_patch = Rectangle((0, 0), 1, 1, fill=False, edgecolor="yellow", linewidth=2)
     full_merge_ax.add_patch(roi_patch)
 
-    drag_state = {"active": False, "start": (0.0, 0.0), "center": (0.0, 0.0)}
+    drag_state = {"active": False, "start": (0.0, 0.0), "center": (0.0, 0.0), "mode": None}
 
     def compute_norm_channels() -> List[np.ndarray]:
         norm_channels = []
@@ -344,6 +350,7 @@ def build_gui(
         "message": "Not saved yet",
         "snapshot": None,
         "ever_saved": False,
+        "last_dir": None,
     }
 
     def current_state() -> dict:
@@ -490,33 +497,6 @@ def build_gui(
 
     update_timer.add_callback(update_display)
 
-    def on_select(click, release) -> None:
-        if drag_state["active"]:
-            return
-        x0, y0 = click.xdata, click.ydata
-        x1, y1 = release.xdata, release.ydata
-        if x0 is None or x1 is None:
-            return
-        ui_state.roi.center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-        ui_state.roi.width = max(5.0, abs(x1 - x0))
-        ui_state.roi.height = max(5.0, abs(y1 - y0))
-        set_slider_val(center_x_slider, ui_state.roi.center[0])
-        set_slider_val(center_y_slider, ui_state.roi.center[1])
-        set_slider_val(width_slider, ui_state.roi.width)
-        set_slider_val(height_slider, ui_state.roi.height)
-        request_update()
-
-    rect_selector = RectangleSelector(
-        full_merge_ax,
-        on_select,
-        useblit=True,
-        button=[1],
-        minspanx=5,
-        minspany=5,
-        spancoords="pixels",
-        interactive=False,
-    )
-
     help_ax = add_control_axes(0.05, 0.79, 0.90, 0.19)
     help_ax.axis("off")
 
@@ -620,15 +600,41 @@ def build_gui(
         )
         gain_sliders.append(slider)
 
+    def clamp_roi(center_x: float, center_y: float, width: float, height: float) -> Tuple[float, float, float, float]:
+        img_h, img_w = channels.shape[1], channels.shape[2]
+        width = max(5.0, min(float(width), float(img_w)))
+        height = max(5.0, min(float(height), float(img_h)))
+        half_w = width / 2.0
+        half_h = height / 2.0
+        if img_w <= width:
+            center_x = img_w / 2.0
+        else:
+            center_x = min(max(float(center_x), half_w), img_w - half_w)
+        if img_h <= height:
+            center_y = img_h / 2.0
+        else:
+            center_y = min(max(float(center_y), half_h), img_h - half_h)
+        return center_x, center_y, width, height
+
     def slider_update(_):
         ui_state.display.low_pct = low_slider.val
         ui_state.display.high_pct = max(low_slider.val + 0.5, high_slider.val)
         ui_state.display.gamma = gamma_slider.val
         ui_state.display.gains = [slider.val for slider in gain_sliders]
-        ui_state.roi.center = (center_x_slider.val, center_y_slider.val)
-        ui_state.roi.width = width_slider.val
-        ui_state.roi.height = height_slider.val
+        center_x, center_y, width, height = clamp_roi(
+            center_x_slider.val,
+            center_y_slider.val,
+            width_slider.val,
+            height_slider.val,
+        )
+        ui_state.roi.center = (center_x, center_y)
+        ui_state.roi.width = width
+        ui_state.roi.height = height
         ui_state.roi.angle = angle_slider.val
+        set_slider_val(center_x_slider, center_x)
+        set_slider_val(center_y_slider, center_y)
+        set_slider_val(width_slider, width)
+        set_slider_val(height_slider, height)
         request_update()
 
     low_slider.on_changed(slider_update)
@@ -648,9 +654,8 @@ def build_gui(
         slider.eventson = True
 
     def clamp_center(x: float, y: float) -> Tuple[float, float]:
-        x = max(0.0, min(float(x), channels.shape[2]))
-        y = max(0.0, min(float(y), channels.shape[1]))
-        return x, y
+        center_x, center_y, _, _ = clamp_roi(x, y, ui_state.roi.width, ui_state.roi.height)
+        return center_x, center_y
 
     def on_press(event) -> None:
         if event.inaxes != full_merge_ax or event.button != 1:
@@ -658,31 +663,50 @@ def build_gui(
         if event.xdata is None or event.ydata is None:
             return
         contains, _ = roi_patch.contains(event)
-        if not contains:
-            return
         drag_state["active"] = True
         drag_state["start"] = (event.xdata, event.ydata)
         drag_state["center"] = ui_state.roi.center
-        rect_selector.set_active(False)
+        drag_state["mode"] = "move" if contains else "draw"
 
     def on_motion(event) -> None:
         if not drag_state["active"]:
             return
         if event.xdata is None or event.ydata is None:
             return
-        dx = event.xdata - drag_state["start"][0]
-        dy = event.ydata - drag_state["start"][1]
-        new_center = clamp_center(drag_state["center"][0] + dx, drag_state["center"][1] + dy)
-        ui_state.roi.center = new_center
-        set_slider_val(center_x_slider, new_center[0])
-        set_slider_val(center_y_slider, new_center[1])
-        request_update()
+        if drag_state["mode"] == "move":
+            dx = event.xdata - drag_state["start"][0]
+            dy = event.ydata - drag_state["start"][1]
+            new_center = clamp_center(drag_state["center"][0] + dx, drag_state["center"][1] + dy)
+            ui_state.roi.center = new_center
+            set_slider_val(center_x_slider, new_center[0])
+            set_slider_val(center_y_slider, new_center[1])
+            request_update()
+        elif drag_state["mode"] == "draw":
+            x0, y0 = drag_state["start"]
+            x1, y1 = event.xdata, event.ydata
+            x0 = max(0.0, min(float(x0), channels.shape[2]))
+            x1 = max(0.0, min(float(x1), channels.shape[2]))
+            y0 = max(0.0, min(float(y0), channels.shape[1]))
+            y1 = max(0.0, min(float(y1), channels.shape[1]))
+            center_x = (x0 + x1) / 2.0
+            center_y = (y0 + y1) / 2.0
+            width = max(5.0, abs(x1 - x0))
+            height = max(5.0, abs(y1 - y0))
+            center_x, center_y, width, height = clamp_roi(center_x, center_y, width, height)
+            ui_state.roi.center = (center_x, center_y)
+            ui_state.roi.width = width
+            ui_state.roi.height = height
+            set_slider_val(center_x_slider, center_x)
+            set_slider_val(center_y_slider, center_y)
+            set_slider_val(width_slider, width)
+            set_slider_val(height_slider, height)
+            request_update()
 
     def on_release(_event) -> None:
         if not drag_state["active"]:
             return
         drag_state["active"] = False
-        rect_selector.set_active(True)
+        drag_state["mode"] = None
 
     fig.canvas.mpl_connect("button_press_event", on_press)
     fig.canvas.mpl_connect("motion_notify_event", on_motion)
@@ -757,9 +781,15 @@ def build_gui(
         height, width = channels.shape[1], channels.shape[2]
         ui_state.roi.width = min(ui_state.roi.width, width)
         ui_state.roi.height = min(ui_state.roi.height, height)
-        ui_state.roi.center = clamp_center(ui_state.roi.center[0], ui_state.roi.center[1])
-        if ui_state.roi.center[0] <= 0 or ui_state.roi.center[1] <= 0:
-            ui_state.roi.center = (width / 2.0, height / 2.0)
+        center_x, center_y, roi_w, roi_h = clamp_roi(
+            ui_state.roi.center[0],
+            ui_state.roi.center[1],
+            ui_state.roi.width,
+            ui_state.roi.height,
+        )
+        ui_state.roi.center = (center_x, center_y)
+        ui_state.roi.width = roi_w
+        ui_state.roi.height = roi_h
 
         update_slider_limits(width, height)
         set_slider_val(center_x_slider, ui_state.roi.center[0])
@@ -993,6 +1023,7 @@ def build_gui(
         save_state["ok"] = True
         save_state["ever_saved"] = True
         save_state["snapshot"] = snapshot_state()
+        save_state["last_dir"] = str(target_dir)
         save_state["message"] = f"Saved to {target_dir}"
         update_help_text()
         print(save_state["message"])
@@ -1028,11 +1059,20 @@ def build_gui(
         save_state["ok"] = True
         save_state["ever_saved"] = True
         save_state["snapshot"] = snapshot_state()
+        save_state["last_dir"] = str(target_dir)
         save_state["message"] = f"Saved to {target_dir}"
         update_help_text()
         print(save_state["message"])
 
     save_crops_button.on_clicked(save_crops)
+
+    def on_close(_event) -> None:
+        if save_state["ok"] and save_state["last_dir"]:
+            print(f"Closing GUI. Last save: {save_state['last_dir']}")
+        else:
+            print("Closing GUI without a successful save. Use Save ROI Crops before closing.")
+
+    fig.canvas.mpl_connect("close_event", on_close)
 
     update_display()
     plt.show()
