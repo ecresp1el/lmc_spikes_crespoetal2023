@@ -107,7 +107,7 @@ def channel_key(name: str) -> str:
     lower = name.lower()
     if "dapi" in lower:
         return "dapi"
-    if "eyfp" in lower or "gfp" in lower:
+    if "eyfp" in lower or "yfp" in lower or "gfp" in lower:
         return "gfp"
     if "tdtom" in lower or "tdtomato" in lower:
         return "tdtom"
@@ -253,6 +253,50 @@ def crop_to_min_shape(group_channels: Dict[str, Dict[str, np.ndarray]]) -> Dict[
     return cropped
 
 
+def resolve_bounds(
+    prepared: Dict[str, Dict[str, np.ndarray]],
+    available_groups: List[str],
+    low_pct: float,
+    high_pct: float,
+) -> Tuple[Dict[str, Tuple[float, float]], List[str]]:
+    bounds: Dict[str, Tuple[float, float]] = {}
+    warnings: List[str] = []
+
+    dapi_vals = [prepared[g]["dapi"] for g in available_groups if "dapi" in prepared[g]]
+    if dapi_vals:
+        bounds["dapi"] = percentile_bounds(dapi_vals, low_pct, high_pct)
+    else:
+        warnings.append("No DAPI channel found.")
+
+    gfp_vals = [prepared[g]["gfp"] for g in available_groups if "gfp" in prepared[g]]
+    if gfp_vals:
+        bounds["gfp"] = percentile_bounds(gfp_vals, low_pct, high_pct)
+    else:
+        warnings.append("No GFP/EYFP channel found.")
+
+    shared_vals = []
+    for key in ("tdtom", "el222"):
+        for group in available_groups:
+            if key in prepared[group]:
+                shared_vals.append(prepared[group][key])
+    if shared_vals:
+        shared_bounds = percentile_bounds(shared_vals, low_pct, high_pct)
+        bounds["tdtom"] = shared_bounds
+        bounds["el222"] = shared_bounds
+    else:
+        warnings.append("No tdTom/EL222 channels found.")
+
+    for key in CHANNEL_ORDER:
+        if key in bounds:
+            continue
+        vals = [prepared[g][key] for g in available_groups if key in prepared[g]]
+        if vals:
+            bounds[key] = percentile_bounds(vals, low_pct, high_pct)
+            warnings.append(f"Using per-group bounds for {CHANNEL_LABELS.get(key, key)}.")
+
+    return bounds, warnings
+
+
 def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     fig = plt.figure(figsize=(18, 9))
     grid = fig.add_gridspec(
@@ -300,7 +344,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     help_text = (
         "Grid builder:\n"
         "- Select ROI folder for each group.\n"
-        "- Adjust smoothing + alignment.\n"
+        "- Adjust smoothing if desired.\n"
         "- Adjust percentiles for global normalization.\n"
         "- Save SVG when satisfied.\n"
     )
@@ -318,6 +362,14 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         status_message["text"] = message
         status_artist.set_text(f"Status: {message}")
         fig.canvas.draw_idle()
+
+    def channel_summary(channels: Dict[str, np.ndarray]) -> str:
+        present = [CHANNEL_LABELS.get(key, key) for key in CHANNEL_ORDER if key in channels]
+        missing = [CHANNEL_LABELS.get(key, key) for key in CHANNEL_ORDER if key not in channels]
+        summary = f"Channels: {', '.join(present)}"
+        if missing:
+            summary += f" | Missing: {', '.join(missing)}"
+        return summary
 
     group_buttons = {}
     group_labels_text = {}
@@ -347,16 +399,13 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 group_arrays[group_name] = arrays
                 group_labels[group_name] = labels
                 group_labels_text[group_name].set_text(path.name)
-                set_status(f"Loaded {path.name} for {group_name}.")
+                set_status(f"Loaded {path.name} for {group_name}. {channel_summary(arrays)}")
                 update_grid()
             return _select
 
         btn.on_clicked(make_select(group))
 
-    align_ax = add_control_axes(0.05, 0.45, 0.40, 0.08)
-    align_checks = CheckButtons(align_ax, ["Align by DAPI"], [False])
-
-    smooth_ax = add_control_axes(0.52, 0.45, 0.40, 0.08)
+    smooth_ax = add_control_axes(0.05, 0.45, 0.40, 0.08)
     smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [False])
 
     sigma_ax = add_control_axes(0.05, 0.40, 0.87, 0.03)
@@ -406,40 +455,17 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             set_status("Gaussian smoothing unavailable (install scipy).")
             smooth_enabled = False
         sigma = sigma_slider.val
-        align_enabled = align_checks.get_status()[0]
-
         prepared = {
             group: prepare_group_channels(group_arrays[group], smooth_enabled, sigma)
             for group in available_groups
         }
 
-        if align_enabled:
-            prepared = align_groups(prepared, available_groups[0])
-
         prepared = crop_to_min_shape(prepared)
 
-        bounds = {}
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
 
-        if "dapi" in CHANNEL_ORDER:
-            dapi_vals = [prepared[g]["dapi"] for g in available_groups if "dapi" in prepared[g]]
-            if dapi_vals:
-                bounds["dapi"] = percentile_bounds(dapi_vals, low_pct, high_pct)
-
-        gfp_vals = [prepared[g]["gfp"] for g in available_groups if "gfp" in prepared[g]]
-        if gfp_vals:
-            bounds["gfp"] = percentile_bounds(gfp_vals, low_pct, high_pct)
-
-        tdtom_vals = []
-        for key in ("tdtom", "el222"):
-            for group in available_groups:
-                if key in prepared[group]:
-                    tdtom_vals.append(prepared[group][key])
-        if tdtom_vals:
-            shared_bounds = percentile_bounds(tdtom_vals, low_pct, high_pct)
-            bounds["tdtom"] = shared_bounds
-            bounds["el222"] = shared_bounds
+        bounds, warnings = resolve_bounds(prepared, available_groups, low_pct, high_pct)
 
         num_cols = len(CHANNEL_ORDER) + 1
         if not grid_images:
@@ -451,11 +477,13 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 ax = img.axes
                 ax.set_title("")
 
+        missing_notes = []
         for group_idx, group in enumerate(GROUPS):
             if group not in prepared:
                 for col_idx in range(num_cols):
                     img = grid_images[(group, col_idx)]
                     img.set_data(np.zeros((10, 10)))
+                missing_notes.append(f"{group}: no data")
                 continue
 
             group_norm = {}
@@ -468,6 +496,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 ax = img.axes
                 if key not in group_norm:
                     img.set_data(np.zeros((10, 10)))
+                    missing_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)}")
                 else:
                     img.set_data(group_norm[key])
                 img.set_cmap("gray")
@@ -495,7 +524,15 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 row_labels[group].set_text(group.upper())
 
         fig.canvas.draw_idle()
-        set_status("Preview updated.")
+        notes = []
+        if warnings:
+            notes.extend(warnings)
+        if missing_notes:
+            notes.append("Missing: " + "; ".join(sorted(set(missing_notes))))
+        if notes:
+            set_status("Preview updated. " + " ".join(notes))
+        else:
+            set_status("Preview updated.")
 
     def save_svg(_event) -> None:
         available_groups = [group for group in GROUPS if group in group_arrays]
@@ -515,7 +552,6 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         smooth_enabled = smooth_checks.get_status()[0]
         sigma = sigma_slider.val
-        align_enabled = align_checks.get_status()[0]
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
 
@@ -523,26 +559,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             group: prepare_group_channels(group_arrays[group], smooth_enabled, sigma)
             for group in available_groups
         }
-        if align_enabled:
-            prepared = align_groups(prepared, available_groups[0])
         prepared = crop_to_min_shape(prepared)
 
-        bounds = {}
-        dapi_vals = [prepared[g]["dapi"] for g in available_groups if "dapi" in prepared[g]]
-        if dapi_vals:
-            bounds["dapi"] = percentile_bounds(dapi_vals, low_pct, high_pct)
-        gfp_vals = [prepared[g]["gfp"] for g in available_groups if "gfp" in prepared[g]]
-        if gfp_vals:
-            bounds["gfp"] = percentile_bounds(gfp_vals, low_pct, high_pct)
-        tdtom_vals = []
-        for key in ("tdtom", "el222"):
-            for group in available_groups:
-                if key in prepared[group]:
-                    tdtom_vals.append(prepared[group][key])
-        if tdtom_vals:
-            shared_bounds = percentile_bounds(tdtom_vals, low_pct, high_pct)
-            bounds["tdtom"] = shared_bounds
-            bounds["el222"] = shared_bounds
+        bounds, warnings = resolve_bounds(prepared, available_groups, low_pct, high_pct)
 
         num_cols = len(CHANNEL_ORDER) + 1
         save_fig = plt.figure(figsize=(num_cols * 2.4, len(GROUPS) * 2.4))
@@ -578,7 +597,10 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         save_fig.savefig(path, format="svg")
         plt.close(save_fig)
-        set_status(f"Saved SVG to {path}")
+        if warnings:
+            set_status(f"Saved SVG to {path}. " + " ".join(warnings))
+        else:
+            set_status(f"Saved SVG to {path}")
 
     save_button.on_clicked(save_svg)
 
@@ -588,7 +610,6 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     low_slider.on_changed(on_slider_change)
     high_slider.on_changed(on_slider_change)
     sigma_slider.on_changed(on_slider_change)
-    align_checks.on_clicked(lambda _: update_grid())
     smooth_checks.on_clicked(lambda _: update_grid())
 
     plt.show()
