@@ -64,10 +64,60 @@ class UiState:
     use_roi_scale: bool
 
 
+def _normalize_axes(axes) -> List[str]:
+    normalized = []
+    for axis in axes:
+        if hasattr(axis, "name"):
+            axis_name = axis.name
+        else:
+            axis_name = str(axis)
+        if axis_name.startswith("Axis."):
+            axis_name = axis_name.split(".")[-1]
+        normalized.append(axis_name.upper())
+    return normalized
+
+
+def _nd2_axes(nd2_file: ND2File) -> List[str]:
+    axes = getattr(nd2_file, "axes", None)
+    if axes:
+        return _normalize_axes(axes)
+
+    sizes = getattr(nd2_file, "sizes", None)
+    if sizes is None:
+        metadata = getattr(nd2_file, "metadata", None)
+        sizes = getattr(metadata, "sizes", None) if metadata else None
+    if sizes is None:
+        raise AttributeError("ND2File has no axes metadata; update nd2 or expose axes order.")
+
+    if hasattr(sizes, "keys"):
+        try:
+            return _normalize_axes(list(sizes.keys()))
+        except TypeError:
+            pass
+
+    if isinstance(sizes, dict):
+        return _normalize_axes(sizes.keys())
+    if hasattr(sizes, "_fields"):
+        return _normalize_axes(sizes._fields)
+    if hasattr(sizes, "axes"):
+        size_axes = sizes.axes
+        if isinstance(size_axes, str):
+            return _normalize_axes(size_axes)
+        return _normalize_axes(size_axes)
+    try:
+        size_list = list(sizes)
+    except TypeError as exc:
+        raise AttributeError("Unsupported ND2 sizes metadata; update nd2.") from exc
+
+    if size_list and isinstance(size_list[0], (tuple, list)) and len(size_list[0]) == 2:
+        return _normalize_axes([axis for axis, _ in size_list])
+    return _normalize_axes(size_list)
+
+
 def load_nd2_channels(path: Path, channel_indices: List[int], z_project: str) -> np.ndarray:
     with ND2File(str(path)) as nd2_file:
         data = nd2_file.asarray()
-        axes = list(nd2_file.axes)
+        axes = _nd2_axes(nd2_file)
 
     data = np.asarray(data)
 
