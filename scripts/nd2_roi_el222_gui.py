@@ -338,7 +338,7 @@ def build_gui(
 
     preview_state = {"enabled": False}
     preview_button = None
-    group_state = {"label": load_config.get("group", "A")}
+    group_state = {"label": load_config.get("group", "ctznmda")}
     save_state = {
         "ok": False,
         "message": "Not saved yet",
@@ -531,7 +531,7 @@ def build_gui(
             "- Preview toggles pseudocolor in ROI panels (press P).\n"
             "- Save ROI + Preview writes outputs + enables preview.\n"
             "- Save ROI Crops writes PNG + NPY outputs.\n"
-            "- Group button cycles A/B/C.\n"
+            "- Group button cycles ctznmda/ctz/nmda.\n"
             "- Load ND2 opens a file picker.\n"
             f"Group: {group_state['label']} | Status: {save_state['message']}"
         )
@@ -694,7 +694,7 @@ def build_gui(
     group_button = Button(group_ax, f"Group {group_state['label']}")
 
     def cycle_group(_event) -> None:
-        groups = ["A", "B", "C"]
+        groups = ["ctznmda", "ctz", "nmda"]
         current = group_state["label"]
         idx = groups.index(current) if current in groups else 0
         next_label = groups[(idx + 1) % len(groups)]
@@ -1083,9 +1083,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--group",
-        choices=["A", "B", "C"],
-        default="A",
-        help="Initial experimental group label (A, B, or C).",
+        choices=["ctznmda", "ctz", "nmda"],
+        default="ctznmda",
+        help="Initial experimental group label (ctznmda, ctz, or nmda).",
     )
     parser.add_argument(
         "--low-pct",
@@ -1146,7 +1146,7 @@ def main() -> None:
         "  Preview toggles pseudocolor in ROI panels (press P)\n"
         "  Save ROI + Preview writes outputs and enables preview\n"
         "  Save ROI Crops writes PNG + NPY outputs\n"
-        "  Group button cycles A/B/C\n"
+        "  Group button cycles ctznmda/ctz/nmda\n"
         "  Load ND2 opens a file picker (requires a save)\n"
     )
 
