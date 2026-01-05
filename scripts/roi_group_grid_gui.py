@@ -20,6 +20,10 @@ try:
 except ImportError:  # pragma: no cover - optional smoothing
     gaussian_filter = None
 try:
+    from nd2 import ND2File
+except ImportError:  # pragma: no cover - optional ND2 support
+    ND2File = None
+try:
     import tifffile
 except ImportError:  # pragma: no cover - optional image support
     tifffile = None
@@ -139,7 +143,7 @@ def pick_image_path(initial_dir: Path) -> Path | None:
         title="Select image file",
         initialdir=str(initial_dir),
         filetypes=[
-            ("Image files", "*.png *.jpg *.jpeg *.tif *.tiff"),
+            ("Image files", "*.png *.jpg *.jpeg *.tif *.tiff *.nd2"),
             ("All files", "*.*"),
         ],
         parent=root,
@@ -149,6 +153,8 @@ def pick_image_path(initial_dir: Path) -> Path | None:
 
 
 def load_image(path: Path) -> np.ndarray:
+    if path.suffix.lower() == ".nd2":
+        return load_nd2_preview(path)
     if path.suffix.lower() in {".tif", ".tiff"} and tifffile is not None:
         img = tifffile.imread(path)
     else:
@@ -157,6 +163,88 @@ def load_image(path: Path) -> np.ndarray:
     if img.ndim == 3 and img.shape[-1] == 4:
         img = img[..., :3]
     return img
+
+
+def _normalize_axes(axes) -> List[str]:
+    normalized = []
+    for axis in axes:
+        if hasattr(axis, "name"):
+            axis_name = axis.name
+        else:
+            axis_name = str(axis)
+        if axis_name.startswith("Axis."):
+            axis_name = axis_name.split(".")[-1]
+        normalized.append(axis_name.upper())
+    return normalized
+
+
+def _nd2_axes(nd2_file: ND2File) -> List[str]:
+    axes = getattr(nd2_file, "axes", None)
+    if axes:
+        return _normalize_axes(axes)
+    sizes = getattr(nd2_file, "sizes", None)
+    if sizes is None:
+        metadata = getattr(nd2_file, "metadata", None)
+        sizes = getattr(metadata, "sizes", None) if metadata else None
+    if sizes is None:
+        raise AttributeError("ND2File has no axes metadata.")
+    if isinstance(sizes, dict):
+        return _normalize_axes(sizes.keys())
+    if hasattr(sizes, "_fields"):
+        return _normalize_axes(sizes._fields)
+    if hasattr(sizes, "axes"):
+        size_axes = sizes.axes
+        if isinstance(size_axes, str):
+            return _normalize_axes(size_axes)
+        return _normalize_axes(size_axes)
+    try:
+        size_list = list(sizes)
+    except TypeError as exc:
+        raise AttributeError("Unsupported ND2 sizes metadata.") from exc
+    if size_list and isinstance(size_list[0], (tuple, list)) and len(size_list[0]) == 2:
+        return _normalize_axes([axis for axis, _ in size_list])
+    return _normalize_axes(size_list)
+
+
+def load_nd2_preview(path: Path) -> np.ndarray:
+    if ND2File is None:
+        raise RuntimeError("nd2 is not installed. Install with: pip install nd2")
+    with ND2File(str(path)) as nd2_file:
+        data = np.asarray(nd2_file.asarray())
+        axes = _nd2_axes(nd2_file)
+
+    def take_axis(axis: str, reducer=None) -> None:
+        nonlocal data, axes
+        if axis not in axes:
+            return
+        axis_index = axes.index(axis)
+        if reducer is None:
+            data = np.take(data, 0, axis=axis_index)
+        else:
+            data = reducer(data, axis=axis_index)
+        axes.pop(axis_index)
+
+    take_axis("T")
+    take_axis("Z", reducer=np.max)
+
+    if "C" in axes and "Y" in axes and "X" in axes:
+        c_idx, y_idx, x_idx = axes.index("C"), axes.index("Y"), axes.index("X")
+        data = np.moveaxis(data, [c_idx, y_idx, x_idx], [0, 1, 2])
+        channels = data.astype(np.float32)
+        num = min(channels.shape[0], len(CHANNEL_ORDER))
+        norm = []
+        for idx in range(num):
+            channel = channels[idx]
+            vmin, vmax = np.percentile(channel, [1.0, 99.0])
+            if vmax <= vmin:
+                vmax = vmin + 1.0
+            norm.append(np.clip((channel - vmin) / (vmax - vmin), 0.0, 1.0))
+        norm_map = {CHANNEL_ORDER[idx]: norm[idx] for idx in range(num)}
+        return compose_merge(norm_map)
+
+    if data.ndim >= 2:
+        return np.asarray(data).astype(np.float32)
+    raise ValueError("Unexpected ND2 data shape for preview.")
 
 
 def channel_key(name: str) -> str:
