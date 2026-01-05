@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -228,7 +229,18 @@ def extract_rotated_roi(image: np.ndarray, roi: RoiState) -> np.ndarray:
     return rotated[crop_y0:crop_y1, crop_x0:crop_x1]
 
 
-def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None) -> None:
+def _safe_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip())
+    return cleaned or "channel"
+
+
+def build_gui(
+    image_state: ImageState,
+    ui_state: UiState,
+    save_path: Path | None,
+    save_dir: Path | None,
+    load_config: dict,
+) -> None:
     channels = image_state.channels
     num_channels = channels.shape[0]
 
@@ -397,6 +409,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
             cache_crop_norms = recompute_crop_norms(cache_norm_channels)
             for im, channel in zip(crop_images, cache_crop_norms):
                 im.set_data(channel)
+                im.set_extent((0, channel.shape[1], channel.shape[0], 0))
 
             cache_crop_merge = compose_merge(
                 cache_crop_norms, image_state.colors, ui_state.display.gains
@@ -407,6 +420,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
                 cache_crop_norms = recompute_crop_norms(cache_norm_channels)
                 for im, channel in zip(crop_images, cache_crop_norms):
                     im.set_data(channel)
+                    im.set_extent((0, channel.shape[1], channel.shape[0], 0))
                 cache_crop_merge = compose_merge(
                     cache_crop_norms, image_state.colors, ui_state.display.gains
                 )
@@ -464,7 +478,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         interactive=False,
     )
 
-    help_ax = add_control_axes(0.05, 0.76, 0.90, 0.22)
+    help_ax = add_control_axes(0.05, 0.78, 0.90, 0.20)
     help_ax.axis("off")
     help_text = (
         "ROI how-to:\n"
@@ -473,24 +487,25 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         "- Use ROI X/Y/W/H sliders to move/resize.\n"
         "- Use Angle slider to rotate the ROI.\n"
         "- ROI Scale toggles percentile scaling.\n"
-        "- Save/Preview opens pseudocolor ROI."
+        "- Save/Preview opens pseudocolor ROI.\n"
+        "- Save ROI Crops writes PNG + NPY outputs."
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
 
     slider_axes = {
-        "low": add_control_axes(0.53, 0.52, 0.42, 0.04),
-        "high": add_control_axes(0.53, 0.47, 0.42, 0.04),
-        "gamma": add_control_axes(0.53, 0.42, 0.42, 0.04),
+        "low": add_control_axes(0.53, 0.46, 0.42, 0.04),
+        "high": add_control_axes(0.53, 0.41, 0.42, 0.04),
+        "gamma": add_control_axes(0.53, 0.36, 0.42, 0.04),
     }
 
     roi_slider_axes = {
-        "cx": add_control_axes(0.05, 0.52, 0.42, 0.04),
-        "cy": add_control_axes(0.05, 0.47, 0.42, 0.04),
-        "w": add_control_axes(0.05, 0.42, 0.42, 0.04),
-        "h": add_control_axes(0.05, 0.37, 0.42, 0.04),
+        "cx": add_control_axes(0.05, 0.46, 0.42, 0.04),
+        "cy": add_control_axes(0.05, 0.41, 0.42, 0.04),
+        "w": add_control_axes(0.05, 0.36, 0.42, 0.04),
+        "h": add_control_axes(0.05, 0.31, 0.42, 0.04),
     }
 
-    angle_ax = add_control_axes(0.05, 0.31, 0.42, 0.04)
+    angle_ax = add_control_axes(0.05, 0.25, 0.42, 0.04)
 
     low_slider = Slider(slider_axes["low"], "Low %", 0, 20, valinit=ui_state.display.low_pct, valstep=0.5)
     high_slider = Slider(slider_axes["high"], "High %", 80, 100, valinit=ui_state.display.high_pct, valstep=0.5)
@@ -533,8 +548,8 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
 
     gain_sliders = []
     gain_gap = 0.008
-    gain_start = 0.34
-    min_gain_y = 0.06
+    gain_start = 0.24
+    min_gain_y = 0.05
     if num_channels > 0:
         max_total = max(0.0, gain_start - min_gain_y)
         gain_height = min(
@@ -623,7 +638,104 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     fig.canvas.mpl_connect("motion_notify_event", on_motion)
     fig.canvas.mpl_connect("button_release_event", on_release)
 
-    toggle_ax = add_control_axes(0.05, 0.62, 0.42, 0.05)
+    load_ax = add_control_axes(0.05, 0.72, 0.90, 0.05)
+    load_button = Button(load_ax, "Load ND2")
+
+    def update_slider_limits(width: float, height: float) -> None:
+        center_x_slider.valmin = 0
+        center_x_slider.valmax = width
+        center_x_slider.ax.set_xlim(center_x_slider.valmin, center_x_slider.valmax)
+        center_y_slider.valmin = 0
+        center_y_slider.valmax = height
+        center_y_slider.ax.set_xlim(center_y_slider.valmin, center_y_slider.valmax)
+        width_slider.valmin = 5
+        width_slider.valmax = width
+        width_slider.ax.set_xlim(width_slider.valmin, width_slider.valmax)
+        height_slider.valmin = 5
+        height_slider.valmax = height
+        height_slider.ax.set_xlim(height_slider.valmin, height_slider.valmax)
+
+    def update_image_limits(width: float, height: float) -> None:
+        for ax, im in zip(full_axes, full_images):
+            ax.set_xlim(0, width)
+            ax.set_ylim(height, 0)
+            im.set_extent((0, width, height, 0))
+        full_merge_ax.set_xlim(0, width)
+        full_merge_ax.set_ylim(height, 0)
+        full_merge_im.set_extent((0, width, height, 0))
+
+    def load_new_nd2(_event) -> None:
+        try:
+            from tkinter import Tk, filedialog
+        except Exception as exc:
+            print(f"Tkinter is not available for file selection: {exc}")
+            return
+
+        root = Tk()
+        root.withdraw()
+        path = filedialog.askopenfilename(
+            title="Select ND2 file",
+            initialdir=str(load_config.get("initial_dir", Path.cwd())),
+            filetypes=[("ND2 files", "*.nd2"), ("All files", "*.*")],
+        )
+        root.destroy()
+
+        if not path:
+            return
+
+        load_config["initial_dir"] = str(Path(path).parent)
+
+        new_channels = load_nd2_channels(
+            Path(path),
+            load_config["channel_indices"],
+            load_config["z_project"],
+        )
+        if new_channels.shape[0] != num_channels:
+            print(
+                f"ND2 has {new_channels.shape[0]} channels, expected {num_channels}; "
+                "restart the GUI for a different channel count."
+            )
+            return
+
+        nonlocal channels, cache_norm_channels, cache_crop_norms, cache_merge, cache_crop_merge, prev_state
+        channels = new_channels
+        image_state.channels = new_channels
+
+        height, width = channels.shape[1], channels.shape[2]
+        ui_state.roi.width = min(ui_state.roi.width, width)
+        ui_state.roi.height = min(ui_state.roi.height, height)
+        ui_state.roi.center = clamp_center(ui_state.roi.center[0], ui_state.roi.center[1])
+        if ui_state.roi.center[0] <= 0 or ui_state.roi.center[1] <= 0:
+            ui_state.roi.center = (width / 2.0, height / 2.0)
+
+        update_slider_limits(width, height)
+        set_slider_val(center_x_slider, ui_state.roi.center[0])
+        set_slider_val(center_y_slider, ui_state.roi.center[1])
+        set_slider_val(width_slider, ui_state.roi.width)
+        set_slider_val(height_slider, ui_state.roi.height)
+
+        cache_norm_channels = compute_norm_channels()
+        cache_crop_norms = recompute_crop_norms(cache_norm_channels)
+        cache_merge = compose_merge(
+            cache_norm_channels, image_state.colors, ui_state.display.gains
+        )
+        cache_crop_merge = compose_merge(
+            cache_crop_norms, image_state.colors, ui_state.display.gains
+        )
+        for im, channel in zip(full_images, cache_norm_channels):
+            im.set_data(channel)
+        for im, channel in zip(crop_images, cache_crop_norms):
+            im.set_data(channel)
+        full_merge_im.set_data(cache_merge)
+        crop_merge_im.set_data(cache_crop_merge)
+        update_image_limits(width, height)
+
+        prev_state = current_state()
+        update_display()
+
+    load_button.on_clicked(load_new_nd2)
+
+    toggle_ax = add_control_axes(0.05, 0.54, 0.42, 0.05)
     toggle_button = Button(toggle_ax, "ROI Scale")
 
     def toggle_roi_scale(_):
@@ -633,7 +745,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
 
     toggle_button.on_clicked(toggle_roi_scale)
 
-    reset_ax = add_control_axes(0.53, 0.62, 0.42, 0.05)
+    reset_ax = add_control_axes(0.53, 0.54, 0.42, 0.05)
     reset_button = Button(reset_ax, "Reset ROI")
 
     def reset_roi(_):
@@ -651,10 +763,68 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
 
     reset_button.on_clicked(reset_roi)
 
+    preview_state = {"fig": None, "axes": [], "merge_ax": None, "images": [], "merge_im": None}
+
+    def resolve_save_dir() -> Path | None:
+        if save_dir:
+            return save_dir
+        if save_path:
+            return save_path.with_suffix("").with_name(f"{save_path.stem}_roi")
+        return None
+
+    def save_roi_outputs(target_dir: Path) -> None:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        raw_crops = [extract_rotated_roi(channel, ui_state.roi) for channel in channels]
+        norm_channels = compute_norm_channels()
+        roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
+
+        for idx, (raw, norm, name, color, gain) in enumerate(
+            zip(raw_crops, roi_norms, image_state.names, image_state.colors, ui_state.display.gains)
+        ):
+            safe_name = _safe_name(name)
+            np.save(target_dir / f"roi_raw_ch{idx}_{safe_name}.npy", raw.astype(np.float32))
+            plt.imsave(
+                target_dir / f"roi_gray_ch{idx}_{safe_name}.png",
+                norm,
+                cmap="gray",
+            )
+            plt.imsave(
+                target_dir / f"roi_pseudo_ch{idx}_{safe_name}.png",
+                apply_pseudocolor(norm, color, gain),
+            )
+
+        roi_merge = compose_merge(roi_norms, image_state.colors, ui_state.display.gains)
+        plt.imsave(target_dir / "roi_merge.png", roi_merge)
+
+        payload = {
+            "center": [float(ui_state.roi.center[0]), float(ui_state.roi.center[1])],
+            "width": float(ui_state.roi.width),
+            "height": float(ui_state.roi.height),
+            "angle": float(ui_state.roi.angle),
+            "use_roi_scale": bool(ui_state.use_roi_scale),
+            "display": {
+                "low_pct": float(ui_state.display.low_pct),
+                "high_pct": float(ui_state.display.high_pct),
+                "gamma": float(ui_state.display.gamma),
+                "gains": [float(gain) for gain in ui_state.display.gains],
+            },
+        }
+        (target_dir / "roi_state.json").write_text(json.dumps(payload, indent=2))
+
     def show_roi_preview() -> None:
         norm_channels = compute_norm_channels()
         roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
         roi_merge = compose_merge(roi_norms, image_state.colors, ui_state.display.gains)
+
+        if preview_state["fig"] and plt.fignum_exists(preview_state["fig"].number):
+            for im, channel, color, gain in zip(
+                preview_state["images"], roi_norms, image_state.colors, ui_state.display.gains
+            ):
+                im.set_data(apply_pseudocolor(channel, color, gain))
+            preview_state["merge_im"].set_data(roi_merge)
+            preview_state["fig"].canvas.draw_idle()
+            preview_state["fig"].show()
+            return
 
         preview_fig = plt.figure(figsize=(3.2 * (num_channels + 1), 3.2))
         preview_grid = preview_fig.add_gridspec(1, num_channels + 1, wspace=0.05)
@@ -665,19 +835,36 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
             ax.set_xticks([])
             ax.set_yticks([])
 
+        preview_images = []
         for ax, channel, name, color, gain in zip(
             preview_axes, roi_norms, image_state.names, image_state.colors, ui_state.display.gains
         ):
-            ax.imshow(apply_pseudocolor(channel, color, gain))
+            im = ax.imshow(apply_pseudocolor(channel, color, gain), interpolation="nearest")
             ax.set_title(f"{name} ROI")
+            preview_images.append(im)
 
-        preview_merge_ax.imshow(roi_merge)
+        merge_im = preview_merge_ax.imshow(roi_merge, interpolation="nearest")
         preview_merge_ax.set_title("ROI Merged")
-        preview_fig.tight_layout()
+        preview_fig.subplots_adjust(left=0.03, right=0.97, top=0.88, bottom=0.08, wspace=0.05)
+
+        def on_close(_event) -> None:
+            preview_state["fig"] = None
+            preview_state["axes"] = []
+            preview_state["merge_ax"] = None
+            preview_state["images"] = []
+            preview_state["merge_im"] = None
+
+        preview_fig.canvas.mpl_connect("close_event", on_close)
+
+        preview_state["fig"] = preview_fig
+        preview_state["axes"] = preview_axes
+        preview_state["merge_ax"] = preview_merge_ax
+        preview_state["images"] = preview_images
+        preview_state["merge_im"] = merge_im
         preview_fig.show()
 
     if save_path:
-        save_ax = add_control_axes(0.05, 0.69, 0.90, 0.05)
+        save_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
         save_button = Button(save_ax, "Save ROI + Preview")
 
         def save_roi(_):
@@ -695,13 +882,40 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
                 },
             }
             save_path.write_text(json.dumps(payload, indent=2))
+            target_dir = resolve_save_dir()
+            if target_dir:
+                save_roi_outputs(target_dir)
             show_roi_preview()
 
         save_button.on_clicked(save_roi)
     else:
-        preview_ax = add_control_axes(0.05, 0.69, 0.90, 0.05)
+        preview_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
         preview_button = Button(preview_ax, "Preview ROI")
         preview_button.on_clicked(lambda _: show_roi_preview())
+
+    save_crops_ax = add_control_axes(0.05, 0.60, 0.90, 0.05)
+    save_crops_button = Button(save_crops_ax, "Save ROI Crops")
+
+    def save_crops(_):
+        target_dir = resolve_save_dir()
+        if target_dir is None:
+            try:
+                from tkinter import Tk, filedialog
+            except Exception as exc:
+                print(f"Tkinter is not available for directory selection: {exc}")
+                return
+            root = Tk()
+            root.withdraw()
+            chosen_dir = filedialog.askdirectory(title="Select output folder")
+            root.destroy()
+            if not chosen_dir:
+                return
+            target_dir = Path(chosen_dir)
+
+        save_roi_outputs(target_dir)
+        print(f"Saved ROI crops to {target_dir}")
+
+    save_crops_button.on_clicked(save_crops)
 
     update_display()
     plt.show()
@@ -737,6 +951,18 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Path to save ROI JSON when clicking Save ROI JSON button.",
+    )
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=None,
+        help="Directory to save ROI crops (PNG + NPY). Defaults next to --save-roi if set.",
+    )
+    parser.add_argument(
+        "--nd2-dir",
+        type=Path,
+        default=None,
+        help="Starting directory for the ND2 file picker.",
     )
     parser.add_argument(
         "--low-pct",
@@ -795,9 +1021,16 @@ def main() -> None:
         "  Angle slider rotates the ROI\n"
         "  ROI Scale toggles percentiles based on the ROI\n"
         "  Save/Preview opens pseudocolor ROI crops\n"
+        "  Save ROI Crops writes PNG + NPY outputs\n"
     )
 
-    build_gui(image_state, ui_state, args.save_roi)
+    initial_dir = args.nd2_dir if args.nd2_dir else args.path.parent
+    load_config = {
+        "channel_indices": args.channels,
+        "z_project": args.z_project,
+        "initial_dir": str(initial_dir),
+    }
+    build_gui(image_state, ui_state, args.save_roi, args.save_dir, load_config)
 
 
 if __name__ == "__main__":
