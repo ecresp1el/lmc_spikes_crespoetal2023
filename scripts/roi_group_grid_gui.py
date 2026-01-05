@@ -11,6 +11,9 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.widgets import Button, CheckButtons, Slider
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.cm import ScalarMappable
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 try:
     from scipy.ndimage import gaussian_filter
@@ -175,6 +178,18 @@ def compose_merge(norm_channels: Dict[str, np.ndarray]) -> np.ndarray:
     return np.clip(merged, 0.0, 1.0)
 
 
+def channel_cmap(key: str) -> LinearSegmentedColormap:
+    color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
+    return LinearSegmentedColormap.from_list(f"{key}_map", [(0, 0, 0), color])
+
+
+def colorize_channel(channel: np.ndarray, color: Tuple[float, float, float]) -> np.ndarray:
+    rgb = np.zeros((*channel.shape, 3), dtype=np.float32)
+    for idx in range(3):
+        rgb[..., idx] = channel * color[idx]
+    return np.clip(rgb, 0.0, 1.0)
+
+
 def phase_correlation_shift(ref: np.ndarray, img: np.ndarray) -> Tuple[int, int]:
     ref_f = np.fft.fft2(ref)
     img_f = np.fft.fft2(img)
@@ -218,14 +233,26 @@ def apply_smoothing(channel: np.ndarray, enabled: bool, sigma: float) -> np.ndar
     return gaussian_filter(channel, sigma=float(sigma))
 
 
+def subtract_background(channel: np.ndarray, pct: float) -> np.ndarray:
+    baseline = np.percentile(channel, pct)
+    return np.clip(channel - baseline, 0.0, None)
+
+
 def prepare_group_channels(
     group_arrays: Dict[str, np.ndarray],
     smooth_enabled: bool,
     sigma: float,
+    bg_enabled: bool,
+    bg_pct: float,
+    bg_channels: set[str],
 ) -> Dict[str, np.ndarray]:
     output = {}
     for key, arr in group_arrays.items():
-        output[key] = apply_smoothing(arr, smooth_enabled, sigma)
+        channel = arr
+        if bg_enabled and key in bg_channels:
+            channel = subtract_background(channel, bg_pct)
+        channel = apply_smoothing(channel, smooth_enabled, sigma)
+        output[key] = channel
     return output
 
 
@@ -359,7 +386,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     help_text = (
         "Grid builder:\n"
         "- Select ROI folder for each group.\n"
+        "- Toggle scale bars and pseudocolor if needed.\n"
         "- Adjust smoothing if desired.\n"
+        "- Background subtract per channel if needed.\n"
         "- Adjust percentiles for global normalization.\n"
         "- Save SVG when satisfied.\n"
     )
@@ -404,6 +433,21 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 f"min={arr_min:.3f} max={arr_max:.3f} mean={arr_mean:.3f}"
             )
 
+    def log_norm_stats(group_name: str, norm: Dict[str, np.ndarray]) -> None:
+        print(f"[{group_name}] Normalized ranges:")
+        for key in CHANNEL_ORDER:
+            if key not in norm:
+                print(f"  - {CHANNEL_LABELS.get(key, key)}: MISSING")
+                continue
+            arr = norm[key]
+            arr_min = float(np.nanmin(arr))
+            arr_max = float(np.nanmax(arr))
+            arr_mean = float(np.nanmean(arr))
+            print(
+                f"  - {CHANNEL_LABELS.get(key, key)}: min={arr_min:.3f} "
+                f"max={arr_max:.3f} mean={arr_mean:.3f}"
+            )
+
     group_buttons = {}
     group_labels_text = {}
     start_y = 0.68
@@ -442,26 +486,46 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         btn.on_clicked(make_select(group))
 
-    smooth_ax = add_control_axes(0.05, 0.45, 0.40, 0.08)
+    smooth_ax = add_control_axes(0.05, 0.52, 0.40, 0.08)
     smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [False])
 
-    sigma_ax = add_control_axes(0.05, 0.40, 0.87, 0.03)
-    sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.0, valstep=0.1)
+    view_ax = add_control_axes(0.52, 0.52, 0.40, 0.08)
+    view_checks = CheckButtons(view_ax, ["Pseudo channels", "Scale bars"], [False, True])
 
-    low_ax = add_control_axes(0.05, 0.34, 0.87, 0.03)
-    high_ax = add_control_axes(0.05, 0.30, 0.87, 0.03)
+    sigma_ax = add_control_axes(0.05, 0.47, 0.87, 0.03)
+    sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.2, valstep=0.1)
+
+    bg_ax = add_control_axes(0.05, 0.40, 0.40, 0.06)
+    bg_checks = CheckButtons(bg_ax, ["Background"], [True])
+
+    bg_chan_ax = add_control_axes(0.52, 0.39, 0.40, 0.10)
+    bg_chan_checks = CheckButtons(
+        bg_chan_ax,
+        ["DAPI", "GFP", "tdTom", "EL222"],
+        [False, True, False, True],
+    )
+
+    bg_pct_ax = add_control_axes(0.05, 0.34, 0.87, 0.03)
+    bg_pct_slider = Slider(bg_pct_ax, "BG %", 0, 20, valinit=5.0, valstep=0.5)
+
+    low_ax = add_control_axes(0.05, 0.28, 0.87, 0.03)
+    high_ax = add_control_axes(0.05, 0.24, 0.87, 0.03)
     low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
     high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
 
-    save_ax = add_control_axes(0.05, 0.22, 0.87, 0.05)
+    save_ax = add_control_axes(0.05, 0.16, 0.87, 0.05)
     save_button = Button(save_ax, "Save SVG")
 
     grid_images = {}
     row_labels = {}
+    grid_cbar_axes: Dict[Tuple[str, int], plt.Axes] = {}
+    grid_cbar_objs: Dict[Tuple[str, int], object] = {}
 
     def build_grid_axes(num_cols: int) -> None:
         grid_images.clear()
         row_labels.clear()
+        grid_cbar_axes.clear()
+        grid_cbar_objs.clear()
         for group_idx, group in enumerate(GROUPS):
             for col_idx in range(num_cols):
                 x0 = col_idx / num_cols
@@ -475,11 +539,27 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 ax.set_xticks([])
                 ax.set_yticks([])
                 ax.set_title("")
+                for spine in ax.spines.values():
+                    spine.set_visible(True)
+                    spine.set_linewidth(0.4)
+                    spine.set_edgecolor("0.3")
                 grid_images[(group, col_idx)] = ax.imshow(
                     np.zeros((10, 10)),
                     cmap="gray",
                     interpolation="nearest",
                 )
+                if col_idx < len(CHANNEL_ORDER):
+                    cax = inset_axes(
+                        ax,
+                        width="4%",
+                        height="80%",
+                        loc="lower left",
+                        bbox_to_anchor=(1.02, 0.1, 1, 1),
+                        bbox_transform=ax.transAxes,
+                        borderpad=0,
+                    )
+                    cax.set_visible(False)
+                    grid_cbar_axes[(group, col_idx)] = cax
 
     def update_grid() -> None:
         available_groups = [group for group in GROUPS if group in group_arrays]
@@ -492,8 +572,26 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             set_status("Gaussian smoothing unavailable (install scipy).")
             smooth_enabled = False
         sigma = sigma_slider.val
+        view_flags = view_checks.get_status()
+        pseudo_enabled = view_flags[0]
+        scale_enabled = view_flags[1]
+        bg_enabled = bg_checks.get_status()[0]
+        bg_pct = bg_pct_slider.val
+        bg_flags = bg_chan_checks.get_status()
+        bg_channels = {
+            key
+            for key, flag in zip(CHANNEL_ORDER, bg_flags)
+            if flag
+        }
         prepared = {
-            group: prepare_group_channels(group_arrays[group], smooth_enabled, sigma)
+            group: prepare_group_channels(
+                group_arrays[group],
+                smooth_enabled,
+                sigma,
+                bg_enabled,
+                bg_pct,
+                bg_channels,
+            )
             for group in available_groups
         }
 
@@ -528,6 +626,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             for key in CHANNEL_ORDER:
                 if key in prepared[group] and key in bounds:
                     group_norm[key] = normalize_channel(prepared[group][key], bounds[key])
+            log_norm_stats(group, group_norm)
 
             for col_idx, key in enumerate(CHANNEL_ORDER):
                 img = grid_images[(group, col_idx)]
@@ -536,10 +635,35 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     img.set_data(np.zeros((10, 10)))
                     missing_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)}")
                 else:
-                    img.set_data(group_norm[key])
+                    if pseudo_enabled:
+                        color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
+                        img.set_data(colorize_channel(group_norm[key], color))
+                        img.set_cmap(None)
+                    else:
+                        img.set_data(group_norm[key])
+                        img.set_cmap("gray")
+                    img.set_clim(0.0, 1.0)
                     if np.nanmax(group_norm[key]) <= 0:
                         empty_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)} flat")
-                img.set_cmap("gray")
+                cax = grid_cbar_axes.get((group, col_idx))
+                if cax is not None:
+                    if scale_enabled and key in bounds and key in group_norm:
+                        cax.set_visible(True)
+                        cmap = channel_cmap(key) if pseudo_enabled else plt.get_cmap("gray")
+                        norm = Normalize(vmin=bounds[key][0], vmax=bounds[key][1])
+                        cbar = grid_cbar_objs.get((group, col_idx))
+                        sm = ScalarMappable(norm=norm, cmap=cmap)
+                        if cbar is None:
+                            cbar = fig.colorbar(sm, cax=cax)
+                            cbar.ax.tick_params(labelsize=6, length=2)
+                            grid_cbar_objs[(group, col_idx)] = cbar
+                        else:
+                            cbar.mappable.set_norm(norm)
+                            cbar.mappable.set_cmap(cmap)
+                            cbar.update_normal(cbar.mappable)
+                        cax.yaxis.set_ticks_position("right")
+                    else:
+                        cax.set_visible(False)
                 ax.set_title(f"{CHANNEL_LABELS.get(key, key).upper()}" if group_idx == 0 else "")
 
             merge = compose_merge(group_norm) if group_norm else np.zeros((10, 10, 3))
@@ -571,6 +695,10 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             notes.append("Missing: " + "; ".join(sorted(set(missing_notes))))
         if empty_notes:
             notes.append("Low contrast: " + "; ".join(sorted(set(empty_notes))))
+        if bg_enabled:
+            notes.append(f"BG%={bg_pct:.1f} on {', '.join(sorted(bg_channels))}")
+        if scale_enabled:
+            notes.append("Scale bars on")
         if notes:
             set_status("Preview updated. " + " ".join(notes))
         else:
@@ -594,11 +722,29 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
 
         smooth_enabled = smooth_checks.get_status()[0]
         sigma = sigma_slider.val
+        view_flags = view_checks.get_status()
+        pseudo_enabled = view_flags[0]
+        scale_enabled = view_flags[1]
+        bg_enabled = bg_checks.get_status()[0]
+        bg_pct = bg_pct_slider.val
+        bg_flags = bg_chan_checks.get_status()
+        bg_channels = {
+            key
+            for key, flag in zip(CHANNEL_ORDER, bg_flags)
+            if flag
+        }
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
 
         prepared = {
-            group: prepare_group_channels(group_arrays[group], smooth_enabled, sigma)
+            group: prepare_group_channels(
+                group_arrays[group],
+                smooth_enabled,
+                sigma,
+                bg_enabled,
+                bg_pct,
+                bg_channels,
+            )
             for group in available_groups
         }
         prepared = crop_to_min_shape(prepared)
@@ -621,13 +767,31 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 ax.set_xticks([])
                 ax.set_yticks([])
                 if key in group_norm:
-                    ax.imshow(group_norm[key], cmap="gray", interpolation="nearest")
+                    if pseudo_enabled:
+                        color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
+                        ax.imshow(colorize_channel(group_norm[key], color), interpolation="nearest")
+                    else:
+                        ax.imshow(group_norm[key], cmap="gray", interpolation="nearest")
                 else:
                     ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
                 if row_idx == 0:
                     ax.set_title(CHANNEL_LABELS.get(key, key).upper(), fontsize=10)
                 if col_idx == 0:
                     ax.set_ylabel(group.upper(), rotation=0, labelpad=30, fontsize=10, va="center")
+                if scale_enabled and key in bounds and key in group_norm:
+                    cax = inset_axes(
+                        ax,
+                        width="4%",
+                        height="80%",
+                        loc="lower left",
+                        bbox_to_anchor=(1.02, 0.1, 1, 1),
+                        bbox_transform=ax.transAxes,
+                        borderpad=0,
+                    )
+                    cmap = channel_cmap(key) if pseudo_enabled else plt.get_cmap("gray")
+                    sm = ScalarMappable(norm=Normalize(vmin=bounds[key][0], vmax=bounds[key][1]), cmap=cmap)
+                    cbar = save_fig.colorbar(sm, cax=cax)
+                    cbar.ax.tick_params(labelsize=6, length=2)
 
             ax = save_fig.add_subplot(save_grid[row_idx, num_cols - 1])
             ax.set_xticks([])
@@ -653,6 +817,10 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     high_slider.on_changed(on_slider_change)
     sigma_slider.on_changed(on_slider_change)
     smooth_checks.on_clicked(lambda _: update_grid())
+    view_checks.on_clicked(lambda _: update_grid())
+    bg_checks.on_clicked(lambda _: update_grid())
+    bg_chan_checks.on_clicked(lambda _: update_grid())
+    bg_pct_slider.on_changed(on_slider_change)
 
     plt.show()
 
