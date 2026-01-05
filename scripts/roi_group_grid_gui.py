@@ -468,6 +468,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
     help_text = (
         "Grid builder:\n"
         "- Select ROI folder for each group.\n"
+        "- Select original image for each group.\n"
         "- Toggle scale bars and pseudocolor if needed.\n"
         "- Adjust smoothing if desired.\n"
         "- Background subtract per channel if needed.\n"
@@ -780,6 +781,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 else:
                     orig_panel.set_cmap(None)
                 orig_panel.set_clim(0.0, 1.0)
+            if group_idx == 0:
+                orig_panel.axes.set_title("ORIGINAL")
 
             for col_idx, key in enumerate(CHANNEL_ORDER):
                 img = grid_images[(group, col_idx + 1)]
@@ -804,7 +807,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                         cax.set_visible(True)
                         cmap = channel_cmap(key) if pseudo_enabled else plt.get_cmap("gray")
                         norm = Normalize(vmin=bounds[key][0], vmax=bounds[key][1])
-                        cbar = grid_cbar_objs.get((group, col_idx))
+                        cbar = grid_cbar_objs.get((group, col_idx + 1))
                         sm = ScalarMappable(norm=norm, cmap=cmap)
                         if cbar is None:
                             cbar = fig.colorbar(sm, cax=cax)
