@@ -338,6 +338,13 @@ def build_gui(
 
     preview_state = {"enabled": False}
     preview_button = None
+    group_state = {"label": load_config.get("group", "A")}
+    save_state = {
+        "ok": False,
+        "message": "Not saved yet",
+        "snapshot": None,
+        "ever_saved": False,
+    }
 
     def current_state() -> dict:
         return {
@@ -353,6 +360,23 @@ def build_gui(
             ),
             "use_roi_scale": ui_state.use_roi_scale,
             "preview": preview_state["enabled"],
+        }
+
+    def snapshot_state() -> dict:
+        return {
+            "low": ui_state.display.low_pct,
+            "high": ui_state.display.high_pct,
+            "gamma": ui_state.display.gamma,
+            "gains": tuple(ui_state.display.gains),
+            "roi": (
+                ui_state.roi.center,
+                ui_state.roi.width,
+                ui_state.roi.height,
+                ui_state.roi.angle,
+            ),
+            "use_roi_scale": ui_state.use_roi_scale,
+            "group": group_state["label"],
+            "path": str(current_nd2_path) if current_nd2_path else None,
         }
 
     cache_norm_channels = compute_norm_channels()
@@ -447,6 +471,13 @@ def build_gui(
         if roi_changed:
             update_roi_patch()
 
+        if save_state["ok"] and save_state["snapshot"] is not None:
+            if snapshot_state() != save_state["snapshot"]:
+                save_state["ok"] = False
+                save_state["snapshot"] = None
+                save_state["message"] = "Unsaved changes"
+                update_help_text()
+
         prev_state = state
         fig.canvas.draw_idle()
 
@@ -486,20 +517,30 @@ def build_gui(
         interactive=False,
     )
 
-    help_ax = add_control_axes(0.05, 0.78, 0.90, 0.20)
+    help_ax = add_control_axes(0.05, 0.79, 0.90, 0.19)
     help_ax.axis("off")
-    help_text = (
-        "ROI how-to:\n"
-        "- Drag on merged image to draw ROI.\n"
-        "- Drag inside yellow ROI to move it.\n"
-        "- Use ROI X/Y/W/H sliders to move/resize.\n"
-        "- Use Angle slider to rotate the ROI.\n"
-        "- ROI Scale toggles percentile scaling.\n"
-        "- Preview toggles pseudocolor in ROI panels (press P).\n"
-        "- Save ROI Crops writes PNG + NPY outputs.\n"
-        "- Load ND2 opens a file picker."
-    )
-    help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
+
+    def render_help_text() -> str:
+        return (
+            "ROI how-to:\n"
+            "- Drag on merged image to draw ROI.\n"
+            "- Drag inside yellow ROI to move it.\n"
+            "- Use ROI X/Y/W/H sliders to move/resize.\n"
+            "- Use Angle slider to rotate the ROI.\n"
+            "- ROI Scale toggles percentile scaling.\n"
+            "- Preview toggles pseudocolor in ROI panels (press P).\n"
+            "- Save ROI + Preview writes outputs + enables preview.\n"
+            "- Save ROI Crops writes PNG + NPY outputs.\n"
+            "- Group button cycles A/B/C.\n"
+            "- Load ND2 opens a file picker.\n"
+            f"Group: {group_state['label']} | Status: {save_state['message']}"
+        )
+
+    help_artist = help_ax.text(0.0, 1.0, render_help_text(), va="top", ha="left", fontsize=9)
+
+    def update_help_text() -> None:
+        help_artist.set_text(render_help_text())
+        fig.canvas.draw_idle()
 
     slider_axes = {
         "low": add_control_axes(0.53, 0.46, 0.42, 0.04),
@@ -649,7 +690,24 @@ def build_gui(
 
     current_nd2_path = load_config.get("current_path")
 
-    load_ax = add_control_axes(0.05, 0.72, 0.90, 0.05)
+    group_ax = add_control_axes(0.05, 0.72, 0.42, 0.05)
+    group_button = Button(group_ax, f"Group {group_state['label']}")
+
+    def cycle_group(_event) -> None:
+        groups = ["A", "B", "C"]
+        current = group_state["label"]
+        idx = groups.index(current) if current in groups else 0
+        next_label = groups[(idx + 1) % len(groups)]
+        group_state["label"] = next_label
+        group_button.label.set_text(f"Group {next_label}")
+        save_state["ok"] = False
+        save_state["snapshot"] = None
+        save_state["message"] = f"Group set to {next_label}. Save before loading next ND2."
+        update_help_text()
+
+    group_button.on_clicked(cycle_group)
+
+    load_ax = add_control_axes(0.53, 0.72, 0.42, 0.05)
     load_button = Button(load_ax, "Load ND2")
 
     def update_slider_limits(width: float, height: float) -> None:
@@ -727,6 +785,10 @@ def build_gui(
 
         prev_state = current_state()
         update_display()
+        save_state["ok"] = False
+        save_state["snapshot"] = None
+        save_state["message"] = f"Loaded {path.name}. Save ROI before loading next ND2."
+        update_help_text()
 
     def pick_nd2_path() -> Path | None:
         initial_dir = Path(load_config.get("initial_dir", Path.cwd()))
@@ -772,6 +834,11 @@ def build_gui(
         return Path(path) if path else None
 
     def load_new_nd2(_event) -> None:
+        if save_state["ever_saved"] and current_nd2_path and not save_state["ok"]:
+            save_state["message"] = "Save ROI crops before loading the next ND2."
+            update_help_text()
+            print("Save ROI crops before loading the next ND2.")
+            return
         path = pick_nd2_path()
         if not path:
             print("No ND2 selected.")
@@ -780,7 +847,7 @@ def build_gui(
 
     load_button.on_clicked(load_new_nd2)
 
-    toggle_ax = add_control_axes(0.05, 0.54, 0.42, 0.05)
+    toggle_ax = add_control_axes(0.05, 0.48, 0.42, 0.05)
     toggle_button = Button(toggle_ax, "ROI Scale")
 
     def toggle_roi_scale(_):
@@ -790,7 +857,7 @@ def build_gui(
 
     toggle_button.on_clicked(toggle_roi_scale)
 
-    reset_ax = add_control_axes(0.53, 0.54, 0.42, 0.05)
+    reset_ax = add_control_axes(0.53, 0.48, 0.42, 0.05)
     reset_button = Button(reset_ax, "Reset ROI")
 
     def reset_roi(_):
@@ -809,12 +876,15 @@ def build_gui(
     reset_button.on_clicked(reset_roi)
 
     def resolve_save_dir() -> Path | None:
+        group_dir = f"group_{group_state['label'].lower()}"
         if save_dir:
-            return save_dir
+            if current_nd2_path:
+                return save_dir / group_dir / f"{current_nd2_path.stem}_roi"
+            return save_dir / group_dir
         if save_path:
-            return save_path.with_suffix("").with_name(f"{save_path.stem}_roi")
+            return save_path.parent / group_dir / f"{save_path.stem}_roi"
         if current_nd2_path:
-            return current_nd2_path.with_suffix("").with_name(f"{current_nd2_path.stem}_roi")
+            return current_nd2_path.parent / group_dir / f"{current_nd2_path.stem}_roi"
         return None
 
     def update_crop_images(crop_norms: List[np.ndarray]) -> None:
@@ -865,6 +935,7 @@ def build_gui(
             "height": float(ui_state.roi.height),
             "angle": float(ui_state.roi.angle),
             "use_roi_scale": bool(ui_state.use_roi_scale),
+            "group": group_state["label"],
             "display": {
                 "low_pct": float(ui_state.display.low_pct),
                 "high_pct": float(ui_state.display.high_pct),
@@ -883,47 +954,83 @@ def build_gui(
 
     fig.canvas.mpl_connect("key_press_event", on_key)
 
-    if save_path:
-        save_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
-        save_button = Button(save_ax, "Save ROI + Preview")
+    save_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
+    save_button = Button(save_ax, "Save ROI + Preview")
 
-        def save_roi(_):
-            payload = {
-                "center": [float(ui_state.roi.center[0]), float(ui_state.roi.center[1])],
-                "width": float(ui_state.roi.width),
-                "height": float(ui_state.roi.height),
-                "angle": float(ui_state.roi.angle),
-                "use_roi_scale": bool(ui_state.use_roi_scale),
-                "display": {
-                    "low_pct": float(ui_state.display.low_pct),
-                    "high_pct": float(ui_state.display.high_pct),
-                    "gamma": float(ui_state.display.gamma),
-                    "gains": [float(gain) for gain in ui_state.display.gains],
-                },
-            }
-            save_path.write_text(json.dumps(payload, indent=2))
-            target_dir = resolve_save_dir()
-            if target_dir:
-                save_roi_outputs(target_dir)
-            set_preview_enabled(True)
+    def save_roi(_):
+        payload = {
+            "center": [float(ui_state.roi.center[0]), float(ui_state.roi.center[1])],
+            "width": float(ui_state.roi.width),
+            "height": float(ui_state.roi.height),
+            "angle": float(ui_state.roi.angle),
+            "use_roi_scale": bool(ui_state.use_roi_scale),
+            "group": group_state["label"],
+            "display": {
+                "low_pct": float(ui_state.display.low_pct),
+                "high_pct": float(ui_state.display.high_pct),
+                "gamma": float(ui_state.display.gamma),
+                "gains": [float(gain) for gain in ui_state.display.gains],
+            },
+        }
+        target_dir = resolve_save_dir()
+        if target_dir is None:
+            save_state["message"] = "Set --save-dir or load an ND2 to save outputs."
+            update_help_text()
+            print(save_state["message"])
+            return
+        try:
+            if save_path:
+                save_path.write_text(json.dumps(payload, indent=2))
+            save_roi_outputs(target_dir)
+        except Exception as exc:
+            save_state["ok"] = False
+            save_state["snapshot"] = None
+            save_state["message"] = f"Save failed: {exc}"
+            update_help_text()
+            print(save_state["message"])
+            return
 
-        save_button.on_clicked(save_roi)
-    else:
-        preview_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
-        preview_button = Button(preview_ax, "Preview ROI")
-        preview_button.on_clicked(lambda _: toggle_preview())
+        save_state["ok"] = True
+        save_state["ever_saved"] = True
+        save_state["snapshot"] = snapshot_state()
+        save_state["message"] = f"Saved to {target_dir}"
+        update_help_text()
+        print(save_state["message"])
+        set_preview_enabled(True)
 
-    save_crops_ax = add_control_axes(0.05, 0.60, 0.90, 0.05)
+    save_button.on_clicked(save_roi)
+
+    preview_ax = add_control_axes(0.05, 0.60, 0.90, 0.05)
+    preview_button = Button(preview_ax, "Preview ROI")
+    preview_button.on_clicked(lambda _: toggle_preview())
+
+    save_crops_ax = add_control_axes(0.05, 0.54, 0.90, 0.05)
     save_crops_button = Button(save_crops_ax, "Save ROI Crops")
 
     def save_crops(_):
         target_dir = resolve_save_dir()
         if target_dir is None:
-            print("Set --save-dir or --save-roi to choose where ROI crops are written.")
+            save_state["message"] = "Set --save-dir or load an ND2 to save outputs."
+            update_help_text()
+            print(save_state["message"])
             return
 
-        save_roi_outputs(target_dir)
-        print(f"Saved ROI crops to {target_dir}")
+        try:
+            save_roi_outputs(target_dir)
+        except Exception as exc:
+            save_state["ok"] = False
+            save_state["snapshot"] = None
+            save_state["message"] = f"Save failed: {exc}"
+            update_help_text()
+            print(save_state["message"])
+            return
+
+        save_state["ok"] = True
+        save_state["ever_saved"] = True
+        save_state["snapshot"] = snapshot_state()
+        save_state["message"] = f"Saved to {target_dir}"
+        update_help_text()
+        print(save_state["message"])
 
     save_crops_button.on_clicked(save_crops)
 
@@ -973,6 +1080,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Starting directory for the ND2 file picker.",
+    )
+    parser.add_argument(
+        "--group",
+        choices=["A", "B", "C"],
+        default="A",
+        help="Initial experimental group label (A, B, or C).",
     )
     parser.add_argument(
         "--low-pct",
@@ -1031,8 +1144,10 @@ def main() -> None:
         "  Angle slider rotates the ROI\n"
         "  ROI Scale toggles percentiles based on the ROI\n"
         "  Preview toggles pseudocolor in ROI panels (press P)\n"
+        "  Save ROI + Preview writes outputs and enables preview\n"
         "  Save ROI Crops writes PNG + NPY outputs\n"
-        "  Load ND2 opens a file picker\n"
+        "  Group button cycles A/B/C\n"
+        "  Load ND2 opens a file picker (requires a save)\n"
     )
 
     initial_dir = args.nd2_dir if args.nd2_dir else args.path.parent
@@ -1041,6 +1156,7 @@ def main() -> None:
         "z_project": args.z_project,
         "initial_dir": str(initial_dir),
         "current_path": args.path,
+        "group": args.group,
     }
     build_gui(image_state, ui_state, args.save_roi, args.save_dir, load_config)
 
