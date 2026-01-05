@@ -334,6 +334,9 @@ def build_gui(
     def recompute_crop_norms(norm_channels: List[np.ndarray]) -> List[np.ndarray]:
         return [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
 
+    preview_state = {"enabled": False}
+    preview_button = None
+
     def current_state() -> dict:
         return {
             "low": ui_state.display.low_pct,
@@ -347,6 +350,7 @@ def build_gui(
                 ui_state.roi.angle,
             ),
             "use_roi_scale": ui_state.use_roi_scale,
+            "preview": preview_state["enabled"],
         }
 
     cache_norm_channels = compute_norm_channels()
@@ -395,6 +399,7 @@ def build_gui(
             or state["use_roi_scale"] != prev_state["use_roi_scale"]
         )
         gains_changed = state["gains"] != prev_state["gains"]
+        preview_changed = state["preview"] != prev_state["preview"]
 
         if scale_changed or (roi_changed and state["use_roi_scale"]):
             cache_norm_channels = compute_norm_channels()
@@ -407,9 +412,7 @@ def build_gui(
             full_merge_im.set_data(cache_merge)
 
             cache_crop_norms = recompute_crop_norms(cache_norm_channels)
-            for im, channel in zip(crop_images, cache_crop_norms):
-                im.set_data(channel)
-                im.set_extent((0, channel.shape[1], channel.shape[0], 0))
+            update_crop_images(cache_crop_norms)
 
             cache_crop_merge = compose_merge(
                 cache_crop_norms, image_state.colors, ui_state.display.gains
@@ -418,9 +421,7 @@ def build_gui(
         else:
             if roi_changed:
                 cache_crop_norms = recompute_crop_norms(cache_norm_channels)
-                for im, channel in zip(crop_images, cache_crop_norms):
-                    im.set_data(channel)
-                    im.set_extent((0, channel.shape[1], channel.shape[0], 0))
+                update_crop_images(cache_crop_norms)
                 cache_crop_merge = compose_merge(
                     cache_crop_norms, image_state.colors, ui_state.display.gains
                 )
@@ -435,6 +436,11 @@ def build_gui(
                     cache_crop_norms, image_state.colors, ui_state.display.gains
                 )
                 crop_merge_im.set_data(cache_crop_merge)
+                if preview_state["enabled"]:
+                    update_crop_images(cache_crop_norms)
+
+        if preview_changed and not scale_changed:
+            update_crop_images(cache_crop_norms)
 
         if roi_changed:
             update_roi_patch()
@@ -487,7 +493,7 @@ def build_gui(
         "- Use ROI X/Y/W/H sliders to move/resize.\n"
         "- Use Angle slider to rotate the ROI.\n"
         "- ROI Scale toggles percentile scaling.\n"
-        "- Save/Preview opens pseudocolor ROI.\n"
+        "- Preview toggles pseudocolor in ROI panels (press P).\n"
         "- Save ROI Crops writes PNG + NPY outputs.\n"
         "- Load ND2 opens a file picker."
     )
@@ -722,17 +728,24 @@ def build_gui(
 
     def load_new_nd2(_event) -> None:
         try:
-            from tkinter import Tk, filedialog
+            from tkinter import Tk, TclError, filedialog
         except Exception as exc:
             print(f"Tkinter is not available for file selection: {exc}")
             return
 
         root = Tk()
         root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+            root.lift()
+            root.update()
+        except TclError:
+            pass
         path = filedialog.askopenfilename(
             title="Select ND2 file",
             initialdir=str(load_config.get("initial_dir", Path.cwd())),
             filetypes=[("ND2 files", "*.nd2"), ("All files", "*.*")],
+            parent=root,
         )
         root.destroy()
 
@@ -771,8 +784,6 @@ def build_gui(
 
     reset_button.on_clicked(reset_roi)
 
-    preview_state = {"fig": None, "axes": [], "merge_ax": None, "images": [], "merge_im": None}
-
     def resolve_save_dir() -> Path | None:
         if save_dir:
             return save_dir
@@ -781,6 +792,24 @@ def build_gui(
         if current_nd2_path:
             return current_nd2_path.with_suffix("").with_name(f"{current_nd2_path.stem}_roi")
         return None
+
+    def update_crop_images(crop_norms: List[np.ndarray]) -> None:
+        if preview_state["enabled"]:
+            for im, channel, color, gain in zip(
+                crop_images, crop_norms, image_state.colors, ui_state.display.gains
+            ):
+                im.set_data(apply_pseudocolor(channel, color, gain))
+                im.set_extent((0, channel.shape[1], channel.shape[0], 0))
+        else:
+            for im, channel in zip(crop_images, crop_norms):
+                im.set_data(channel)
+                im.set_extent((0, channel.shape[1], channel.shape[0], 0))
+
+    def set_preview_enabled(enabled: bool) -> None:
+        preview_state["enabled"] = enabled
+        if preview_button is not None:
+            preview_button.label.set_text("Hide Preview" if enabled else "Preview ROI")
+        request_update()
 
     def save_roi_outputs(target_dir: Path) -> None:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -821,57 +850,14 @@ def build_gui(
         }
         (target_dir / "roi_state.json").write_text(json.dumps(payload, indent=2))
 
-    def show_roi_preview() -> None:
-        norm_channels = compute_norm_channels()
-        roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
-        roi_merge = compose_merge(roi_norms, image_state.colors, ui_state.display.gains)
+    def toggle_preview() -> None:
+        set_preview_enabled(not preview_state["enabled"])
 
-        if preview_state["fig"] and plt.fignum_exists(preview_state["fig"].number):
-            for im, channel, color, gain in zip(
-                preview_state["images"], roi_norms, image_state.colors, ui_state.display.gains
-            ):
-                im.set_data(apply_pseudocolor(channel, color, gain))
-            preview_state["merge_im"].set_data(roi_merge)
-            preview_state["fig"].canvas.draw_idle()
-            preview_state["fig"].show()
-            return
+    def on_key(event) -> None:
+        if event.key and event.key.lower() == "p":
+            toggle_preview()
 
-        preview_fig = plt.figure(figsize=(3.2 * (num_channels + 1), 3.2))
-        preview_grid = preview_fig.add_gridspec(1, num_channels + 1, wspace=0.05)
-        preview_axes = [preview_fig.add_subplot(preview_grid[0, idx]) for idx in range(num_channels)]
-        preview_merge_ax = preview_fig.add_subplot(preview_grid[0, num_channels])
-
-        for ax in preview_axes + [preview_merge_ax]:
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        preview_images = []
-        for ax, channel, name, color, gain in zip(
-            preview_axes, roi_norms, image_state.names, image_state.colors, ui_state.display.gains
-        ):
-            im = ax.imshow(apply_pseudocolor(channel, color, gain), interpolation="nearest")
-            ax.set_title(f"{name} ROI")
-            preview_images.append(im)
-
-        merge_im = preview_merge_ax.imshow(roi_merge, interpolation="nearest")
-        preview_merge_ax.set_title("ROI Merged")
-        preview_fig.subplots_adjust(left=0.03, right=0.97, top=0.88, bottom=0.08, wspace=0.05)
-
-        def on_close(_event) -> None:
-            preview_state["fig"] = None
-            preview_state["axes"] = []
-            preview_state["merge_ax"] = None
-            preview_state["images"] = []
-            preview_state["merge_im"] = None
-
-        preview_fig.canvas.mpl_connect("close_event", on_close)
-
-        preview_state["fig"] = preview_fig
-        preview_state["axes"] = preview_axes
-        preview_state["merge_ax"] = preview_merge_ax
-        preview_state["images"] = preview_images
-        preview_state["merge_im"] = merge_im
-        preview_fig.show()
+    fig.canvas.mpl_connect("key_press_event", on_key)
 
     if save_path:
         save_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
@@ -895,13 +881,13 @@ def build_gui(
             target_dir = resolve_save_dir()
             if target_dir:
                 save_roi_outputs(target_dir)
-            show_roi_preview()
+            set_preview_enabled(True)
 
         save_button.on_clicked(save_roi)
     else:
         preview_ax = add_control_axes(0.05, 0.66, 0.90, 0.05)
         preview_button = Button(preview_ax, "Preview ROI")
-        preview_button.on_clicked(lambda _: show_roi_preview())
+        preview_button.on_clicked(lambda _: toggle_preview())
 
     save_crops_ax = add_control_axes(0.05, 0.60, 0.90, 0.05)
     save_crops_button = Button(save_crops_ax, "Save ROI Crops")
@@ -1020,7 +1006,7 @@ def main() -> None:
         "  use ROI X/Y/W/H sliders to move/resize\n"
         "  Angle slider rotates the ROI\n"
         "  ROI Scale toggles percentiles based on the ROI\n"
-        "  Save/Preview opens pseudocolor ROI crops\n"
+        "  Preview toggles pseudocolor in ROI panels (press P)\n"
         "  Save ROI Crops writes PNG + NPY outputs\n"
         "  Load ND2 opens a file picker\n"
     )
