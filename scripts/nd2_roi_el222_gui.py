@@ -11,8 +11,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import Button, RectangleSelector, Slider
-from nd2 import ND2File
-from scipy.ndimage import rotate
+try:
+    from nd2 import ND2File
+except ImportError as exc:  # pragma: no cover - runtime import guard
+    raise SystemExit(
+        "Missing dependency 'nd2'. Install with: pip install nd2"
+    ) from exc
+
+try:
+    from scipy.ndimage import rotate
+except ImportError as exc:  # pragma: no cover - runtime import guard
+    raise SystemExit(
+        "Missing dependency 'scipy'. Install with: pip install scipy"
+    ) from exc
 
 DEFAULT_CHANNEL_NAMES = ["DAPI", "EYFP", "tdTom", "EL222"]
 DEFAULT_CHANNEL_COLORS = [
