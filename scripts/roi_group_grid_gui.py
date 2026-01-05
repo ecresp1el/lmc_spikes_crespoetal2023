@@ -1111,6 +1111,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         view_flags = view_checks.get_status()
         pseudo_enabled = view_flags[0]
         scale_enabled = view_flags[1]
+        sync_zoom = view_flags[2] if len(view_flags) > 2 else False
+        zoom_limits = sync_zoom and zoom_state["xlim"] is not None and zoom_state["ylim"] is not None
         bg_enabled = bg_checks.get_status()[0]
         bg_pct = bg_pct_slider.val
         bg_flags = bg_chan_checks.get_status()
@@ -1190,6 +1192,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                     ax.imshow(display, cmap="gray", interpolation="nearest")
                 else:
                     ax.imshow(display, interpolation="nearest")
+            if zoom_limits:
+                ax.set_xlim(zoom_state["xlim"])
+                ax.set_ylim(zoom_state["ylim"])
             if row_idx == 0:
                 ax.set_title("ORIGINAL", fontsize=10)
 
@@ -1205,6 +1210,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                         ax.imshow(group_norm[key], cmap="gray", interpolation="nearest")
                 else:
                     ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
+                if zoom_limits:
+                    ax.set_xlim(zoom_state["xlim"])
+                    ax.set_ylim(zoom_state["ylim"])
                 if row_idx == 0:
                     ax.set_title(CHANNEL_LABELS.get(key, key).upper(), fontsize=10)
                 if col_idx == 0:
@@ -1238,6 +1246,9 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
             ax.set_yticks([])
             merge = compose_merge(group_norm) if group_norm else np.zeros((10, 10, 3))
             ax.imshow(merge, interpolation="nearest")
+            if zoom_limits:
+                ax.set_xlim(zoom_state["xlim"])
+                ax.set_ylim(zoom_state["ylim"])
             if row_idx == 0:
                 ax.set_title("MERGED", fontsize=10)
 
