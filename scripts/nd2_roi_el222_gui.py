@@ -253,18 +253,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     roi_patch.set_angle(ui_state.roi.angle)
     full_merge_ax.add_patch(roi_patch)
 
-    def update_roi_patch() -> None:
-        roi_patch.set_width(ui_state.roi.width)
-        roi_patch.set_height(ui_state.roi.height)
-        roi_patch.set_xy(
-            (
-                ui_state.roi.center[0] - ui_state.roi.width / 2,
-                ui_state.roi.center[1] - ui_state.roi.height / 2,
-            )
-        )
-        roi_patch.set_angle(ui_state.roi.angle)
-
-    def update_display(_=None) -> None:
+    def compute_norm_channels() -> List[np.ndarray]:
         norm_channels = []
         for channel in channels:
             if ui_state.use_roi_scale:
@@ -280,7 +269,29 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
                 channel, bounds, ui_state.display.gamma
             )
             norm_channels.append(full_norm)
+        return norm_channels
 
+    def apply_pseudocolor(
+        channel: np.ndarray, color: Tuple[float, float, float], gain: float
+    ) -> np.ndarray:
+        rgb = np.zeros((*channel.shape, 3), dtype=np.float32)
+        for idx in range(3):
+            rgb[..., idx] = channel * color[idx] * gain
+        return np.clip(rgb, 0.0, 1.0)
+
+    def update_roi_patch() -> None:
+        roi_patch.set_width(ui_state.roi.width)
+        roi_patch.set_height(ui_state.roi.height)
+        roi_patch.set_xy(
+            (
+                ui_state.roi.center[0] - ui_state.roi.width / 2,
+                ui_state.roi.center[1] - ui_state.roi.height / 2,
+            )
+        )
+        roi_patch.set_angle(ui_state.roi.angle)
+
+    def update_display(_=None) -> None:
+        norm_channels = compute_norm_channels()
         merge = compose_merge(norm_channels, image_state.colors, ui_state.display.gains)
 
         for ax, channel, name, color in zip(
@@ -334,7 +345,17 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         interactive=False,
     )
 
-    fig.add_axes([0.05, 0.02, 0.35, 0.12]).axis("off")
+    help_ax = fig.add_axes([0.05, 0.02, 0.35, 0.12])
+    help_ax.axis("off")
+    help_text = (
+        "ROI how-to:\n"
+        "- Drag on merged image to draw ROI.\n"
+        "- Use ROI X/Y/W/H sliders to move/resize.\n"
+        "- Use Angle slider to rotate the ROI.\n"
+        "- ROI Scale toggles percentile scaling.\n"
+        "- Save button previews pseudocolor ROI."
+    )
+    help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
 
     slider_axes = {
         "low": fig.add_axes([0.48, 0.08, 0.22, 0.025]),
@@ -453,9 +474,37 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
 
     reset_button.on_clicked(reset_roi)
 
+    def show_roi_preview() -> None:
+        norm_channels = compute_norm_channels()
+        roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
+        roi_merge = extract_rotated_roi(
+            compose_merge(norm_channels, image_state.colors, ui_state.display.gains),
+            ui_state.roi,
+        )
+
+        preview_fig = plt.figure(figsize=(3.2 * (num_channels + 1), 3.2))
+        preview_grid = preview_fig.add_gridspec(1, num_channels + 1, wspace=0.05)
+        preview_axes = [preview_fig.add_subplot(preview_grid[0, idx]) for idx in range(num_channels)]
+        preview_merge_ax = preview_fig.add_subplot(preview_grid[0, num_channels])
+
+        for ax in preview_axes + [preview_merge_ax]:
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        for ax, channel, name, color, gain in zip(
+            preview_axes, roi_norms, image_state.names, image_state.colors, ui_state.display.gains
+        ):
+            ax.imshow(apply_pseudocolor(channel, color, gain))
+            ax.set_title(f"{name} ROI")
+
+        preview_merge_ax.imshow(roi_merge)
+        preview_merge_ax.set_title("ROI Merged")
+        preview_fig.tight_layout()
+        preview_fig.show()
+
     if save_path:
         save_ax = fig.add_axes([0.72, 0.155, 0.24, 0.03])
-        save_button = Button(save_ax, "Save ROI JSON")
+        save_button = Button(save_ax, "Save ROI + Preview")
 
         def save_roi(_):
             payload = {
@@ -472,8 +521,13 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
                 },
             }
             save_path.write_text(json.dumps(payload, indent=2))
+            show_roi_preview()
 
         save_button.on_clicked(save_roi)
+    else:
+        preview_ax = fig.add_axes([0.72, 0.155, 0.24, 0.03])
+        preview_button = Button(preview_ax, "Preview ROI")
+        preview_button.on_clicked(lambda _: show_roi_preview())
 
     update_display()
     plt.show()
@@ -562,8 +616,10 @@ def main() -> None:
     print(
         "ROI controls:\n"
         "  drag left mouse on merged panel to set ROI\n"
-        "  sliders control ROI center, size, and rotation\n"
+        "  use ROI X/Y/W/H sliders to move/resize\n"
+        "  Angle slider rotates the ROI\n"
         "  ROI Scale toggles percentiles based on the ROI\n"
+        "  Save/Preview opens pseudocolor ROI crops\n"
     )
 
     build_gui(image_state, ui_state, args.save_roi)
