@@ -5,6 +5,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+import re
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -105,15 +106,16 @@ def pick_save_path(initial_dir: Path, default_name: str) -> Path | None:
 
 def channel_key(name: str) -> str:
     lower = name.lower()
-    if "dapi" in lower:
+    compact = re.sub(r"[^a-z0-9]+", "", lower)
+    if "dapi" in compact:
         return "dapi"
-    if "eyfp" in lower or "yfp" in lower or "gfp" in lower:
+    if "eyfp" in compact or "yfp" in compact or "gfp" in compact:
         return "gfp"
-    if "tdtom" in lower or "tdtomato" in lower:
+    if "tdtom" in compact or "tdtomato" in compact:
         return "tdtom"
-    if "el222" in lower:
+    if "el222" in compact:
         return "el222"
-    return lower
+    return compact
 
 
 def load_roi_folder(folder: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
@@ -122,7 +124,20 @@ def load_roi_folder(folder: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, str]
 
     arrays: Dict[str, np.ndarray] = {}
     labels: Dict[str, str] = {}
-    for path in sorted(folder.glob("roi_raw_ch*_*.npy")):
+    raw_files = sorted(folder.glob("roi_raw_ch*_*.npy"))
+    if not raw_files:
+        candidates = [p for p in folder.iterdir() if p.is_dir()]
+        subfolders = []
+        for sub in candidates:
+            if list(sub.glob("roi_raw_ch*_*.npy")):
+                subfolders.append(sub)
+        if len(subfolders) == 1:
+            raw_files = sorted(subfolders[0].glob("roi_raw_ch*_*.npy"))
+        elif len(subfolders) > 1:
+            names = ", ".join(sub.name for sub in subfolders)
+            raise ValueError(f"Select a specific ROI folder (found: {names})")
+
+    for path in raw_files:
         parts = path.stem.split("_", 3)
         if len(parts) < 4:
             continue
@@ -371,6 +386,24 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             summary += f" | Missing: {', '.join(missing)}"
         return summary
 
+    def log_channel_stats(group_name: str, channels: Dict[str, np.ndarray]) -> None:
+        print(f"[{group_name}] Loaded channels:")
+        for key in CHANNEL_ORDER:
+            if key not in channels:
+                print(f"  - {CHANNEL_LABELS.get(key, key)}: MISSING")
+                continue
+            arr = channels[key]
+            if arr.size == 0:
+                print(f"  - {CHANNEL_LABELS.get(key, key)}: EMPTY array")
+                continue
+            arr_min = float(np.nanmin(arr))
+            arr_max = float(np.nanmax(arr))
+            arr_mean = float(np.nanmean(arr))
+            print(
+                f"  - {CHANNEL_LABELS.get(key, key)}: shape={arr.shape} "
+                f"min={arr_min:.3f} max={arr_max:.3f} mean={arr_mean:.3f}"
+            )
+
     group_buttons = {}
     group_labels_text = {}
     start_y = 0.68
@@ -388,8 +421,11 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         def make_select(group_name: str):
             def _select(_event):
                 path = pick_directory(initial_dir)
-                if not path:
-                    return
+        if not path:
+            return
+        if not path.name.lower().startswith("group_") and not list(path.glob("roi_raw_ch*_*.npy")):
+            set_status("Select a specific ROI folder that contains roi_raw_ch*.npy files.")
+            return
                 try:
                     arrays, labels = load_roi_folder(path)
                 except Exception as exc:
@@ -399,6 +435,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 group_arrays[group_name] = arrays
                 group_labels[group_name] = labels
                 group_labels_text[group_name].set_text(path.name)
+                log_channel_stats(group_name, arrays)
                 set_status(f"Loaded {path.name} for {group_name}. {channel_summary(arrays)}")
                 update_grid()
             return _select
@@ -478,6 +515,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                 ax.set_title("")
 
         missing_notes = []
+        empty_notes = []
         for group_idx, group in enumerate(GROUPS):
             if group not in prepared:
                 for col_idx in range(num_cols):
@@ -499,6 +537,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
                     missing_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)}")
                 else:
                     img.set_data(group_norm[key])
+                    if np.nanmax(group_norm[key]) <= 0:
+                        empty_notes.append(f"{group}: {CHANNEL_LABELS.get(key, key)} flat")
                 img.set_cmap("gray")
                 ax.set_title(f"{CHANNEL_LABELS.get(key, key).upper()}" if group_idx == 0 else "")
 
@@ -529,6 +569,8 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
             notes.extend(warnings)
         if missing_notes:
             notes.append("Missing: " + "; ".join(sorted(set(missing_notes))))
+        if empty_notes:
+            notes.append("Low contrast: " + "; ".join(sorted(set(empty_notes))))
         if notes:
             set_status("Preview updated. " + " ".join(notes))
         else:
