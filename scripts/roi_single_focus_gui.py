@@ -12,6 +12,11 @@ import numpy as np
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import Button, RectangleSelector, Slider, CheckButtons
 
+try:
+    from scipy.ndimage import gaussian_filter
+except ImportError:  # pragma: no cover - optional smoothing
+    gaussian_filter = None
+
 plt.rcParams["font.family"] = "Arial"
 plt.rcParams["svg.fonttype"] = "none"
 
@@ -28,6 +33,8 @@ CHANNEL_COLORS = {
     "tdtom": (1.0, 0.0, 0.0),
     "el222": (1.0, 0.0, 1.0),
 }
+
+SVG_DPI = 300
 
 
 def pick_directory(initial_dir: Path) -> Path | None:
@@ -168,6 +175,7 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         "- Load a ROI folder from previous outputs.\n"
         "- Draw a smaller ROI on the merged view.\n"
         "- Adjust ROI sliders if needed.\n"
+        "- Apply smoothing if needed.\n"
         "- Save an Illustrator-ready SVG of the full + ROI panels.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
@@ -178,13 +186,18 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
 
     pseudo_ax = add_control_axes(0.05, 0.66, 0.40, 0.05)
     pseudo_checks = CheckButtons(pseudo_ax, ["Pseudo"], [False])
+    smooth_ax = add_control_axes(0.52, 0.66, 0.40, 0.05)
+    smooth_default = gaussian_filter is not None
+    smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [smooth_default])
 
     low_ax = add_control_axes(0.05, 0.60, 0.87, 0.03)
     high_ax = add_control_axes(0.05, 0.56, 0.87, 0.03)
     gamma_ax = add_control_axes(0.05, 0.52, 0.87, 0.03)
+    sigma_ax = add_control_axes(0.05, 0.48, 0.87, 0.03)
     low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
     high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
     gamma_slider = Slider(gamma_ax, "Gamma", 0.2, 3.0, valinit=1.0, valstep=0.05)
+    sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.2, valstep=0.1)
 
     roi_x_ax = add_control_axes(0.05, 0.44, 0.87, 0.03)
     roi_y_ax = add_control_axes(0.05, 0.40, 0.87, 0.03)
@@ -242,10 +255,18 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
         gamma = gamma_slider.val
+        smooth_enabled = smooth_checks.get_status()[0]
+        if smooth_enabled and gaussian_filter is None:
+            smooth_enabled = False
+            set_status("Gaussian smoothing unavailable (install scipy).")
+        sigma = sigma_slider.val
         norm_channels: Dict[str, np.ndarray] = {}
         for key, channel in channel_data.items():
-            bounds = percentile_bounds(channel, low_pct, high_pct)
-            norm_channels[key] = normalize_channel(channel, bounds, gamma)
+            source = channel
+            if smooth_enabled and gaussian_filter is not None:
+                source = gaussian_filter(source, sigma=float(sigma))
+            bounds = percentile_bounds(source, low_pct, high_pct)
+            norm_channels[key] = normalize_channel(source, bounds, gamma)
         return norm_channels
 
     def update_display() -> None:
@@ -264,15 +285,25 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
             full_axes[idx].set_title(CHANNEL_LABELS.get(key, key))
             crop_axes[idx].set_title(f"ROI {CHANNEL_LABELS.get(key, key)}")
             if pseudo_enabled:
-                full_axes[idx].imshow(colorize_channel(norm_channels[key], CHANNEL_COLORS[key]))
-                crop_axes[idx].imshow(colorize_channel(extract_roi(norm_channels[key], roi), CHANNEL_COLORS[key]))
+                full_axes[idx].imshow(
+                    colorize_channel(norm_channels[key], CHANNEL_COLORS[key]),
+                    interpolation="nearest",
+                )
+                crop_axes[idx].imshow(
+                    colorize_channel(extract_roi(norm_channels[key], roi), CHANNEL_COLORS[key]),
+                    interpolation="nearest",
+                )
             else:
-                full_axes[idx].imshow(norm_channels[key], cmap="gray")
-                crop_axes[idx].imshow(extract_roi(norm_channels[key], roi), cmap="gray")
+                full_axes[idx].imshow(norm_channels[key], cmap="gray", interpolation="nearest")
+                crop_axes[idx].imshow(
+                    extract_roi(norm_channels[key], roi),
+                    cmap="gray",
+                    interpolation="nearest",
+                )
 
-        full_axes[-1].imshow(merge)
+        full_axes[-1].imshow(merge, interpolation="nearest")
         full_axes[-1].set_title("Merged")
-        crop_axes[-1].imshow(extract_roi(merge, roi))
+        crop_axes[-1].imshow(extract_roi(merge, roi), interpolation="nearest")
         crop_axes[-1].set_title("ROI Merged")
 
         full_axes[-1].add_patch(roi_patch)
@@ -358,11 +389,21 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
             ax_full.set_title(CHANNEL_LABELS.get(key, key))
             ax_crop.set_title(f"ROI {CHANNEL_LABELS.get(key, key)}")
             if pseudo_enabled:
-                ax_full.imshow(colorize_channel(norm_channels[key], CHANNEL_COLORS[key]))
-                ax_crop.imshow(colorize_channel(extract_roi(norm_channels[key], roi), CHANNEL_COLORS[key]))
+                ax_full.imshow(
+                    colorize_channel(norm_channels[key], CHANNEL_COLORS[key]),
+                    interpolation="nearest",
+                )
+                ax_crop.imshow(
+                    colorize_channel(extract_roi(norm_channels[key], roi), CHANNEL_COLORS[key]),
+                    interpolation="nearest",
+                )
             else:
-                ax_full.imshow(norm_channels[key], cmap="gray")
-                ax_crop.imshow(extract_roi(norm_channels[key], roi), cmap="gray")
+                ax_full.imshow(norm_channels[key], cmap="gray", interpolation="nearest")
+                ax_crop.imshow(
+                    extract_roi(norm_channels[key], roi),
+                    cmap="gray",
+                    interpolation="nearest",
+                )
 
         merge = compose_merge(norm_channels)
         ax_full = out_fig.add_subplot(out_grid[0, num_channels])
@@ -372,10 +413,10 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
             ax.set_yticks([])
         ax_full.set_title("Merged")
         ax_crop.set_title("ROI Merged")
-        ax_full.imshow(merge)
-        ax_crop.imshow(extract_roi(merge, roi))
+        ax_full.imshow(merge, interpolation="nearest")
+        ax_crop.imshow(extract_roi(merge, roi), interpolation="nearest")
 
-        out_fig.savefig(svg_path, format="svg", dpi=300)
+        out_fig.savefig(svg_path, format="svg", dpi=SVG_DPI, facecolor="white")
         plt.close(out_fig)
         set_status(f"Saved SVG to {svg_path}")
 
@@ -384,11 +425,13 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
     low_slider.on_changed(lambda _=None: update_display())
     high_slider.on_changed(lambda _=None: update_display())
     gamma_slider.on_changed(lambda _=None: update_display())
+    sigma_slider.on_changed(lambda _=None: update_display())
     roi_x_slider.on_changed(lambda _=None: update_display())
     roi_y_slider.on_changed(lambda _=None: update_display())
     roi_w_slider.on_changed(lambda _=None: update_display())
     roi_h_slider.on_changed(lambda _=None: update_display())
     pseudo_checks.on_clicked(lambda _=None: update_display())
+    smooth_checks.on_clicked(lambda _=None: update_display())
 
     if roi_dir:
         try:

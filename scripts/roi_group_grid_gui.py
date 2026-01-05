@@ -33,6 +33,7 @@ plt.rcParams["font.family"] = "Arial"
 plt.rcParams["svg.fonttype"] = "none"
 
 DEFAULT_GROUPS = ["ctznmda", "ctz", "nmda"]
+SVG_DPI = 300
 CHANNEL_ORDER = ["dapi", "gfp", "tdtom", "el222"]
 CHANNEL_LABELS = {
     "dapi": "DAPI",
@@ -603,7 +604,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
         "- Adjust percentiles for global normalization.\n"
         "- Use EL222 override to set its scale separately.\n"
         "- Auto-scale per image overrides global scaling.\n"
-        "- ROI crop keeps same-size boxes across groups.\n"
+        "- ROI crop keeps same-size boxes across groups (yellow box on ORIGINAL).\n"
         "- Save SVG when satisfied.\n"
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
@@ -832,7 +833,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                     cmap="gray",
                     interpolation="nearest",
                 )
-                if col_idx == num_cols - 1 and group not in roi_patches:
+                if col_idx == 0 and group not in roi_patches:
                     patch = Rectangle((0, 0), 1, 1, fill=False, edgecolor="yellow", linewidth=1.2)
                     patch.set_visible(False)
                     ax.add_patch(patch)
@@ -973,9 +974,6 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 missing_notes.append(f"{group}: Original")
             else:
                 display = normalize_display(orig_img, low_pct, high_pct)
-                if roi_enabled and roi_box and base_shape is not None:
-                    if display.shape[:2] == base_shape:
-                        display = extract_roi(display, roi_box)
                 orig_panel.set_data(display)
                 if display.ndim == 2:
                     orig_panel.set_cmap("gray")
@@ -1039,11 +1037,14 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
 
             patch = roi_patches.get(group)
             if patch is not None:
-                if roi_box and not roi_enabled:
-                    patch.set_visible(True)
-                    patch.set_xy((roi_box[0], roi_box[1]))
-                    patch.set_width(roi_box[2])
-                    patch.set_height(roi_box[3])
+                if roi_box and base_shape is not None and orig_img is not None:
+                    if orig_img.shape[:2] == base_shape:
+                        patch.set_visible(True)
+                        patch.set_xy((roi_box[0], roi_box[1]))
+                        patch.set_width(roi_box[2])
+                        patch.set_height(roi_box[3])
+                    else:
+                        patch.set_visible(False)
                 else:
                     patch.set_visible(False)
 
@@ -1082,7 +1083,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
             if roi_state["size"] is None:
                 notes.append("ROI crop on (drag to set size)")
             else:
-                notes.append(f"ROI {int(roi_state['size'][0])}x{int(roi_state['size'][1])}")
+                notes.append(f"ROI {int(roi_state['size'][0])}x{int(roi_state['size'][1])} (channels)")
         if scale_enabled:
             notes.append("Scale bars on")
         if notes:
@@ -1275,9 +1276,6 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
                 ax.imshow(np.zeros((10, 10)), cmap="gray", interpolation="nearest")
             else:
                 display = normalize_display(orig_img, low_pct, high_pct)
-                if roi_enabled and roi_box and base_shape is not None:
-                    if display.shape[:2] == base_shape:
-                        display = extract_roi(display, roi_box)
                 if display.ndim == 2:
                     ax.imshow(display, cmap="gray", interpolation="nearest")
                 else:
@@ -1341,7 +1339,7 @@ def build_gui(initial_dir: Path, out_dir: Path | None, roi_root: Path | None, gr
             if row_idx == 0:
                 ax.set_title("MERGED", fontsize=10)
 
-        save_fig.savefig(path, format="svg")
+        save_fig.savefig(path, format="svg", dpi=SVG_DPI, facecolor="white")
         plt.close(save_fig)
         if warnings:
             set_status(f"Saved SVG to {path}. " + " ".join(warnings))
