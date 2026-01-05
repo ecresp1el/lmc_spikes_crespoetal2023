@@ -231,8 +231,16 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     channels = image_state.channels
     num_channels = channels.shape[0]
 
-    fig = plt.figure(figsize=(20, 9))
-    grid = fig.add_gridspec(
+    fig = plt.figure(figsize=(20, 10))
+    main_grid = fig.add_gridspec(
+        2,
+        2,
+        width_ratios=[3.6, 1.4],
+        height_ratios=[2.5, 1.8],
+        hspace=0.18,
+        wspace=0.06,
+    )
+    image_grid = main_grid[:, 0].subgridspec(
         2,
         num_channels + 1,
         height_ratios=[2.5, 1.8],
@@ -240,10 +248,24 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         wspace=0.12,
     )
 
-    full_axes = [fig.add_subplot(grid[0, idx]) for idx in range(num_channels)]
-    full_merge_ax = fig.add_subplot(grid[0, num_channels])
-    crop_axes = [fig.add_subplot(grid[1, idx]) for idx in range(num_channels)]
-    crop_merge_ax = fig.add_subplot(grid[1, num_channels])
+    full_axes = [fig.add_subplot(image_grid[0, idx]) for idx in range(num_channels)]
+    full_merge_ax = fig.add_subplot(image_grid[0, num_channels])
+    crop_axes = [fig.add_subplot(image_grid[1, idx]) for idx in range(num_channels)]
+    crop_merge_ax = fig.add_subplot(image_grid[1, num_channels])
+
+    control_ax = fig.add_subplot(main_grid[:, 1])
+    control_ax.axis("off")
+    control_box = control_ax.get_position()
+
+    def add_control_axes(x0: float, y0: float, width: float, height: float) -> plt.Axes:
+        return fig.add_axes(
+            [
+                control_box.x0 + x0 * control_box.width,
+                control_box.y0 + y0 * control_box.height,
+                width * control_box.width,
+                height * control_box.height,
+            ]
+        )
 
     for ax in full_axes + crop_axes + [full_merge_ax, crop_merge_ax]:
         ax.set_xticks([])
@@ -252,6 +274,8 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     roi_patch = Rectangle((0, 0), 1, 1, fill=False, edgecolor="yellow", linewidth=2)
     roi_patch.set_angle(ui_state.roi.angle)
     full_merge_ax.add_patch(roi_patch)
+
+    drag_state = {"active": False, "start": (0.0, 0.0), "center": (0.0, 0.0)}
 
     def compute_norm_channels() -> List[np.ndarray]:
         norm_channels = []
@@ -321,6 +345,8 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         fig.canvas.draw_idle()
 
     def on_select(click, release) -> None:
+        if drag_state["active"]:
+            return
         x0, y0 = click.xdata, click.ydata
         x1, y1 = release.xdata, release.ydata
         if x0 is None or x1 is None:
@@ -328,13 +354,13 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         ui_state.roi.center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
         ui_state.roi.width = max(5.0, abs(x1 - x0))
         ui_state.roi.height = max(5.0, abs(y1 - y0))
-        center_x_slider.set_val(ui_state.roi.center[0])
-        center_y_slider.set_val(ui_state.roi.center[1])
-        width_slider.set_val(ui_state.roi.width)
-        height_slider.set_val(ui_state.roi.height)
+        set_slider_val(center_x_slider, ui_state.roi.center[0])
+        set_slider_val(center_y_slider, ui_state.roi.center[1])
+        set_slider_val(width_slider, ui_state.roi.width)
+        set_slider_val(height_slider, ui_state.roi.height)
         update_display()
 
-    RectangleSelector(
+    rect_selector = RectangleSelector(
         full_merge_ax,
         on_select,
         useblit=True,
@@ -345,32 +371,33 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         interactive=False,
     )
 
-    help_ax = fig.add_axes([0.05, 0.02, 0.35, 0.12])
+    help_ax = add_control_axes(0.05, 0.76, 0.90, 0.22)
     help_ax.axis("off")
     help_text = (
         "ROI how-to:\n"
         "- Drag on merged image to draw ROI.\n"
+        "- Drag inside yellow ROI to move it.\n"
         "- Use ROI X/Y/W/H sliders to move/resize.\n"
         "- Use Angle slider to rotate the ROI.\n"
         "- ROI Scale toggles percentile scaling.\n"
-        "- Save button previews pseudocolor ROI."
+        "- Save/Preview opens pseudocolor ROI."
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
 
     slider_axes = {
-        "low": fig.add_axes([0.48, 0.08, 0.22, 0.025]),
-        "high": fig.add_axes([0.48, 0.05, 0.22, 0.025]),
-        "gamma": fig.add_axes([0.48, 0.02, 0.22, 0.025]),
+        "low": add_control_axes(0.53, 0.52, 0.42, 0.04),
+        "high": add_control_axes(0.53, 0.47, 0.42, 0.04),
+        "gamma": add_control_axes(0.53, 0.42, 0.42, 0.04),
     }
 
     roi_slider_axes = {
-        "cx": fig.add_axes([0.07, 0.11, 0.30, 0.02]),
-        "cy": fig.add_axes([0.07, 0.08, 0.30, 0.02]),
-        "w": fig.add_axes([0.07, 0.05, 0.30, 0.02]),
-        "h": fig.add_axes([0.07, 0.02, 0.30, 0.02]),
+        "cx": add_control_axes(0.05, 0.52, 0.42, 0.04),
+        "cy": add_control_axes(0.05, 0.47, 0.42, 0.04),
+        "w": add_control_axes(0.05, 0.42, 0.42, 0.04),
+        "h": add_control_axes(0.05, 0.37, 0.42, 0.04),
     }
 
-    angle_ax = fig.add_axes([0.05, 0.155, 0.35, 0.02])
+    angle_ax = add_control_axes(0.05, 0.31, 0.42, 0.04)
 
     low_slider = Slider(slider_axes["low"], "Low %", 0, 20, valinit=ui_state.display.low_pct, valstep=0.5)
     high_slider = Slider(slider_axes["high"], "High %", 80, 100, valinit=ui_state.display.high_pct, valstep=0.5)
@@ -412,8 +439,19 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     angle_slider = Slider(angle_ax, "Angle", -180, 180, valinit=ui_state.roi.angle, valstep=1)
 
     gain_sliders = []
+    gain_gap = 0.008
+    gain_start = 0.34
+    min_gain_y = 0.06
+    if num_channels > 0:
+        max_total = max(0.0, gain_start - min_gain_y)
+        gain_height = min(
+            0.035, max(0.02, (max_total - gain_gap * (num_channels - 1)) / num_channels)
+        )
+    else:
+        gain_height = 0.035
     for idx in range(num_channels):
-        ax = fig.add_axes([0.73, 0.08 - idx * 0.035, 0.23, 0.025])
+        y0 = gain_start - idx * (gain_height + gain_gap)
+        ax = add_control_axes(0.53, y0, 0.42, gain_height)
         slider = Slider(
             ax,
             f"Gain {image_state.names[idx]}",
@@ -446,7 +484,53 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     for slider in gain_sliders:
         slider.on_changed(slider_update)
 
-    toggle_ax = fig.add_axes([0.72, 0.02, 0.10, 0.035])
+    def set_slider_val(slider: Slider, value: float) -> None:
+        slider.eventson = False
+        slider.set_val(value)
+        slider.eventson = True
+
+    def clamp_center(x: float, y: float) -> Tuple[float, float]:
+        x = max(0.0, min(float(x), channels.shape[2]))
+        y = max(0.0, min(float(y), channels.shape[1]))
+        return x, y
+
+    def on_press(event) -> None:
+        if event.inaxes != full_merge_ax or event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        contains, _ = roi_patch.contains(event)
+        if not contains:
+            return
+        drag_state["active"] = True
+        drag_state["start"] = (event.xdata, event.ydata)
+        drag_state["center"] = ui_state.roi.center
+        rect_selector.set_active(False)
+
+    def on_motion(event) -> None:
+        if not drag_state["active"]:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        dx = event.xdata - drag_state["start"][0]
+        dy = event.ydata - drag_state["start"][1]
+        new_center = clamp_center(drag_state["center"][0] + dx, drag_state["center"][1] + dy)
+        ui_state.roi.center = new_center
+        set_slider_val(center_x_slider, new_center[0])
+        set_slider_val(center_y_slider, new_center[1])
+        update_display()
+
+    def on_release(_event) -> None:
+        if not drag_state["active"]:
+            return
+        drag_state["active"] = False
+        rect_selector.set_active(True)
+
+    fig.canvas.mpl_connect("button_press_event", on_press)
+    fig.canvas.mpl_connect("motion_notify_event", on_motion)
+    fig.canvas.mpl_connect("button_release_event", on_release)
+
+    toggle_ax = add_control_axes(0.05, 0.62, 0.42, 0.05)
     toggle_button = Button(toggle_ax, "ROI Scale")
 
     def toggle_roi_scale(_):
@@ -456,7 +540,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
 
     toggle_button.on_clicked(toggle_roi_scale)
 
-    reset_ax = fig.add_axes([0.84, 0.02, 0.12, 0.035])
+    reset_ax = add_control_axes(0.53, 0.62, 0.42, 0.05)
     reset_button = Button(reset_ax, "Reset ROI")
 
     def reset_roi(_):
@@ -465,11 +549,11 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         ui_state.roi.width = width * 0.3
         ui_state.roi.height = height * 0.3
         ui_state.roi.angle = 0.0
-        center_x_slider.set_val(ui_state.roi.center[0])
-        center_y_slider.set_val(ui_state.roi.center[1])
-        width_slider.set_val(ui_state.roi.width)
-        height_slider.set_val(ui_state.roi.height)
-        angle_slider.set_val(ui_state.roi.angle)
+        set_slider_val(center_x_slider, ui_state.roi.center[0])
+        set_slider_val(center_y_slider, ui_state.roi.center[1])
+        set_slider_val(width_slider, ui_state.roi.width)
+        set_slider_val(height_slider, ui_state.roi.height)
+        set_slider_val(angle_slider, ui_state.roi.angle)
         update_display()
 
     reset_button.on_clicked(reset_roi)
@@ -503,7 +587,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         preview_fig.show()
 
     if save_path:
-        save_ax = fig.add_axes([0.72, 0.155, 0.24, 0.03])
+        save_ax = add_control_axes(0.05, 0.69, 0.90, 0.05)
         save_button = Button(save_ax, "Save ROI + Preview")
 
         def save_roi(_):
@@ -525,7 +609,7 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
 
         save_button.on_clicked(save_roi)
     else:
-        preview_ax = fig.add_axes([0.72, 0.155, 0.24, 0.03])
+        preview_ax = add_control_axes(0.05, 0.69, 0.90, 0.05)
         preview_button = Button(preview_ax, "Preview ROI")
         preview_button.on_clicked(lambda _: show_roi_preview())
 
@@ -616,6 +700,7 @@ def main() -> None:
     print(
         "ROI controls:\n"
         "  drag left mouse on merged panel to set ROI\n"
+        "  drag inside yellow ROI to move it\n"
         "  use ROI X/Y/W/H sliders to move/resize\n"
         "  Angle slider rotates the ROI\n"
         "  ROI Scale toggles percentiles based on the ROI\n"
