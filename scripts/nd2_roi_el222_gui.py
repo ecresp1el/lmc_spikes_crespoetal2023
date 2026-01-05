@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -726,12 +728,30 @@ def build_gui(
         prev_state = current_state()
         update_display()
 
-    def load_new_nd2(_event) -> None:
+    def pick_nd2_path() -> Path | None:
+        initial_dir = Path(load_config.get("initial_dir", Path.cwd()))
+
+        if sys.platform == "darwin":
+            default_loc = str(initial_dir)
+            script = (
+                'POSIX path of (choose file with prompt "Select ND2 file" '
+                f'default location POSIX file "{default_loc}")'
+            )
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                chosen = result.stdout.strip()
+                if chosen:
+                    return Path(chosen)
+
         try:
             from tkinter import Tk, TclError, filedialog
         except Exception as exc:
             print(f"Tkinter is not available for file selection: {exc}")
-            return
+            return None
 
         root = Tk()
         root.withdraw()
@@ -743,16 +763,20 @@ def build_gui(
             pass
         path = filedialog.askopenfilename(
             title="Select ND2 file",
-            initialdir=str(load_config.get("initial_dir", Path.cwd())),
+            initialdir=str(initial_dir),
             filetypes=[("ND2 files", "*.nd2"), ("All files", "*.*")],
             parent=root,
         )
         root.destroy()
 
-        if not path:
-            return
+        return Path(path) if path else None
 
-        load_nd2_from_path(Path(path))
+    def load_new_nd2(_event) -> None:
+        path = pick_nd2_path()
+        if not path:
+            print("No ND2 selected.")
+            return
+        load_nd2_from_path(path)
 
     load_button.on_clicked(load_new_nd2)
 
