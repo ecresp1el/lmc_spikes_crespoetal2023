@@ -488,7 +488,8 @@ def build_gui(
         "- Use Angle slider to rotate the ROI.\n"
         "- ROI Scale toggles percentile scaling.\n"
         "- Save/Preview opens pseudocolor ROI.\n"
-        "- Save ROI Crops writes PNG + NPY outputs."
+        "- Save ROI Crops writes PNG + NPY outputs.\n"
+        "- Load ND2 opens a file picker."
     )
     help_ax.text(0.0, 1.0, help_text, va="top", ha="left", fontsize=9)
 
@@ -638,6 +639,8 @@ def build_gui(
     fig.canvas.mpl_connect("motion_notify_event", on_motion)
     fig.canvas.mpl_connect("button_release_event", on_release)
 
+    current_nd2_path = load_config.get("current_path")
+
     load_ax = add_control_axes(0.05, 0.72, 0.90, 0.05)
     load_button = Button(load_ax, "Load ND2")
 
@@ -664,29 +667,10 @@ def build_gui(
         full_merge_ax.set_ylim(height, 0)
         full_merge_im.set_extent((0, width, height, 0))
 
-    def load_new_nd2(_event) -> None:
-        try:
-            from tkinter import Tk, filedialog
-        except Exception as exc:
-            print(f"Tkinter is not available for file selection: {exc}")
-            return
-
-        root = Tk()
-        root.withdraw()
-        path = filedialog.askopenfilename(
-            title="Select ND2 file",
-            initialdir=str(load_config.get("initial_dir", Path.cwd())),
-            filetypes=[("ND2 files", "*.nd2"), ("All files", "*.*")],
-        )
-        root.destroy()
-
-        if not path:
-            return
-
-        load_config["initial_dir"] = str(Path(path).parent)
-
+    def load_nd2_from_path(path: Path) -> None:
+        nonlocal channels, cache_norm_channels, cache_crop_norms, cache_merge, cache_crop_merge, prev_state, current_nd2_path
         new_channels = load_nd2_channels(
-            Path(path),
+            path,
             load_config["channel_indices"],
             load_config["z_project"],
         )
@@ -697,7 +681,10 @@ def build_gui(
             )
             return
 
-        nonlocal channels, cache_norm_channels, cache_crop_norms, cache_merge, cache_crop_merge, prev_state
+        current_nd2_path = path
+        load_config["current_path"] = path
+        load_config["initial_dir"] = str(path.parent)
+
         channels = new_channels
         image_state.channels = new_channels
 
@@ -732,6 +719,27 @@ def build_gui(
 
         prev_state = current_state()
         update_display()
+
+    def load_new_nd2(_event) -> None:
+        try:
+            from tkinter import Tk, filedialog
+        except Exception as exc:
+            print(f"Tkinter is not available for file selection: {exc}")
+            return
+
+        root = Tk()
+        root.withdraw()
+        path = filedialog.askopenfilename(
+            title="Select ND2 file",
+            initialdir=str(load_config.get("initial_dir", Path.cwd())),
+            filetypes=[("ND2 files", "*.nd2"), ("All files", "*.*")],
+        )
+        root.destroy()
+
+        if not path:
+            return
+
+        load_nd2_from_path(Path(path))
 
     load_button.on_clicked(load_new_nd2)
 
@@ -770,6 +778,8 @@ def build_gui(
             return save_dir
         if save_path:
             return save_path.with_suffix("").with_name(f"{save_path.stem}_roi")
+        if current_nd2_path:
+            return current_nd2_path.with_suffix("").with_name(f"{current_nd2_path.stem}_roi")
         return None
 
     def save_roi_outputs(target_dir: Path) -> None:
@@ -899,18 +909,8 @@ def build_gui(
     def save_crops(_):
         target_dir = resolve_save_dir()
         if target_dir is None:
-            try:
-                from tkinter import Tk, filedialog
-            except Exception as exc:
-                print(f"Tkinter is not available for directory selection: {exc}")
-                return
-            root = Tk()
-            root.withdraw()
-            chosen_dir = filedialog.askdirectory(title="Select output folder")
-            root.destroy()
-            if not chosen_dir:
-                return
-            target_dir = Path(chosen_dir)
+            print("Set --save-dir or --save-roi to choose where ROI crops are written.")
+            return
 
         save_roi_outputs(target_dir)
         print(f"Saved ROI crops to {target_dir}")
@@ -1022,6 +1022,7 @@ def main() -> None:
         "  ROI Scale toggles percentiles based on the ROI\n"
         "  Save/Preview opens pseudocolor ROI crops\n"
         "  Save ROI Crops writes PNG + NPY outputs\n"
+        "  Load ND2 opens a file picker\n"
     )
 
     initial_dir = args.nd2_dir if args.nd2_dir else args.path.parent
@@ -1029,6 +1030,7 @@ def main() -> None:
         "channel_indices": args.channels,
         "z_project": args.z_project,
         "initial_dir": str(initial_dir),
+        "current_path": args.path,
     }
     build_gui(image_state, ui_state, args.save_roi, args.save_dir, load_config)
 
