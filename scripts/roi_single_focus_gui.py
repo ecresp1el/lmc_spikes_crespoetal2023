@@ -9,7 +9,9 @@ from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.patches import Rectangle
+from matplotlib.figure import Figure
 from matplotlib.widgets import Button, RectangleSelector, Slider, CheckButtons
 
 try:
@@ -117,6 +119,11 @@ def normalize_channel(channel: np.ndarray, bounds: Tuple[float, float], gamma: f
     return norm
 
 
+def subtract_background(channel: np.ndarray, pct: float) -> np.ndarray:
+    baseline = np.percentile(channel, pct)
+    return np.clip(channel - baseline, 0.0, None)
+
+
 def compose_merge(norm_channels: Dict[str, np.ndarray]) -> np.ndarray:
     ref = next(iter(norm_channels.values()))
     merged = np.zeros((*ref.shape, 3), dtype=np.float32)
@@ -191,25 +198,31 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
     smooth_default = gaussian_filter is not None
     smooth_checks = CheckButtons(smooth_ax, ["Gaussian"], [smooth_default])
 
-    low_ax = add_control_axes(0.05, 0.60, 0.87, 0.03)
-    high_ax = add_control_axes(0.05, 0.56, 0.87, 0.03)
-    gamma_ax = add_control_axes(0.05, 0.52, 0.87, 0.03)
-    sigma_ax = add_control_axes(0.05, 0.48, 0.87, 0.03)
+    view_ax = add_control_axes(0.05, 0.60, 0.90, 0.05)
+    view_checks = CheckButtons(view_ax, ["Auto-scale", "Background"], [False, False])
+
+    low_ax = add_control_axes(0.05, 0.54, 0.87, 0.03)
+    high_ax = add_control_axes(0.05, 0.50, 0.87, 0.03)
+    gamma_ax = add_control_axes(0.05, 0.46, 0.87, 0.03)
+    sigma_ax = add_control_axes(0.05, 0.42, 0.87, 0.03)
     low_slider = Slider(low_ax, "Low %", 0, 20, valinit=1.0, valstep=0.5)
     high_slider = Slider(high_ax, "High %", 80, 100, valinit=99.0, valstep=0.5)
     gamma_slider = Slider(gamma_ax, "Gamma", 0.2, 3.0, valinit=1.0, valstep=0.05)
     sigma_slider = Slider(sigma_ax, "Sigma", 0.5, 5.0, valinit=1.2, valstep=0.1)
 
-    roi_x_ax = add_control_axes(0.05, 0.44, 0.87, 0.03)
-    roi_y_ax = add_control_axes(0.05, 0.40, 0.87, 0.03)
-    roi_w_ax = add_control_axes(0.05, 0.36, 0.87, 0.03)
-    roi_h_ax = add_control_axes(0.05, 0.32, 0.87, 0.03)
+    roi_x_ax = add_control_axes(0.05, 0.38, 0.87, 0.03)
+    roi_y_ax = add_control_axes(0.05, 0.34, 0.87, 0.03)
+    roi_w_ax = add_control_axes(0.05, 0.30, 0.87, 0.03)
+    roi_h_ax = add_control_axes(0.05, 0.26, 0.87, 0.03)
     roi_x_slider = Slider(roi_x_ax, "ROI X", 0, 1, valinit=0, valstep=1)
     roi_y_slider = Slider(roi_y_ax, "ROI Y", 0, 1, valinit=0, valstep=1)
     roi_w_slider = Slider(roi_w_ax, "ROI W", 5, 50, valinit=50, valstep=1)
     roi_h_slider = Slider(roi_h_ax, "ROI H", 5, 50, valinit=50, valstep=1)
 
-    save_svg_ax = add_control_axes(0.05, 0.22, 0.90, 0.05)
+    bg_ax = add_control_axes(0.05, 0.22, 0.87, 0.03)
+    bg_slider = Slider(bg_ax, "BG %", 0, 20, valinit=5.0, valstep=0.5)
+
+    save_svg_ax = add_control_axes(0.05, 0.14, 0.90, 0.05)
     save_svg_button = Button(save_svg_ax, "Save Figure (SVG)")
 
     full_axes = []
@@ -256,6 +269,9 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         low_pct = low_slider.val
         high_pct = max(low_pct + 0.5, high_slider.val)
         gamma = gamma_slider.val
+        auto_enabled = view_checks.get_status()[0]
+        bg_enabled = view_checks.get_status()[1]
+        bg_pct = bg_slider.val
         smooth_enabled = smooth_checks.get_status()[0]
         if smooth_enabled and gaussian_filter is None:
             smooth_enabled = False
@@ -264,9 +280,18 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         norm_channels: Dict[str, np.ndarray] = {}
         for key, channel in channel_data.items():
             source = channel
+            if bg_enabled:
+                source = subtract_background(source, bg_pct)
             if smooth_enabled and gaussian_filter is not None:
                 source = gaussian_filter(source, sigma=float(sigma))
-            bounds = percentile_bounds(source, low_pct, high_pct)
+            if auto_enabled:
+                vmin = float(np.nanmin(source))
+                vmax = float(np.nanmax(source))
+                if vmax <= vmin:
+                    vmax = vmin + 1.0
+                bounds = (vmin, vmax)
+            else:
+                bounds = percentile_bounds(source, low_pct, high_pct)
             norm_channels[key] = normalize_channel(source, bounds, gamma)
         return norm_channels
 
@@ -274,6 +299,11 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         if not channel_data:
             return
         pseudo_enabled = pseudo_checks.get_status()[0]
+        auto_enabled = view_checks.get_status()[0]
+        bg_enabled = view_checks.get_status()[1]
+        bg_pct = bg_slider.val
+        smooth_enabled = smooth_checks.get_status()[0] and gaussian_filter is not None
+        sigma = sigma_slider.val
 
         norm_channels = compute_norm_channels()
 
@@ -313,6 +343,15 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         roi_patch.set_height(roi_state["h"])
 
         fig.canvas.draw_idle()
+        notes = []
+        if auto_enabled:
+            notes.append("Auto-scale")
+        if bg_enabled:
+            notes.append(f"BG {bg_pct:.1f}%")
+        if smooth_enabled:
+            notes.append(f"Smooth {sigma:.1f}")
+        if notes:
+            set_status("Preview updated (" + ", ".join(notes) + ").")
 
     def on_select(click, release) -> None:
         if click.xdata is None or release.xdata is None:
@@ -418,7 +457,8 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
             set_status("No channels available for SVG export.")
             return
 
-        out_fig = plt.figure(figsize=(2.6 * (num_channels + 1), 5.2))
+        out_fig = Figure(figsize=(2.6 * (num_channels + 1), 5.2), dpi=SVG_DPI)
+        FigureCanvas(out_fig)
         out_grid = out_fig.add_gridspec(2, num_channels + 1, wspace=0.05, hspace=0.1)
 
         for idx, key in enumerate(keys):
@@ -459,7 +499,6 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
         ax_crop.imshow(extract_roi(merge, roi), interpolation="nearest")
 
         out_fig.savefig(svg_path, format="svg", dpi=SVG_DPI, facecolor="white")
-        plt.close(out_fig)
         set_status(f"Saved SVG to {svg_path}")
 
     load_button.on_clicked(load_folder)
@@ -468,12 +507,14 @@ def build_gui(initial_dir: Path, roi_dir: Path | None, out_dir: Path | None) -> 
     high_slider.on_changed(lambda _=None: update_display())
     gamma_slider.on_changed(lambda _=None: update_display())
     sigma_slider.on_changed(lambda _=None: update_display())
+    bg_slider.on_changed(lambda _=None: update_display())
     roi_x_slider.on_changed(lambda _=None: update_display())
     roi_y_slider.on_changed(lambda _=None: update_display())
     roi_w_slider.on_changed(lambda _=None: update_display())
     roi_h_slider.on_changed(lambda _=None: update_display())
     pseudo_checks.on_clicked(lambda _=None: update_display())
     smooth_checks.on_clicked(lambda _=None: update_display())
+    view_checks.on_clicked(lambda _=None: update_display())
 
     fig.canvas.mpl_connect("button_press_event", on_press)
     fig.canvas.mpl_connect("motion_notify_event", on_motion)
