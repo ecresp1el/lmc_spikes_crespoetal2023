@@ -421,11 +421,11 @@ def build_gui(initial_dir: Path, out_dir: Path | None) -> None:
         def make_select(group_name: str):
             def _select(_event):
                 path = pick_directory(initial_dir)
-        if not path:
-            return
-        if not path.name.lower().startswith("group_") and not list(path.glob("roi_raw_ch*_*.npy")):
-            set_status("Select a specific ROI folder that contains roi_raw_ch*.npy files.")
-            return
+                if not path:
+                    return
+                if not path.name.lower().startswith("group_") and not list(path.glob("roi_raw_ch*_*.npy")):
+                    set_status("Select a specific ROI folder that contains roi_raw_ch*.npy files.")
+                    return
                 try:
                     arrays, labels = load_roi_folder(path)
                 except Exception as exc:
