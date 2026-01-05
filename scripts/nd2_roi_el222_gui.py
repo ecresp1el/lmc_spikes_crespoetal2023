@@ -9,6 +9,7 @@ from typing import List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import transforms
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import Button, RectangleSelector, Slider
 try:
@@ -272,7 +273,6 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
         ax.set_yticks([])
 
     roi_patch = Rectangle((0, 0), 1, 1, fill=False, edgecolor="yellow", linewidth=2)
-    roi_patch.set_angle(ui_state.roi.angle)
     full_merge_ax.add_patch(roi_patch)
 
     drag_state = {"active": False, "start": (0.0, 0.0), "center": (0.0, 0.0)}
@@ -312,7 +312,12 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
                 ui_state.roi.center[1] - ui_state.roi.height / 2,
             )
         )
-        roi_patch.set_angle(ui_state.roi.angle)
+        rot = transforms.Affine2D().rotate_deg_around(
+            ui_state.roi.center[0],
+            ui_state.roi.center[1],
+            ui_state.roi.angle,
+        )
+        roi_patch.set_transform(rot + full_merge_ax.transData)
 
     def recompute_crop_norms(norm_channels: List[np.ndarray]) -> List[np.ndarray]:
         return [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
@@ -647,14 +652,8 @@ def build_gui(image_state: ImageState, ui_state: UiState, save_path: Path | None
     reset_button.on_clicked(reset_roi)
 
     def show_roi_preview() -> None:
-        update_timer.stop()
-        update_display()
-        norm_channels = cache_norm_channels
-        roi_norms = cache_crop_norms
-        if norm_channels is None:
-            norm_channels = compute_norm_channels()
-        if roi_norms is None:
-            roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
+        norm_channels = compute_norm_channels()
+        roi_norms = [extract_rotated_roi(channel, ui_state.roi) for channel in norm_channels]
         roi_merge = compose_merge(roi_norms, image_state.colors, ui_state.display.gains)
 
         preview_fig = plt.figure(figsize=(3.2 * (num_channels + 1), 3.2))
