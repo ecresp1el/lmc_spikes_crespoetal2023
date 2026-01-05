@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,21 @@ DEFAULT_INSET_ARGS = [
     "--el222-clip-pct",
     "90",
 ]
+
+
+def _pairs_from_args(args: List[str]) -> Dict[str, str | bool]:
+    pairs: Dict[str, str | bool] = {}
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg.startswith("--"):
+            if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+                pairs[arg] = args[idx + 1]
+                idx += 2
+                continue
+            pairs[arg] = True
+        idx += 1
+    return pairs
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +113,8 @@ def main() -> None:
     args, extra_args = parse_args()
     extra_args = [arg for arg in extra_args if arg != "--"]
     inset_args = extra_args if extra_args else DEFAULT_INSET_ARGS
+    if "--include-dapi" not in inset_args:
+        inset_args = inset_args + ["--include-dapi"]
 
     root = args.roi_root.expanduser()
     nd2_dir = args.nd2_dir.expanduser()
@@ -153,6 +171,56 @@ def main() -> None:
     inset_cmd.extend(inset_args)
 
     subprocess.run(inset_cmd, check=True)
+
+    default_inset = DEFAULT_INSET_ARGS + ["--include-dapi"]
+    default_inset_map = _pairs_from_args(default_inset)
+    inset_map = _pairs_from_args(inset_args)
+    inset_overrides = {
+        key: value
+        for key, value in inset_map.items()
+        if key not in default_inset_map or default_inset_map.get(key) != value
+    }
+    grid_defaults = {
+        "groups": ["ctznmda", "ctz", "nmda"],
+        "eyfp_ref_groups": ["ctz", "nmda"],
+        "tdtom_ref_groups": ["ctznmda", "ctz", "nmda"],
+        "grid_tag": "pooled_eyfp_tdtom",
+        "padding": 20,
+    }
+    grid_actual = {
+        "groups": group_args,
+        "eyfp_ref_groups": args.eyfp_ref_groups,
+        "tdtom_ref_groups": args.tdtom_ref_groups,
+        "grid_tag": grid_tag,
+        "padding": args.padding,
+    }
+    grid_overrides = {
+        key: value for key, value in grid_actual.items() if grid_defaults.get(key) != value
+    }
+
+    summary = {
+        "roi_root": str(root),
+        "nd2_dir": str(nd2_dir),
+        "groups": group_args,
+        "eyfp_ref_groups": args.eyfp_ref_groups,
+        "tdtom_ref_groups": args.tdtom_ref_groups,
+        "grid_tag": grid_tag,
+        "grid_defaults": grid_defaults,
+        "grid_overrides": grid_overrides,
+        "grid_command": grid_cmd,
+        "inset_command": inset_cmd,
+        "inset_defaults": default_inset_map,
+        "inset_overrides": inset_overrides,
+        "report_path": str(report_path),
+    }
+    summary_path = root / "nd2_export" / "final_export_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, indent=2))
+    print(f"Saved final export summary to {summary_path}")
+    print("Defaults used for grid:", grid_defaults)
+    print("Grid overrides:", grid_overrides or "none")
+    print("Defaults used for insets:", default_inset_map)
+    print("Inset overrides:", inset_overrides or "none")
 
 
 if __name__ == "__main__":

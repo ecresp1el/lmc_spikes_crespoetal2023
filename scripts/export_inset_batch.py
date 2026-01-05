@@ -39,6 +39,12 @@ def ensure_reuse_insets(args: List[str]) -> List[str]:
     return ["--reuse-insets"] + cleaned
 
 
+def ensure_include_dapi(args: List[str]) -> List[str]:
+    if "--include-dapi" in args:
+        return args
+    return args + ["--include-dapi"]
+
+
 def has_flag(args: Iterable[str], flag: str) -> bool:
     return flag in args
 
@@ -142,6 +148,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args, extra_args = parse_args()
     extra_args = ensure_reuse_insets(list(extra_args))
+    extra_args = ensure_include_dapi(extra_args)
 
     script_path = Path(__file__).with_name("export_single_roi_grid.py")
     if not script_path.exists():
