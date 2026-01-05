@@ -16,10 +16,11 @@ except ImportError:  # pragma: no cover - optional ND2 support
     ND2File = None
 
 try:
-    from scipy.ndimage import rotate, gaussian_filter
+    from scipy.ndimage import rotate, gaussian_filter, median_filter
 except ImportError:  # pragma: no cover - optional smoothing/rotation
     rotate = None
     gaussian_filter = None
+    median_filter = None
 
 try:
     import tifffile
@@ -66,6 +67,19 @@ def pick_directory(initial_dir: Path, prompt: str) -> Path | None:
     )
     root.destroy()
     return Path(path) if path else None
+
+
+def open_paths(paths: List[Path]) -> None:
+    if not paths:
+        return
+    if sys.platform == "darwin":
+        for path in paths:
+            subprocess.run(["open", str(path)], check=False)
+        return
+    if sys.platform.startswith("linux"):
+        for path in paths:
+            subprocess.run(["xdg-open", str(path)], check=False)
+        return
 
 
 def _normalize_axes(axes) -> List[str]:
@@ -266,6 +280,27 @@ def colorize_channel(channel: np.ndarray, color: Tuple[float, float, float]) -> 
     return np.clip(rgb, 0.0, 1.0)
 
 
+def correct_illumination(channel: np.ndarray, sigma: float) -> np.ndarray:
+    if sigma <= 0 or gaussian_filter is None:
+        return channel
+    background = gaussian_filter(channel, sigma=float(sigma))
+    return np.clip(channel - background, 0.0, None)
+
+
+def subtract_background_pct(channel: np.ndarray, pct: float) -> np.ndarray:
+    if pct <= 0:
+        return channel
+    baseline = np.percentile(channel, pct)
+    return np.clip(channel - baseline, 0.0, None)
+
+
+def clip_below_percentile(channel: np.ndarray, pct: float) -> np.ndarray:
+    if pct <= 0:
+        return channel
+    threshold = np.percentile(channel, pct)
+    return np.where(channel < threshold, 0.0, channel)
+
+
 def match_histogram(source: np.ndarray, template: np.ndarray, bins: int) -> np.ndarray:
     src = source.astype(np.float32, copy=False).ravel()
     tmpl = template.astype(np.float32, copy=False).ravel()
@@ -460,6 +495,22 @@ def parse_args() -> argparse.Namespace:
         help="Channel names to export (default: EYFP tdTom).",
     )
     parser.add_argument(
+        "--out-tag",
+        type=str,
+        default=None,
+        help="Optional suffix for the output folder (e.g. run1).",
+    )
+    parser.add_argument(
+        "--open-outputs",
+        action="store_true",
+        help="Open saved TIFFs after export.",
+    )
+    parser.add_argument(
+        "--grid-only",
+        action="store_true",
+        help="Save only the combined grid (skip per-channel TIFFs).",
+    )
+    parser.add_argument(
         "--eyfp-per-group",
         dest="eyfp_per_group",
         action="store_true",
@@ -471,11 +522,23 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Scale EYFP using reference group bounds (matches tdTom).",
     )
+    parser.add_argument(
+        "--eyfp-ref-groups",
+        nargs="+",
+        default=None,
+        help="Groups to pool for EYFP bounds (overrides eyfp-per-group).",
+    )
     parser.add_argument("--z-project", choices=["max", "first"], default="max", help="Z projection mode.")
     parser.add_argument("--low-pct", type=float, default=1.0, help="Low percentile for autoscale.")
     parser.add_argument("--high-pct", type=float, default=99.0, help="High percentile for autoscale.")
     parser.add_argument("--tdtom-low", type=float, default=None, help="Override tdTom low percentile.")
     parser.add_argument("--tdtom-high", type=float, default=None, help="Override tdTom high percentile.")
+    parser.add_argument(
+        "--tdtom-ref-groups",
+        nargs="+",
+        default=None,
+        help="Groups to pool for tdTom bounds (overrides tdtom-hist-match).",
+    )
     parser.add_argument(
         "--tdtom-hist-match",
         action="store_true",
@@ -486,6 +549,90 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1024,
         help="Number of bins for histogram matching (default: 1024).",
+    )
+    parser.add_argument(
+        "--illumination-sigma",
+        type=float,
+        default=0.0,
+        help="Sigma for background correction (0 disables).",
+    )
+    parser.add_argument(
+        "--illumination-channels",
+        nargs="+",
+        default=["EL222"],
+        help="Channels to apply illumination correction (default: EL222).",
+    )
+    parser.add_argument(
+        "--bg-pct",
+        type=float,
+        default=0.0,
+        help="Percentile to subtract as background (0 disables).",
+    )
+    parser.add_argument(
+        "--bg-channels",
+        nargs="+",
+        default=["EL222"],
+        help="Channels to apply background subtraction (default: EL222).",
+    )
+    parser.add_argument(
+        "--eyfp-bg-pct",
+        type=float,
+        default=None,
+        help="Override background percentile for EYFP only.",
+    )
+    parser.add_argument(
+        "--tdtom-bg-pct",
+        type=float,
+        default=None,
+        help="Override background percentile for tdTom only.",
+    )
+    parser.add_argument(
+        "--el222-bg-pct",
+        type=float,
+        default=None,
+        help="Override background percentile for EL222 only.",
+    )
+    parser.add_argument(
+        "--clip-below-pct",
+        type=float,
+        default=0.0,
+        help="Set values below this percentile to black (0 disables).",
+    )
+    parser.add_argument(
+        "--clip-channels",
+        nargs="+",
+        default=["EL222"],
+        help="Channels to apply clip-below percentile (default: EL222).",
+    )
+    parser.add_argument(
+        "--eyfp-clip-pct",
+        type=float,
+        default=None,
+        help="Override clip-below percentile for EYFP only.",
+    )
+    parser.add_argument(
+        "--tdtom-clip-pct",
+        type=float,
+        default=None,
+        help="Override clip-below percentile for tdTom only.",
+    )
+    parser.add_argument(
+        "--el222-clip-pct",
+        type=float,
+        default=None,
+        help="Override clip-below percentile for EL222 only.",
+    )
+    parser.add_argument(
+        "--despeckle-size",
+        type=int,
+        default=0,
+        help="Median filter size for despeckle (0 disables).",
+    )
+    parser.add_argument(
+        "--despeckle-channels",
+        nargs="+",
+        default=["EL222"],
+        help="Channels to apply despeckle (default: EL222).",
     )
     parser.add_argument("--sigma", type=float, default=0.6, help="Gaussian sigma for mild smoothing.")
     parser.add_argument("--padding", type=int, default=10, help="Grid padding in pixels.")
@@ -553,6 +700,8 @@ def main() -> None:
     reuse_eyfp_bounds = args.reuse_eyfp_bounds and report_data and "bounds" in report_data
     last_bounds = report_data.get("bounds", {}) if reuse_eyfp_bounds else {}
     eyfp_per_group = bool(args.eyfp_per_group)
+    eyfp_ref_groups = [item.strip() for item in (args.eyfp_ref_groups or []) if item.strip()]
+    tdtom_ref_groups = [item.strip() for item in (args.tdtom_ref_groups or []) if item.strip()]
 
     select_set = {name.lower() for name in args.select}
     channel_map = {name: idx for idx, name in enumerate(args.channel_names)}
@@ -564,6 +713,26 @@ def main() -> None:
     if smooth_sigma > 0 and gaussian_filter is None:
         print("Gaussian smoothing unavailable (install scipy). Proceeding without smoothing.")
         smooth_sigma = 0.0
+    despeckle_size = max(0, int(args.despeckle_size))
+    if despeckle_size > 0 and median_filter is None:
+        print("Median filter unavailable (install scipy). Proceeding without despeckle.")
+        despeckle_size = 0
+    despeckle_targets = {channel_key(name) for name in args.despeckle_channels}
+    illum_sigma = max(0.0, float(args.illumination_sigma))
+    if illum_sigma > 0 and gaussian_filter is None:
+        print("Illumination correction unavailable (install scipy). Proceeding without correction.")
+        illum_sigma = 0.0
+    illum_targets = {channel_key(name) for name in args.illumination_channels}
+    bg_pct = max(0.0, float(args.bg_pct))
+    bg_targets = {channel_key(name) for name in args.bg_channels}
+    clip_pct = max(0.0, float(args.clip_below_pct))
+    clip_targets = {channel_key(name) for name in args.clip_channels}
+    eyfp_bg_pct = None if args.eyfp_bg_pct is None else max(0.0, float(args.eyfp_bg_pct))
+    eyfp_clip_pct = None if args.eyfp_clip_pct is None else max(0.0, float(args.eyfp_clip_pct))
+    tdtom_bg_pct = None if args.tdtom_bg_pct is None else max(0.0, float(args.tdtom_bg_pct))
+    tdtom_clip_pct = None if args.tdtom_clip_pct is None else max(0.0, float(args.tdtom_clip_pct))
+    el222_bg_pct = None if args.el222_bg_pct is None else max(0.0, float(args.el222_bg_pct))
+    el222_clip_pct = None if args.el222_clip_pct is None else max(0.0, float(args.el222_clip_pct))
 
     roi_state_by_group = {}
     nd2_by_group = {}
@@ -604,6 +773,33 @@ def main() -> None:
         for name in selected_names:
             idx = channel_map[name]
             channel = roi_crop[idx]
+            key = channel_key(name)
+            if illum_sigma > 0 and key in illum_targets:
+                channel = correct_illumination(channel, illum_sigma)
+            if key in bg_targets:
+                if key == "gfp" and eyfp_bg_pct is not None:
+                    pct = eyfp_bg_pct
+                elif key == "tdtom" and tdtom_bg_pct is not None:
+                    pct = tdtom_bg_pct
+                elif key == "el222" and el222_bg_pct is not None:
+                    pct = el222_bg_pct
+                else:
+                    pct = bg_pct
+                if pct > 0:
+                    channel = subtract_background_pct(channel, pct)
+            if key in clip_targets:
+                if key == "gfp" and eyfp_clip_pct is not None:
+                    pct = eyfp_clip_pct
+                elif key == "tdtom" and tdtom_clip_pct is not None:
+                    pct = tdtom_clip_pct
+                elif key == "el222" and el222_clip_pct is not None:
+                    pct = el222_clip_pct
+                else:
+                    pct = clip_pct
+                if pct > 0:
+                    channel = clip_below_percentile(channel, pct)
+            if despeckle_size > 0 and key in despeckle_targets:
+                channel = median_filter(channel, size=despeckle_size)
             if smooth_sigma > 0 and gaussian_filter is not None:
                 channel = gaussian_filter(channel, sigma=smooth_sigma)
             channel_data[name] = channel
@@ -620,7 +816,27 @@ def main() -> None:
     if ref_group not in raw_by_group:
         raise SystemExit(f"Reference group {ref_group} not loaded.")
 
-    if args.tdtom_hist_match:
+    tdtom_bounds_pooled: Tuple[float, float] | None = None
+    if tdtom_ref_groups:
+        missing = [group for group in tdtom_ref_groups if group not in raw_by_group]
+        if missing:
+            raise SystemExit(f"tdTom ref groups not loaded: {', '.join(missing)}")
+        pooled = []
+        for group in tdtom_ref_groups:
+            for name, channel in raw_by_group[group].items():
+                if channel_key(name) == "tdtom":
+                    pooled.append(channel.ravel())
+                    break
+        if not pooled:
+            raise SystemExit("No tdTom channel found in specified tdtom-ref-groups.")
+        merged = np.concatenate(pooled)
+        vmin, vmax = np.percentile(merged, [args.low_pct, args.high_pct])
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        tdtom_bounds_pooled = (float(vmin), float(vmax))
+        if args.tdtom_hist_match:
+            print("tdtom-ref-groups provided; ignoring tdtom-hist-match.")
+    elif args.tdtom_hist_match:
         ref_tdtom = None
         for name, channel in raw_by_group[ref_group].items():
             if channel_key(name) == "tdtom":
@@ -638,9 +854,31 @@ def main() -> None:
 
     bounds_by_channel: Dict[str, Tuple[float, float]] = {}
     eyfp_bounds_by_group: Dict[str, Tuple[float, float]] = {}
+    eyfp_bounds_pooled: Tuple[float, float] | None = None
     auto_meta: Dict[str, Dict[str, float]] = {}
+    if eyfp_ref_groups:
+        missing = [group for group in eyfp_ref_groups if group not in raw_by_group]
+        if missing:
+            raise SystemExit(f"EYFP ref groups not loaded: {', '.join(missing)}")
+        pooled = []
+        for group in eyfp_ref_groups:
+            for name, channel in raw_by_group[group].items():
+                if channel_key(name) == "gfp":
+                    pooled.append(channel.ravel())
+                    break
+        if not pooled:
+            raise SystemExit("No EYFP channel found in specified eyfp-ref-groups.")
+        merged = np.concatenate(pooled)
+        vmin, vmax = np.percentile(merged, [args.low_pct, args.high_pct])
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        eyfp_bounds_pooled = (float(vmin), float(vmax))
     for name, channel in raw_by_group[ref_group].items():
-        if reuse_eyfp_bounds and name in last_bounds and channel_key(name) == "gfp":
+        if tdtom_bounds_pooled is not None and channel_key(name) == "tdtom":
+            bounds_by_channel[name] = tdtom_bounds_pooled
+        elif eyfp_bounds_pooled is not None and channel_key(name) == "gfp":
+            bounds_by_channel[name] = eyfp_bounds_pooled
+        elif reuse_eyfp_bounds and name in last_bounds and channel_key(name) == "gfp":
             bounds_by_channel[name] = tuple(last_bounds[name])
         elif name.lower() == "tdtom" and tdtom_low is not None and tdtom_high is not None:
             _, bounds = scale_channel(channel, float(tdtom_low), float(tdtom_high))
@@ -661,7 +899,7 @@ def main() -> None:
             _, bounds = scale_channel(channel, args.low_pct, args.high_pct)
             bounds_by_channel[name] = bounds
 
-    if eyfp_per_group:
+    if eyfp_bounds_pooled is None and eyfp_per_group:
         for group, channels in raw_by_group.items():
             for name, channel in channels.items():
                 if channel_key(name) != "gfp":
@@ -677,6 +915,8 @@ def main() -> None:
         for name, channel in raw_by_group[group].items():
             if eyfp_per_group and channel_key(name) == "gfp":
                 bounds = eyfp_bounds_by_group.get(group, bounds_by_channel[name])
+            elif eyfp_bounds_pooled is not None and channel_key(name) == "gfp":
+                bounds = eyfp_bounds_pooled
             else:
                 bounds = bounds_by_channel[name]
             scaled = apply_bounds(channel, bounds)
@@ -687,21 +927,32 @@ def main() -> None:
 
     output_root = args.out_dir if args.out_dir else roi_root / "nd2_export"
     output_root.mkdir(parents=True, exist_ok=True)
-    export_dir = output_root / "group_grid_export"
+    if args.out_tag:
+        safe_tag = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in args.out_tag.strip())
+        export_dir = output_root / f"group_grid_export_{safe_tag}"
+    else:
+        export_dir = output_root / "group_grid_export"
     export_dir.mkdir(parents=True, exist_ok=True)
 
-    for group in groups:
-        for name in selected_names:
-            safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
-            scaled = scaled_by_group[group][name]
-            pseudo = pseudo_by_group[group][name]
-            save_tiff(export_dir / f"{group}_{safe}_autoscale.tif", normalize_to_uint16(scaled))
-            save_tiff(export_dir / f"{group}_{safe}_pseudo.tif", normalize_to_uint16(pseudo))
+    saved_paths: List[Path] = []
+    if not args.grid_only:
+        for group in groups:
+            for name in selected_names:
+                safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
+                scaled = scaled_by_group[group][name]
+                pseudo = pseudo_by_group[group][name]
+                auto_path = export_dir / f"{group}_{safe}_autoscale.tif"
+                pseudo_path = export_dir / f"{group}_{safe}_pseudo.tif"
+                save_tiff(auto_path, normalize_to_uint16(scaled))
+                save_tiff(pseudo_path, normalize_to_uint16(pseudo))
+                saved_paths.extend([auto_path, pseudo_path])
 
     cols = [name for name in selected_names]
     grid = make_grid(groups, cols, pseudo_by_group, args.padding)
     grid_name = "grid_" + "_".join(groups) + "_pseudo.tif"
-    save_tiff(export_dir / grid_name, normalize_to_uint16(grid))
+    grid_path = export_dir / grid_name
+    save_tiff(grid_path, normalize_to_uint16(grid))
+    saved_paths.append(grid_path)
 
     report = {
         "roi_root": str(roi_root),
@@ -716,6 +967,10 @@ def main() -> None:
         },
         "reuse_eyfp_bounds": bool(reuse_eyfp_bounds),
         "eyfp_per_group": eyfp_per_group,
+        "eyfp_ref_groups": eyfp_ref_groups,
+        "eyfp_bounds_pooled": list(eyfp_bounds_pooled) if eyfp_bounds_pooled else None,
+        "tdtom_ref_groups": tdtom_ref_groups,
+        "tdtom_bounds_pooled": list(tdtom_bounds_pooled) if tdtom_bounds_pooled else None,
         "tdtom_hist_match": bool(args.tdtom_hist_match),
         "hist_bins": int(args.hist_bins),
         "bounds": bounds_by_channel,
@@ -723,14 +978,31 @@ def main() -> None:
         "auto_meta": auto_meta,
         "sat_target": args.sat_target,
         "sigma": smooth_sigma,
+        "illumination_sigma": illum_sigma,
+        "illumination_channels": sorted(illum_targets),
+        "bg_pct": bg_pct,
+        "bg_channels": sorted(bg_targets),
+        "eyfp_bg_pct": eyfp_bg_pct,
+        "tdtom_bg_pct": tdtom_bg_pct,
+        "el222_bg_pct": el222_bg_pct,
+        "clip_below_pct": clip_pct,
+        "clip_channels": sorted(clip_targets),
+        "eyfp_clip_pct": eyfp_clip_pct,
+        "tdtom_clip_pct": tdtom_clip_pct,
+        "el222_clip_pct": el222_clip_pct,
+        "despeckle_size": despeckle_size,
+        "despeckle_channels": sorted(despeckle_targets),
         "low_pct": args.low_pct,
         "high_pct": args.high_pct,
         "roi_states": roi_state_by_group,
         "nd2_paths": nd2_by_group,
         "output_dir": str(export_dir),
+        "grid_only": bool(args.grid_only),
     }
     (export_dir / "export_report.json").write_text(json.dumps(report, indent=2))
     print(f"Saved group TIFFs + grid to {export_dir}")
+    if args.open_outputs:
+        open_paths(saved_paths)
 
 
 if __name__ == "__main__":

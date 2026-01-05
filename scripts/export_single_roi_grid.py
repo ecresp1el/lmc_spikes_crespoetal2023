@@ -162,6 +162,57 @@ def channel_key(name: str) -> str:
     return lower
 
 
+def normalize_inset_targets(targets: List[str]) -> List[str]:
+    normalized = []
+    for target in targets:
+        key = target.strip().lower()
+        if not key:
+            continue
+        if key == "merged":
+            normalized.append("merged")
+        else:
+            normalized.append(channel_key(key))
+    return normalized
+
+
+def combine_grayscale(images: List[np.ndarray], mode: str) -> np.ndarray:
+    if not images:
+        raise ValueError("No images to combine.")
+    if len(images) == 1:
+        return images[0]
+    stack = np.stack(images, axis=0)
+    mode = mode.lower()
+    if mode == "max":
+        return np.max(stack, axis=0)
+    if mode == "min":
+        return np.min(stack, axis=0)
+    if mode == "multiply":
+        return np.prod(stack, axis=0)
+    return np.mean(stack, axis=0)
+
+
+def diffmap_view(gfp: np.ndarray, el222: np.ndarray, threshold: float) -> np.ndarray:
+    g = np.clip(gfp, 0.0, 1.0)
+    e = np.clip(el222, 0.0, 1.0)
+    if threshold > 0:
+        g_mask = g >= threshold
+        e_mask = e >= threshold
+        g_only = g_mask & ~e_mask
+        e_only = e_mask & ~g_mask
+        both = g_mask & e_mask
+        rgb = np.zeros((*g.shape, 3), dtype=np.float32)
+        rgb[..., 0] = e_only.astype(np.float32) + both.astype(np.float32)
+        rgb[..., 1] = g_only.astype(np.float32) + both.astype(np.float32)
+        return np.clip(rgb, 0.0, 1.0)
+    g_only = g * (1.0 - e)
+    e_only = e * (1.0 - g)
+    both = np.minimum(g, e)
+    rgb = np.zeros((*g.shape, 3), dtype=np.float32)
+    rgb[..., 0] = e_only + both
+    rgb[..., 1] = g_only + both
+    return np.clip(rgb, 0.0, 1.0)
+
+
 def extract_rotated_roi(image: np.ndarray, center: Tuple[float, float], width: float, height: float, angle: float) -> np.ndarray:
     if image.ndim == 3:
         return np.stack(
@@ -317,6 +368,18 @@ def pad_to_height(image: np.ndarray, target_h: int) -> np.ndarray:
     pad_bottom = pad_total - pad_top
     pad_width = ((pad_top, pad_bottom), (0, 0), (0, 0))
     return np.pad(image, pad_width, mode="constant")
+
+
+def match_height(image: np.ndarray, target_h: int, allow_resize: bool) -> np.ndarray:
+    height, width = image.shape[:2]
+    if height == target_h:
+        return image
+    if allow_resize:
+        return resize_nearest(image, target_h, width)
+    if height > target_h:
+        start = max(0, (height - target_h) // 2)
+        return image[start : start + target_h]
+    return pad_to_height(image, target_h)
 
 
 def square_box(x: int, y: int, w: int, h: int, size: int | None) -> Tuple[int, int, int, int]:
@@ -519,6 +582,18 @@ def parse_args() -> argparse.Namespace:
         help="Inset source(s): merged, eyfp, tdtom, el222, or dapi.",
     )
     parser.add_argument(
+        "--inset-composite",
+        type=str,
+        default="avg",
+        help="Composite mode for multiple inset targets: avg, max, min, multiply, diffmap.",
+    )
+    parser.add_argument(
+        "--diff-threshold",
+        type=float,
+        default=0.2,
+        help="Threshold for diffmap overlap (0 uses continuous mode).",
+    )
+    parser.add_argument(
         "--inset-count",
         type=int,
         default=2,
@@ -529,6 +604,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=200,
         help="Square size (pixels) for inset crops (default: 200).",
+    )
+    parser.add_argument(
+        "--reuse-insets",
+        action="store_true",
+        help="Reuse and reposition inset boxes from the last grid_export_report.json.",
     )
     parser.add_argument(
         "--no-inset-resize",
@@ -560,6 +640,24 @@ def parse_args() -> argparse.Namespace:
         help="Channels to apply background percentile subtraction (default: EL222).",
     )
     parser.add_argument(
+        "--eyfp-bg-pct",
+        type=float,
+        default=None,
+        help="Override background percentile for EYFP only.",
+    )
+    parser.add_argument(
+        "--tdtom-bg-pct",
+        type=float,
+        default=None,
+        help="Override background percentile for tdTom only.",
+    )
+    parser.add_argument(
+        "--el222-bg-pct",
+        type=float,
+        default=None,
+        help="Override background percentile for EL222 only.",
+    )
+    parser.add_argument(
         "--clip-below-pct",
         type=float,
         default=0.0,
@@ -572,10 +670,45 @@ def parse_args() -> argparse.Namespace:
         help="Channels to apply clip-below percentile (default: EL222).",
     )
     parser.add_argument(
+        "--eyfp-clip-pct",
+        type=float,
+        default=None,
+        help="Override clip-below percentile for EYFP only.",
+    )
+    parser.add_argument(
+        "--tdtom-clip-pct",
+        type=float,
+        default=None,
+        help="Override clip-below percentile for tdTom only.",
+    )
+    parser.add_argument(
+        "--el222-clip-pct",
+        type=float,
+        default=None,
+        help="Override clip-below percentile for EL222 only.",
+    )
+    parser.add_argument(
+        "--eyfp-from-report",
+        action="store_true",
+        help="Use EYFP bounds from report-path when available.",
+    )
+    parser.add_argument(
         "--el222-gain",
         type=float,
         default=1.4,
         help="Gain multiplier for EL222 after scaling (default: 1.4).",
+    )
+    parser.add_argument(
+        "--tdtom-gain",
+        type=float,
+        default=1.0,
+        help="Gain multiplier for tdTom after scaling (default: 1.0).",
+    )
+    parser.add_argument(
+        "--dapi-gain",
+        type=float,
+        default=1.0,
+        help="Gain multiplier for DAPI after scaling (default: 1.0).",
     )
     parser.add_argument("--z-project", choices=["max", "first"], default="max", help="Z projection mode.")
     parser.add_argument("--low-pct", type=float, default=0.5, help="Low percentile for autoscale.")
@@ -629,18 +762,34 @@ def main() -> None:
     if illum_sigma > 0 and gaussian_filter is None:
         print("Illumination correction unavailable (install scipy). Proceeding without correction.")
         illum_sigma = 0.0
-    illum_targets = {name.lower() for name in args.illumination_channels}
+    illum_targets = {channel_key(name) for name in args.illumination_channels}
     bg_pct = max(0.0, float(args.bg_pct))
-    bg_targets = {name.lower() for name in args.bg_channels}
+    bg_targets = {channel_key(name) for name in args.bg_channels}
     clip_pct = max(0.0, float(args.clip_below_pct))
-    clip_targets = {name.lower() for name in args.clip_channels}
+    clip_targets = {channel_key(name) for name in args.clip_channels}
+    eyfp_bg_pct = None if args.eyfp_bg_pct is None else max(0.0, float(args.eyfp_bg_pct))
+    eyfp_clip_pct = None if args.eyfp_clip_pct is None else max(0.0, float(args.eyfp_clip_pct))
+    tdtom_bg_pct = None if args.tdtom_bg_pct is None else max(0.0, float(args.tdtom_bg_pct))
+    tdtom_clip_pct = None if args.tdtom_clip_pct is None else max(0.0, float(args.tdtom_clip_pct))
+    el222_bg_pct = None if args.el222_bg_pct is None else max(0.0, float(args.el222_bg_pct))
+    el222_clip_pct = None if args.el222_clip_pct is None else max(0.0, float(args.el222_clip_pct))
     auto_only = bool(args.auto_scale_only)
 
     tdtom_bounds = None
+    eyfp_bounds = None
     if args.report_path and args.report_path.exists():
         report = json.loads(args.report_path.read_text())
         bounds = report.get("bounds", {})
         tdtom_bounds = bounds.get("tdTom")
+        if args.eyfp_from_report:
+            pooled = report.get("eyfp_bounds_pooled")
+            if pooled:
+                eyfp_bounds = tuple(float(item) for item in pooled)
+            else:
+                for name, value in bounds.items():
+                    if channel_key(name) == "gfp":
+                        eyfp_bounds = tuple(float(item) for item in value)
+                        break
 
     scaled_channels: Dict[str, np.ndarray] = {}
     pseudo_channels: Dict[str, np.ndarray] = {}
@@ -652,18 +801,44 @@ def main() -> None:
         if not auto_only:
             if illum_sigma > 0 and key in illum_targets:
                 channel = correct_illumination(channel, illum_sigma)
-            if bg_pct > 0 and key in bg_targets:
-                channel = subtract_background_pct(channel, bg_pct)
-            if clip_pct > 0 and key in clip_targets:
-                channel = clip_below_percentile(channel, clip_pct)
+        if key in bg_targets:
+            if key == "gfp" and eyfp_bg_pct is not None:
+                pct = eyfp_bg_pct
+            elif key == "tdtom" and tdtom_bg_pct is not None:
+                pct = tdtom_bg_pct
+            elif key == "el222" and el222_bg_pct is not None:
+                pct = el222_bg_pct
+            else:
+                pct = bg_pct
+            if pct > 0:
+                channel = subtract_background_pct(channel, pct)
+        if key in clip_targets:
+            if key == "gfp" and eyfp_clip_pct is not None:
+                pct = eyfp_clip_pct
+            elif key == "tdtom" and tdtom_clip_pct is not None:
+                pct = tdtom_clip_pct
+            elif key == "el222" and el222_clip_pct is not None:
+                pct = el222_clip_pct
+            else:
+                pct = clip_pct
+            if pct > 0:
+                channel = clip_below_percentile(channel, pct)
         if smooth_sigma > 0 and gaussian_filter is not None:
             channel = gaussian_filter(channel, sigma=smooth_sigma)
-        if not auto_only and key == "tdtom" and tdtom_bounds is not None:
+        if not auto_only and key == "gfp" and eyfp_bounds is not None:
+            scaled = apply_bounds(channel, tuple(eyfp_bounds))
+        elif not auto_only and key == "tdtom" and tdtom_bounds is not None:
             scaled = apply_bounds(channel, tuple(tdtom_bounds))
         else:
             scaled, _ = scale_channel(channel, args.low_pct, args.high_pct)
-        if not auto_only and key == "el222":
-            scaled = np.clip(scaled * float(args.el222_gain), 0.0, 1.0)
+        if key == "tdtom":
+            gain = float(args.tdtom_gain) if not auto_only else 1.0
+            scaled = np.clip(scaled * gain, 0.0, 1.0)
+        if key == "el222":
+            gain = float(args.el222_gain) if not auto_only else 1.0
+            scaled = np.clip(scaled * gain, 0.0, 1.0)
+        if key == "dapi":
+            scaled = np.clip(scaled * float(args.dapi_gain), 0.0, 1.0)
         scaled_channels[key] = scaled
         color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
         pseudo_channels[key] = colorize_channel(scaled, color)
@@ -678,14 +853,31 @@ def main() -> None:
     base_images.append(pseudo_merge)
     base_row = make_grid(base_images, args.padding)
 
+    last_report_path = roi_dir / "nd2_export" / "grid_export_report.json"
+    last_report = None
+    if last_report_path.exists():
+        try:
+            last_report = json.loads(last_report_path.read_text())
+        except Exception as exc:
+            print(f"Failed to read {last_report_path}: {exc}")
+
     inset_boxes: List[Tuple[int, int, int, int]] = []
     if args.inset:
         inset_boxes.extend([tuple(item) for item in args.inset])
+    if args.reuse_insets and last_report and "insets" in last_report:
+        previous = last_report.get("insets")
+        if isinstance(previous, list):
+            inset_boxes.extend([tuple(item) for item in previous if isinstance(item, list) and len(item) == 4])
     if args.pick_inset:
-        targets = [name.strip().lower() for name in args.inset_target if name.strip()]
+        targets = normalize_inset_targets(args.inset_target)
         inset_source = None
         if "merged" in targets:
             inset_source = pseudo_merge
+        elif args.inset_composite.lower() == "diffmap":
+            gfp = scaled_channels.get("gfp")
+            el222 = scaled_channels.get("el222")
+            if gfp is not None and el222 is not None:
+                inset_source = diffmap_view(gfp, el222, float(args.diff_threshold))
         else:
             grayscale = []
             for target in targets:
@@ -693,18 +885,19 @@ def main() -> None:
                     grayscale.append(scaled_channels[target])
                 elif target in pseudo_channels:
                     grayscale.append(pseudo_channels[target][..., 0])
-            if len(grayscale) == 1:
-                inset_source = pseudo_channels.get(targets[0])
-            elif grayscale:
-                composite = np.mean(np.stack(grayscale, axis=0), axis=0)
-                inset_source = composite
+            if grayscale:
+                inset_source = combine_grayscale(grayscale, args.inset_composite)
         if inset_source is None:
             print(f"Inset target(s) {targets} not found; skipping inset picker.")
         else:
-            picked = pick_insets(inset_source, max(1, int(args.inset_count)), int(args.inset_size))
-            if not picked:
-                raise SystemExit("No inset selected. Use drag selection (not the zoom tool).")
-            inset_boxes.extend(picked)
+            if args.reuse_insets and inset_boxes:
+                picked = pick_insets(inset_source, len(inset_boxes), int(args.inset_size))
+                inset_boxes = picked
+            else:
+                picked = pick_insets(inset_source, max(1, int(args.inset_count)), int(args.inset_size))
+                if not picked:
+                    raise SystemExit("No inset selected. Use drag selection (not the zoom tool).")
+                inset_boxes.extend(picked)
 
     if inset_boxes:
         source_map = {"merged": pseudo_merge, **pseudo_channels}
@@ -746,7 +939,7 @@ def main() -> None:
                     )
                 else:
                     column = np.concatenate([column, panel], axis=0)
-            inset_columns.append(pad_to_height(column, base_row.shape[0]))
+            inset_columns.append(match_height(column, base_row.shape[0], not args.no_inset_resize))
 
         grid = base_row
         for column in inset_columns:
@@ -769,6 +962,8 @@ def main() -> None:
         "roi_dir": str(roi_dir),
         "nd2_path": str(nd2_path),
         "tdtom_bounds": tdtom_bounds,
+        "eyfp_from_report": bool(args.eyfp_from_report),
+        "eyfp_bounds": list(eyfp_bounds) if eyfp_bounds is not None else None,
         "low_pct": args.low_pct,
         "high_pct": args.high_pct,
         "sigma": smooth_sigma,
@@ -777,14 +972,24 @@ def main() -> None:
         "illumination_channels": sorted(illum_targets),
         "bg_pct": bg_pct,
         "bg_channels": sorted(bg_targets),
+        "eyfp_bg_pct": eyfp_bg_pct,
+        "tdtom_bg_pct": tdtom_bg_pct,
+        "el222_bg_pct": el222_bg_pct,
         "clip_below_pct": clip_pct,
         "clip_channels": sorted(clip_targets),
+        "eyfp_clip_pct": eyfp_clip_pct,
+        "tdtom_clip_pct": tdtom_clip_pct,
+        "el222_clip_pct": el222_clip_pct,
         "include_dapi": bool(args.include_dapi),
         "insets": inset_boxes,
-        "inset_target": [name.lower() for name in args.inset_target],
+        "inset_target": normalize_inset_targets(args.inset_target),
         "inset_count": args.inset_count,
         "inset_size": int(args.inset_size),
+        "inset_composite": args.inset_composite,
+        "diff_threshold": float(args.diff_threshold),
         "el222_gain": float(args.el222_gain),
+        "tdtom_gain": float(args.tdtom_gain),
+        "dapi_gain": float(args.dapi_gain),
         "grid_path": str(grid_path),
     }
     (output_root / "grid_export_report.json").write_text(json.dumps(report, indent=2))
