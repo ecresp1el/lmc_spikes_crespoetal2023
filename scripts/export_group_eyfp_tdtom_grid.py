@@ -32,7 +32,7 @@ CHANNEL_COLORS = {
     "dapi": (0.0, 0.0, 1.0),
     "gfp": (0.0, 1.0, 0.0),
     "tdtom": (1.0, 0.0, 0.0),
-    "el222": (1.0, 0.0, 1.0),
+    "el222": (0.0, 0.0, 1.0),
 }
 
 
@@ -996,6 +996,12 @@ def main() -> None:
         "tdtom_bounds_pooled": list(tdtom_bounds_pooled) if tdtom_bounds_pooled else None,
         "tdtom_hist_match": bool(args.tdtom_hist_match),
         "per_group_all": per_group_all,
+        "per_group_bounds": {
+            group: {name: list(bounds) for name, bounds in channel_bounds.items()}
+            for group, channel_bounds in per_group_bounds.items()
+        }
+        if per_group_all
+        else None,
         "hist_bins": int(args.hist_bins),
         "bounds": bounds_by_channel,
         "auto_bounds": auto_bounds_enabled,

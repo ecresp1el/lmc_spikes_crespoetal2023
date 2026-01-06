@@ -141,14 +141,30 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Do not open the combined TIFF.",
     )
+    parser.add_argument(
+        "--include-dapi",
+        dest="include_dapi",
+        action="store_true",
+        help="Include DAPI panels in inset grids (default).",
+    )
+    parser.add_argument(
+        "--no-include-dapi",
+        dest="include_dapi",
+        action="store_false",
+        help="Exclude DAPI panels from inset grids.",
+    )
     parser.set_defaults(open_combined=True)
+    parser.set_defaults(include_dapi=True)
     return parser.parse_known_args()
 
 
 def main() -> None:
     args, extra_args = parse_args()
     extra_args = ensure_reuse_insets(list(extra_args))
-    extra_args = ensure_include_dapi(extra_args)
+    if args.include_dapi:
+        extra_args = ensure_include_dapi(extra_args)
+    else:
+        extra_args = [arg for arg in extra_args if arg != "--include-dapi"]
 
     script_path = Path(__file__).with_name("export_single_roi_grid.py")
     if not script_path.exists():

@@ -39,7 +39,7 @@ CHANNEL_COLORS = {
     "dapi": (0.0, 0.0, 1.0),
     "gfp": (0.0, 1.0, 0.0),
     "tdtom": (1.0, 0.0, 0.0),
-    "el222": (1.0, 0.0, 1.0),
+    "el222": (0.0, 0.0, 1.0),
 }
 
 
@@ -199,9 +199,9 @@ def combine_grayscale(images: List[np.ndarray], mode: str) -> np.ndarray:
     return np.mean(stack, axis=0)
 
 
-def diffmap_view(gfp: np.ndarray, el222: np.ndarray, threshold: float) -> np.ndarray:
-    g = np.clip(gfp, 0.0, 1.0)
-    e = np.clip(el222, 0.0, 1.0)
+def diffmap_view(first: np.ndarray, second: np.ndarray, threshold: float) -> np.ndarray:
+    g = np.clip(first, 0.0, 1.0)
+    e = np.clip(second, 0.0, 1.0)
     if threshold > 0:
         g_mask = g >= threshold
         e_mask = e >= threshold
@@ -219,6 +219,26 @@ def diffmap_view(gfp: np.ndarray, el222: np.ndarray, threshold: float) -> np.nda
     rgb[..., 0] = e_only + both
     rgb[..., 1] = g_only + both
     return np.clip(rgb, 0.0, 1.0)
+
+
+def diffmap_from_targets(
+    targets: List[str],
+    scaled_channels: Dict[str, np.ndarray],
+    threshold: float,
+) -> Tuple[Optional[np.ndarray], Optional[Tuple[str, str]]]:
+    pair = [target for target in targets if target != "merged"]
+    if len(pair) < 2:
+        print(f"[warn] diffmap requires two channels; got {targets}.")
+        return None, None
+    if len(pair) > 2:
+        print(f"[warn] diffmap uses the first two targets only: {pair[:2]}.")
+        pair = pair[:2]
+    first = scaled_channels.get(pair[0])
+    second = scaled_channels.get(pair[1])
+    if first is None or second is None:
+        print(f"[warn] diffmap targets not found: {pair}.")
+        return None, None
+    return diffmap_view(first, second, threshold), (pair[0], pair[1])
 
 
 def extract_rotated_roi(image: np.ndarray, center: Tuple[float, float], width: float, height: float, angle: float) -> np.ndarray:
@@ -340,8 +360,12 @@ def render_colorbar(
         bbox={"facecolor": "white", "edgecolor": "none", "pad": 1},
     )
     fig.canvas.draw()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    img = buf.reshape(height, width, 3)
+    if hasattr(fig.canvas, "buffer_rgba"):
+        buf = np.asarray(fig.canvas.buffer_rgba())
+        img = np.array(buf, copy=True)[..., :3]
+    else:
+        buf = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+        img = buf.reshape(height, width, 4)[..., 1:4]
     return (img / 255.0).astype(np.float32)
 
 
@@ -619,6 +643,11 @@ def parse_args() -> argparse.Namespace:
         help="Include DAPI in the grid (default: off).",
     )
     parser.add_argument(
+        "--exclude-dapi-merge",
+        action="store_true",
+        help="Exclude DAPI from the merged RGB (even if DAPI is loaded).",
+    )
+    parser.add_argument(
         "--inset",
         type=int,
         nargs=4,
@@ -879,10 +908,22 @@ def main() -> None:
 
     tdtom_bounds = None
     eyfp_bounds = None
+    per_group_bounds_by_key: Dict[str, Tuple[float, float]] | None = None
     if args.report_path and args.report_path.exists():
         report = json.loads(args.report_path.read_text())
         bounds = report.get("bounds", {})
         report_per_group = bool(report.get("per_group_all"))
+        if report_per_group:
+            group_name = roi_dir.parent.name
+            if group_name.startswith("group_"):
+                group_name = group_name[len("group_") :]
+            group_bounds = (report.get("per_group_bounds") or {}).get(group_name)
+            if isinstance(group_bounds, dict):
+                per_group_bounds_by_key = {
+                    channel_key(name): tuple(float(x) for x in bounds)
+                    for name, bounds in group_bounds.items()
+                    if isinstance(bounds, (list, tuple)) and len(bounds) == 2
+                }
         if not report_per_group:
             tdtom_bounds = bounds.get("tdTom")
         if args.eyfp_from_report:
@@ -933,7 +974,10 @@ def main() -> None:
         if smooth_sigma > 0 and gaussian_filter is not None:
             channel = gaussian_filter(channel, sigma=smooth_sigma)
         bounds = None
-        if not auto_only and key == "gfp" and eyfp_bounds is not None:
+        if not auto_only and per_group_bounds_by_key and key in per_group_bounds_by_key:
+            bounds = per_group_bounds_by_key[key]
+            scaled = apply_bounds(channel, bounds)
+        elif not auto_only and key == "gfp" and eyfp_bounds is not None:
             bounds = tuple(eyfp_bounds)
             scaled = apply_bounds(channel, bounds)
         elif not auto_only and key == "tdtom" and tdtom_bounds is not None:
@@ -955,7 +999,13 @@ def main() -> None:
         color = CHANNEL_COLORS.get(key, (1.0, 1.0, 1.0))
         pseudo_channels[key] = colorize_channel(scaled, color)
 
-    merge = compose_merge(scaled_channels)
+    merge_sources = scaled_channels
+    if args.exclude_dapi_merge:
+        merge_sources = {key: value for key, value in scaled_channels.items() if key != "dapi"}
+        if not merge_sources:
+            merge_sources = scaled_channels
+            print("[warn] exclude-dapi-merge requested but no non-DAPI channels found.")
+    merge = compose_merge(merge_sources)
     pseudo_merge = merge
 
     grid_order = ["gfp", "tdtom", "el222"]
@@ -1022,10 +1072,11 @@ def main() -> None:
         if "merged" in targets:
             inset_source = pseudo_merge
         elif args.inset_composite.lower() == "diffmap":
-            gfp = scaled_channels.get("gfp")
-            el222 = scaled_channels.get("el222")
-            if gfp is not None and el222 is not None:
-                inset_source = diffmap_view(gfp, el222, float(args.diff_threshold))
+            inset_source, _ = diffmap_from_targets(
+                targets,
+                scaled_channels,
+                float(args.diff_threshold),
+            )
         else:
             grayscale = []
             for target in targets:
@@ -1047,12 +1098,24 @@ def main() -> None:
                     raise SystemExit("No inset selected. Use drag selection (not the zoom tool).")
                 inset_boxes.extend(picked)
 
+    diffmap_panel = None
+    diffmap_pair = None
+    if args.inset_composite.lower() == "diffmap":
+        diffmap_panel, diffmap_pair = diffmap_from_targets(
+            normalize_inset_targets(args.inset_target),
+            scaled_channels,
+            float(args.diff_threshold),
+        )
     if inset_boxes:
         source_map = {"merged": pseudo_merge, **pseudo_channels}
+        inset_order = list(grid_order)
+        if diffmap_panel is not None:
+            source_map["diffmap"] = diffmap_panel
+            inset_order = ["diffmap"] + inset_order
         inset_columns = []
         for inset_box in inset_boxes:
             inset_panels = []
-            for key in grid_order:
+            for key in inset_order:
                 src = source_map.get(key)
                 if src is None:
                     continue
@@ -1131,12 +1194,14 @@ def main() -> None:
         "tdtom_clip_pct": tdtom_clip_pct,
         "el222_clip_pct": el222_clip_pct,
         "include_dapi": bool(args.include_dapi),
+        "exclude_dapi_merge": bool(args.exclude_dapi_merge),
         "insets": inset_boxes,
         "inset_target": normalize_inset_targets(args.inset_target),
         "inset_count": args.inset_count,
         "inset_size": int(args.inset_size),
         "inset_composite": args.inset_composite,
         "diff_threshold": float(args.diff_threshold),
+        "diffmap_pair": list(diffmap_pair) if diffmap_pair else None,
         "el222_gain": float(args.el222_gain),
         "tdtom_gain": float(args.tdtom_gain),
         "dapi_gain": float(args.dapi_gain),
